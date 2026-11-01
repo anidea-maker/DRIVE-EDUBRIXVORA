@@ -1,5 +1,7 @@
 import cors from 'cors'
 import express from 'express'
+import fs from 'node:fs'
+import path from 'node:path'
 import { env } from './config/env.js'
 import { errorMiddleware } from './middleware/error.middleware.js'
 import { prisma } from './config/prisma.js'
@@ -42,21 +44,21 @@ app.use(express.json({ limit: '1mb' }))
  *
  * `commit` makes it obvious when a deploy is serving an older build than `main`.
  */
-app.get('/health', (_req, res) =>
-  res.json({
-    status: 'ok',
-    commit: BUILD_COMMIT,
-    environment: BUILD_ENVIRONMENT,
-    uptimeSeconds: Math.round(process.uptime()),
-  }),
-)
+const healthPayload = () => ({
+  status: 'ok',
+  commit: BUILD_COMMIT,
+  environment: BUILD_ENVIRONMENT,
+  uptimeSeconds: Math.round(process.uptime()),
+})
+
+app.get(['/health', '/api/health'], (_req, res) => res.json(healthPayload()))
 
 /**
  * Readiness: can this instance actually serve requests? Runs one query, so a
  * missing/unreachable database or unapplied migrations are visible with a single
  * browser request instead of a log dig.
  */
-app.get('/ready', async (_req, res) => {
+app.get(['/ready', '/api/ready'], async (_req, res) => {
   try {
     await prisma.$queryRawUnsafe('SELECT 1')
   } catch (error) {
@@ -85,19 +87,85 @@ app.get('/ready', async (_req, res) => {
     })
   }
 })
+/**
+ * Public REST API used by external clients (`/api/v1/uploads`). Mounted first so
+ * the `/api` prefix below cannot shadow it.
+ */
 app.use('/api', publicApiRouter)
-app.use('/public', publicRouter)
-app.use('/auth', authRouter)
-app.use('/api-keys', apiKeyRouter)
-app.use('/provider-configs', providerConfigRouter)
-app.use('/connected-accounts', connectedAccountRouter)
-app.use('/storage', storageRouter)
-app.use('/uploads', uploadRouter)
-app.use('/files', fileRouter)
-app.use('/folders', folderRouter)
-app.use('/invites', inviteRouter)
-app.use('/audit-logs', auditLogRouter)
-app.use('/system', systemRouter)
+
+/**
+ * Every router is reachable twice: bare (`/auth/register`) because nginx strips
+ * the `/api` prefix in the two-service setup, and under `/api` (`/api/auth/...`)
+ * because the SPA always calls `<base>/auth/...` with base `/api`. The second
+ * form is what makes single-service deployments work with no proxy at all.
+ */
+const API_ROUTERS: Array<[string, import('express').Router]> = [
+  ['/public', publicRouter],
+  ['/auth', authRouter],
+  ['/api-keys', apiKeyRouter],
+  ['/provider-configs', providerConfigRouter],
+  ['/connected-accounts', connectedAccountRouter],
+  ['/storage', storageRouter],
+  ['/uploads', uploadRouter],
+  ['/files', fileRouter],
+  ['/folders', folderRouter],
+  ['/invites', inviteRouter],
+  ['/audit-logs', auditLogRouter],
+  ['/system', systemRouter],
+]
+
+for (const [prefix, router] of API_ROUTERS) {
+  app.use(prefix, router)
+  app.use(`/api${prefix}`, router)
+}
+/**
+ * Single-service mode: serve the built SPA from this same process.
+ *
+ * Set `SERVE_FRONTEND` to the directory containing `index.html` (the root
+ * Dockerfile uses /app/public). The browser then talks to the API on its own
+ * origin, so there is no `API_UPSTREAM`, no CORS and no build-time API URL to get
+ * wrong - one deployment, one URL.
+ */
+const frontendDir = process.env.SERVE_FRONTEND?.trim()
+const spaIndex = frontendDir ? path.join(frontendDir, 'index.html') : ''
+const spaEnabled = Boolean(spaIndex) && fs.existsSync(spaIndex)
+
+if (frontendDir && !spaEnabled) {
+  console.warn(`[app] SERVE_FRONTEND=${frontendDir} has no index.html - SPA hosting disabled.`)
+}
+if (spaEnabled) {
+  console.log(`[app] Serving the SPA from ${frontendDir}`)
+  // Hashed assets are immutable; the shell and service worker must not be cached.
+  app.use(
+    express.static(frontendDir as string, {
+      index: false,
+      setHeaders: (res, filePath) => {
+        if (/[\\/]assets[\\/]/.test(filePath)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+        } else if (/[\\/](sw\.js|index\.html|manifest\.webmanifest|registerSW\.js)$/.test(filePath)) {
+          res.setHeader('Cache-Control', 'no-cache')
+        }
+      },
+    }),
+  )
+
+  // Any non-API GET falls back to the SPA so client-side routes work on reload.
+  // NOTE: express 5 removed the "*" path pattern - use plain middleware.
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next()
+    const isApi =
+      req.path === '/api' ||
+      req.path.startsWith('/api/') ||
+      req.path === '/health' ||
+      req.path === '/ready' ||
+      req.path === '/public' ||
+      req.path.startsWith('/public/')
+    if (isApi) return next()
+    // The shell must never be cached, or a redeploy keeps serving the old bundle.
+    return res.sendFile(spaIndex, { headers: { 'Cache-Control': 'no-cache' } })
+  })
+}
+
 /**
  * Unknown route. Express's default answer is an HTML "Cannot GET /ready", which
  * looks like an outage even when the real cause is an older deployed build.

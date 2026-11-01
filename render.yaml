@@ -1,11 +1,12 @@
-# Render blueprint (https://render.com/docs/blueprint-spec): two Docker services.
+# Render blueprint (https://render.com/docs/blueprint-spec): ONE Docker service
+# that serves both the API and the SPA from the same origin, using ./Dockerfile.
 #
-# The services are wired to each other automatically through `fromService`, so
-# the frontend can never be pointed at its own URL by mistake:
-#   frontend API_UPSTREAM  <- backend  host
-#   backend  FRONTEND_URL  <- frontend host
+# Why one service: with two, API_UPSTREAM + VITE_API_URL + CORS must all agree, and
+# a mistake looks like "Unexpected token '<'" or a 405. Same origin removes the
+# whole class of problem. (The two-service setup is still supported - see the
+# commented block at the bottom - it needs ./backend + ./frontend images.)
 #
-# Still to fill in the dashboard (`sync: false`):
+# Fill in the dashboard (`sync: false`):
 #   DATABASE_URL       mysql://avnadmin:PASSWORD@HOST:PORT/defaultdb   (Aiven)
 #   DATABASE_CA_CERT   contents of ca.pem (PEM, base64, or a path)
 #
@@ -14,10 +15,10 @@
 # unreadable. Render injects PORT itself and the app prefers it over APP_PORT.
 services:
   - type: web
-    name: 9drive-backend
+    name: 9drive
     runtime: docker
-    dockerContext: ./backend
-    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    dockerfilePath: ./Dockerfile
     # Liveness only (no DB query) so a MySQL blip cannot restart the service.
     # Use /ready to check the database from a browser.
     healthCheckPath: /health
@@ -35,12 +36,9 @@ services:
         generateValue: true
       - key: TOKEN_ENCRYPTION_KEY
         generateValue: true
-      # CORS origin. A bare host is accepted and upgraded to https://.
+      # Optional: defaults to this service's own origin when unset.
       - key: FRONTEND_URL
-        fromService:
-          type: web
-          name: 9drive-frontend
-          property: host
+        sync: false
       - key: MAX_UPLOAD_BYTES
         value: "5368709120"
       - key: ACCESS_TOKEN_TTL_SECONDS
@@ -54,17 +52,33 @@ services:
       - key: GOOGLE_REDIRECT_URI
         sync: false
 
-  - type: web
-    name: 9drive-frontend
-    runtime: docker
-    dockerContext: ./frontend
-    dockerfilePath: ./frontend/Dockerfile
-    healthCheckPath: /healthz
-    envVars:
-      # The browser calls /api on the frontend origin; nginx forwards it to the
-      # backend. Bare host from Render is upgraded to https:// by the entrypoint.
-      - key: API_UPSTREAM
-        fromService:
-          type: web
-          name: 9drive-backend
-          property: host
+# --- Alternative: two services (API + static SPA) -------------------------------
+# Requires the pair to agree on API_UPSTREAM / VITE_API_URL / CORS:
+#
+#  - type: web
+#    name: 9drive-backend
+#    runtime: docker
+#    dockerContext: ./backend
+#    dockerfilePath: ./backend/Dockerfile
+#    healthCheckPath: /health
+#    envVars:
+#      - key: DATABASE_URL
+#        sync: false
+#      - key: DATABASE_CA_CERT
+#        sync: false
+#      - key: JWT_ACCESS_SECRET
+#        generateValue: true
+#      - key: TOKEN_ENCRYPTION_KEY
+#        generateValue: true
+#      - key: FRONTEND_URL
+#        fromService: { type: web, name: 9drive-frontend, property: host }
+#
+#  - type: web
+#    name: 9drive-frontend
+#    runtime: docker
+#    dockerContext: ./frontend
+#    dockerfilePath: ./frontend/Dockerfile
+#    healthCheckPath: /healthz
+#    envVars:
+#      - key: API_UPSTREAM
+#        fromService: { type: web, name: 9drive-backend, property: host }
