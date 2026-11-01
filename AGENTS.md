@@ -37,9 +37,14 @@ Stack:
 Important files:
 - `backend/src/server.ts`: server entrypoint.
 - `backend/src/app.ts`: Express app and route mounting.
-- `backend/src/config/env.ts`: environment validation.
+- `backend/src/config/env.ts`: environment validation (exits with a readable message naming the missing variables).
+- `backend/src/config/load-env.ts`: loads `backend/.env` from any working directory.
+- `backend/scripts/ensure-env.mjs`: creates/repairs `backend/.env`; run via `npm run env:setup`.
 - `backend/src/config/prisma.ts`: Prisma client.
 - `backend/prisma/schema.prisma`: database schema.
+- `backend/.env.example`: environment template (copy to `backend/.env`).
+- `frontend/nginx.conf.template`: runtime-rendered nginx config (env vars `PORT`, `API_UPSTREAM`, `RESOLVER`); the backend honors a platform `PORT` too.
+- `docker-compose.external-db.yml`: compose override that points the backend at a hosted MySQL instead of the bundled container.
 - `backend/src/middleware/auth.middleware.ts`: bearer auth.
 - `backend/src/middleware/error.middleware.ts`: JSON error responses.
 - `backend/src/modules/**`: feature route modules and provider services.
@@ -52,15 +57,19 @@ Commands:
 - `cd backend && npm run start`: run compiled backend from `dist/server.js`.
 - `cd backend && npm run prisma:migrate`: run Prisma dev migration.
 - `cd backend && npm run prisma:generate`: regenerate Prisma client.
+- `cd backend && npm run env:setup`: create or repair `backend/.env` (runs automatically before `dev`, `start`, and every `prisma:*` script).
+- `cd backend && npm run db:check`: diagnose `DATABASE_URL` (reachability, credentials, TLS parameters, schema state).
+- `cd backend && npm run db:status`: applied/pending migrations.
+- Managed MySQL (Aiven/PlanetScale/RDS): apply the committed migrations with `npm run db:migrate:deploy`; `migrate dev` needs a shadow database those services usually cannot create.
 - `cd backend && npm run seed:google-config`: store encrypted Google OAuth config.
 
 Environment:
-- `DATABASE_URL`
+- `DATABASE_URL` (MySQL URL; Prisma MySQL has no `ssl-mode`/`sslmode` parameter - use `sslaccept`, plus `sslcert=certs/<ca>.pem` for verified TLS)
 - `APP_PORT`
 - `FRONTEND_URL`
 - `JWT_ACCESS_SECRET`
 - `TOKEN_ENCRYPTION_KEY`
-- `RECAPTCHA_SECRET_KEY` (optional; enables captcha verification when paired with frontend site key)
+- `DATABASE_CA_CERT` (optional; provider CA as PEM/base64/path, materialized to `backend/prisma/certs/db-ca.pem`)
 - `ACCESS_TOKEN_TTL_SECONDS`
 - `REFRESH_TOKEN_TTL_DAYS`
 - `MAX_UPLOAD_BYTES`
@@ -81,7 +90,6 @@ Backend conventions:
 - Keep Google-specific OAuth/Drive behavior in provider modules/services when possible.
 - Keep public-token routes outside `requireAuth`; verify token hash, status, and expiry before streaming/returning data.
 - Google sign-in/register uses one-time auth handoff tokens; never send app access/refresh tokens through URL query params.
-- Email/password registration verifies reCAPTCHA only when `RECAPTCHA_SECRET_KEY` is configured.
 
 Security rules:
 - Never commit `.env` files or secrets.
@@ -137,7 +145,6 @@ Commands:
 
 Environment:
 - `VITE_API_URL`: backend base URL. Vite embeds this at build time.
-- `VITE_RECAPTCHA_SITE_KEY`: optional reCAPTCHA site key. Vite embeds this at build time; blank disables captcha UI.
 
 Frontend conventions:
 - Use `@/*` imports for files under `frontend/src`.

@@ -1,0 +1,55 @@
+# Render blueprint (https://render.com/docs/blueprint-spec) for two Docker
+# services: the Express API and the nginx-served frontend.
+#
+# Only the values marked `sync: false` need to be typed into the dashboard once:
+#   DATABASE_URL     mysql://avnadmin:PASSWORD@HOST:PORT/defaultdb
+#   DATABASE_CA_CERT the Aiven ca.pem content (PEM, base64, or a path)
+#   FRONTEND_URL     https://<frontend-service>.onrender.com
+#   API_UPSTREAM     https://<backend-service>.onrender.com  (frontend service)
+#
+# Secrets generated here (JWT_ACCESS_SECRET, TOKEN_ENCRYPTION_KEY) must be kept
+# stable - regenerating TOKEN_ENCRYPTION_KEY makes stored Google/S3 credentials
+# unreadable. Render injects PORT itself; the app prefers it over APP_PORT.
+services:
+  - type: web
+    name: 9drive-backend
+    runtime: docker
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_CA_CERT
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: TOKEN_ENCRYPTION_KEY
+        generateValue: true
+      - key: FRONTEND_URL
+        sync: false
+      - key: MAX_UPLOAD_BYTES
+        value: "5368709120"
+      - key: ACCESS_TOKEN_TTL_SECONDS
+        value: "900"
+      - key: REFRESH_TOKEN_TTL_DAYS
+        value: "30"
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+
+  - type: web
+    name: 9drive-frontend
+    runtime: docker
+    dockerContext: ./frontend
+    dockerfilePath: ./frontend/Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      # The browser calls /api on the frontend origin; nginx forwards it here.
+      - key: API_UPSTREAM
+        sync: false

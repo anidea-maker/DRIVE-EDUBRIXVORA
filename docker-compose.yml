@@ -41,8 +41,11 @@ services:
     build:
       context: ./frontend
       args:
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:4000}
-        VITE_RECAPTCHA_SITE_KEY: ${VITE_RECAPTCHA_SITE_KEY:-}
+        # Empty: the frontend calls /api on its own origin and nginx proxies it.
+        VITE_API_URL: ${VITE_API_URL:-}
+    environment:
+      PORT: 80
+      API_UPSTREAM: http://backend:4000
     restart: unless-stopped
     depends_on:
       - backend

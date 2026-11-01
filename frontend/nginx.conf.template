@@ -1,0 +1,90 @@
+# nginx configuration template for the 9Drive frontend image.
+#
+# Rendered at container start by the official nginx entrypoint
+# (/docker-entrypoint.d/20-envsubst-on-templates.sh). Only environment variables
+# are substituted - nginx's own $variables are left untouched.
+#
+#   PORT          Port nginx listens on. Docker compose: 80 (default).
+#                 Render/Heroku/Cloud Run inject their own PORT (Render: 10000).
+#   API_UPSTREAM  Where /api/* is proxied, scheme included, no trailing slash.
+#                 Docker compose: http://backend:4000 (default)
+#                 Render:         https://<backend-service>.onrender.com
+#                 If the frontend is built with VITE_API_URL instead, /api/* is
+#                 simply never called and this value is irrelevant.
+#   RESOLVER      DNS servers used to resolve API_UPSTREAM (see `resolver`).
+
+# gzip* directives are only valid in the http context. This file is included from
+# http {} (include /etc/nginx/conf.d/*.conf), so they live outside `server`.
+gzip on;
+gzip_comp_level 5;
+gzip_min_length 1024;
+gzip_proxied any;
+gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+
+server {
+  listen ${PORT};
+  server_name _;
+  client_max_body_size 5G;
+
+  root /usr/share/nginx/html;
+  index index.html;
+
+  # With a variable in proxy_pass, nginx resolves API_UPSTREAM per request
+  # instead of at startup. A missing "backend" host therefore can no longer
+  # abort the whole container with "host not found in upstream" - which is what
+  # happens on single-service hosts such as Render, Railway or Fly.
+  resolver ${RESOLVER} valid=10s ipv6=off;
+  set $api_target "${API_UPSTREAM}";
+
+  # Health probe for the platform (Render, k8s, load balancers).
+  location = /healthz {
+    access_log off;
+    add_header Content-Type text/plain;
+    return 200 "ok\n";
+  }
+
+  location /api/ {
+    # /api/auth/login -> <API_UPSTREAM>/auth/login
+    rewrite ^/api/?(.*)$ /$1 break;
+    proxy_pass $api_target;
+    proxy_ssl_server_name on;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_connect_timeout 300s;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    client_body_timeout 3600s;
+    send_timeout 3600s;
+  }
+
+  location /assets/ {
+    expires 1y;
+    add_header Cache-Control "public, immutable";
+    try_files $uri =404;
+  }
+
+  # The service worker and the HTML shell must never be cached, or a new deploy
+  # keeps serving the previous build to returning visitors.
+  location = /sw.js {
+    add_header Cache-Control "no-cache";
+    try_files $uri =404;
+  }
+
+  location = /index.html {
+    add_header Cache-Control "no-cache";
+  }
+
+  location = /manifest.webmanifest {
+    add_header Cache-Control "no-cache";
+    try_files $uri =404;
+  }
+
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+}

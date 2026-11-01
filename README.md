@@ -93,7 +93,7 @@ Try the live preview at **[9drive.zenhosta.com](https://9drive.zenhosta.com)**.
 - In-app API docs with cURL and JavaScript examples.
 
 **Accounts and admin**
-- Email/password sign-up (optional reCAPTCHA) or **Continue with Google**, which connects your first Drive automatically.
+- Email/password sign-up or **Continue with Google**, which connects your first Drive automatically.
 - Google OAuth credentials can be set in **Settings**. No `.env` editing needed.
 - Backup/restore and one-click updates from Settings (for PM2 setups).
 
@@ -177,7 +177,7 @@ cd ../frontend && npm install
 mysql -u root -e "CREATE DATABASE IF NOT EXISTS 9drive;"
 ```
 
-Create `backend/.env`:
+Create `backend/.env` (or run `cd backend && npm run env:setup` to have it written for you, then edit `DATABASE_URL`):
 
 ```env
 DATABASE_URL="mysql://root@localhost:3306/9drive"
@@ -188,7 +188,6 @@ TOKEN_ENCRYPTION_KEY="change-this-encryption-key-32bytes!"
 ACCESS_TOKEN_TTL_SECONDS=900
 REFRESH_TOKEN_TTL_DAYS=30
 MAX_UPLOAD_BYTES=5368709120
-RECAPTCHA_SECRET_KEY=""
 
 # Only read by `npm run seed:google-config`, which stores them encrypted in the database.
 GOOGLE_CLIENT_ID=""
@@ -200,7 +199,6 @@ Create `frontend/.env`:
 
 ```env
 VITE_API_URL=http://localhost:4000
-VITE_RECAPTCHA_SITE_KEY=
 ```
 
 Then run `npm run prisma:migrate` in `backend/` and start both dev servers as shown above.
@@ -253,7 +251,8 @@ Either way, the credentials are encrypted and stored in MySQL as one global conf
 
 | Variable | What it does |
 | --- | --- |
-| `DATABASE_URL` | MySQL connection string. |
+| `DATABASE_URL` | MySQL connection string. For managed MySQL use `sslaccept` (not `ssl-mode`) as described above. |
+| `DATABASE_CA_CERT` | Optional. Provider CA certificate as PEM text, base64, or a file path. Materialized to `prisma/certs/db-ca.pem` and applied as `sslcert` + `sslaccept=strict`. |
 | `APP_PORT` | Backend port (default `4000`). |
 | `FRONTEND_URL` | The frontend's URL. CORS only allows this origin. |
 | `JWT_ACCESS_SECRET` | Secret for signing access tokens. At least 32 characters, random. |
@@ -261,7 +260,6 @@ Either way, the credentials are encrypted and stored in MySQL as one global conf
 | `ACCESS_TOKEN_TTL_SECONDS` | Access token lifetime (default `900`). |
 | `REFRESH_TOKEN_TTL_DAYS` | Refresh token lifetime (default `30`). |
 | `MAX_UPLOAD_BYTES` | Largest allowed upload (default 5 GB). |
-| `RECAPTCHA_SECRET_KEY` | Optional. Turns on captcha for sign-up, together with the frontend site key. |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` | Only read by the seed command. The app reads the encrypted copy from the database. |
 
 </details>
@@ -272,11 +270,71 @@ Either way, the credentials are encrypted and stored in MySQL as one global conf
 | Variable | What it does |
 | --- | --- |
 | `VITE_API_URL` | Backend URL. Vite bakes it in at build time, so **rebuild the frontend after changing it**. |
-| `VITE_RECAPTCHA_SITE_KEY` | Optional reCAPTCHA site key. Leave it empty to turn captcha off. Also baked in at build time. |
-
-Captcha only turns on when **both** `VITE_RECAPTCHA_SITE_KEY` and `RECAPTCHA_SECRET_KEY` are set.
 
 </details>
+
+<details>
+<summary><b>Hosted MySQL (Aiven, PlanetScale, RDS, Azure …)</b></summary>
+
+Point `DATABASE_URL` in `backend/.env` at the service and keep everything else the same:
+
+```env
+DATABASE_URL="mysql://avnadmin:PASSWORD@mysql-xxxx.y.aivencloud.com:12299/defaultdb?sslaccept=accept_invalid_certs"
+```
+
+Three things trip people up:
+
+1. **TLS.** Prisma's MySQL connector has no `ssl-mode` / `sslmode` parameter, so Aiven's copy-paste string (`?ssl-mode=REQUIRED`) is *ignored* and the connection ends up **unencrypted**. Ask for TLS the Prisma way:
+   - `?sslaccept=accept_invalid_certs` — encrypted, certificate not verified. Fine to get started.
+   - `?sslcert=certs/aiven-ca.pem&sslaccept=strict` — encrypted **and** verified. Download the CA from the provider (Aiven: *Service page → CA certificate*) to `backend/prisma/certs/aiven-ca.pem`; `sslcert` paths resolve relative to `backend/prisma/`.
+
+   On a platform that only lets you set environment variables (Render, Railway, Fly, PM2, Docker), skip the file entirely and put the certificate in `DATABASE_CA_CERT` — PEM text, base64, or a path:
+
+   ```env
+   DATABASE_CA_CERT="-----BEGIN CERTIFICATE-----\nMIID...\n-----END CERTIFICATE-----"
+   ```
+
+   The backend writes it to `prisma/certs/db-ca.pem` and upgrades `DATABASE_URL` to `sslcert=certs/db-ca.pem&sslaccept=strict` on boot. `npm run db:check` prints `TLS  encrypted (…)` once the connection really is encrypted.
+2. **Migrations.** Managed databases usually cannot create the temporary *shadow database* that `prisma migrate dev` needs, so apply the committed migrations instead:
+   ```bash
+   cd backend
+   npm run db:check           # reachability + credentials + TLS sanity check
+   npm run db:migrate:deploy  # applies prisma/migrations (never resets data)
+   npm run db:status          # what is applied / pending
+   ```
+3. **Password quoting.** Keep the URL in double quotes; if the password contains `@`, `:`, `/` or `?`, URL-encode it (`@` → `%40`, `:` → `%3A`, `/` → `%2F`, `?` → `%3F`).
+
+With Docker, add the override file instead of editing the bundled MySQL service:
+
+```bash
+# .env next to docker-compose.yml
+DATABASE_URL="mysql://avnadmin:PASSWORD@mysql-xxxx.y.aivencloud.com:12299/defaultdb?sslaccept=accept_invalid_certs"
+
+docker compose -f docker-compose.yml -f docker-compose.external-db.yml up -d --build
+```
+
+The backend runs `prisma migrate deploy` on boot, so the schema is created automatically. Hosted platforms (Render, Railway, Fly, …) only need the `DATABASE_URL` env var — the local `backend/.env` helper steps aside whenever the variable is already set.
+
+</details>
+
+## Deploying to Render (or any container host)
+
+The repo ships two images. They talk to each other through a **runtime** proxy, so nothing has to be rebuilt when a URL changes.
+
+| Service | Root | Port | Health check | Env vars that matter |
+| --- | --- | --- | --- | --- |
+| `backend` | `./backend` | `$PORT` (fallback `4000`) | `/health` | `DATABASE_URL`, `DATABASE_CA_CERT`, `JWT_ACCESS_SECRET`, `TOKEN_ENCRYPTION_KEY`, `FRONTEND_URL` |
+| `frontend` | `./frontend` | `$PORT` (fallback `80`) | `/healthz` | `API_UPSTREAM` = the backend's public URL |
+
+Notes:
+
+- **`PORT` is respected everywhere.** Render injects `PORT=10000`; the API uses it in preference to `APP_PORT`, and nginx listens on it (the config is rendered from `frontend/nginx.conf.template` at container start).
+- **`API_UPSTREAM`** takes a full URL (`https://9drive-backend.onrender.com`) or a bare host (`9drive-backend.onrender.com`); the entrypoint adds `http://` when the scheme is missing. A trailing slash is stripped.
+- **No `backend` DNS dependency.** The upstream is resolved per request, so the frontend starts even when the API is down or not deployed yet (that used to fail with `host not found in upstream "backend"`).
+- The frontend calls `/api/*` on its own origin and nginx forwards it to `API_UPSTREAM`, stripping the `/api` prefix. If you prefer the browser to call the API directly, build with `--build-arg VITE_API_URL=https://api.example.com` instead and leave `API_UPSTREAM` unset.
+- **`FRONTEND_URL` must match the frontend's public origin exactly** (scheme + host, no trailing slash), because CORS only allows that origin.
+- The backend applies pending migrations on boot (`prisma migrate deploy`), so the Aiven database is created/updated automatically on the first deploy.
+- `render.yaml` in the repo root declares both services; `sync: false` values are the ones to paste in the dashboard.
 
 ## Deploying to a server
 
@@ -307,7 +365,7 @@ Captcha only turns on when **both** `VITE_RECAPTCHA_SITE_KEY` and `RECAPTCHA_SEC
 Production tips:
 - Put the frontend and backend behind an HTTPS reverse proxy.
 - Don't expose the MySQL port to the internet.
-- Rebuild the frontend whenever `VITE_API_URL` or `VITE_RECAPTCHA_SITE_KEY` changes.
+- Rebuild the frontend whenever `VITE_API_URL` changes (it is baked in at build time).
 - Publish the OAuth consent screen when you're ready. Google may ask to verify public apps.
 
 </details>
@@ -418,6 +476,26 @@ Your consent screen is in **Testing** mode. Add the Google account under *OAuth 
 </details>
 
 <details>
+<summary><b>"Error: Prisma schema validation - (get-config wasm)" / "Error code: P1012" / "error: Environment variable not found: DATABASE_URL."</b></summary>
+
+Prisma reads `DATABASE_URL` from `backend/.env`. The error means that file is missing (fresh clone, fresh container, or the working directory has no `.env`), so Prisma refuses to load the schema.
+
+Fix it from the `backend/` folder:
+
+```bash
+npm run env:setup     # creates backend/.env from .env.example with random secrets
+npm run prisma:migrate
+```
+
+If your database is not on `localhost:3306`, edit `DATABASE_URL` in `backend/.env` first, or export it in the shell/Docker/PM2 environment (a value already in the environment always wins).
+
+`npm run dev`, `npm start` and every `prisma:*` / seed script now run that check automatically, so the file is created on first use. Typing `npx prisma ...` by hand skips the check, so run `npm run env:setup` once before that.
+
+The API also validates the same variables at boot and prints the exact ones that are missing instead of an opaque Zod error.
+
+</details>
+
+<details>
 <summary><b>Prisma client generation fails on Windows</b></summary>
 
 A running Node process is locking the file. Stop the backend and frontend dev servers, then run `npx prisma generate` in `backend/`.
@@ -436,7 +514,7 @@ Vite bakes `VITE_API_URL` into the build. Rebuild the frontend, or with Docker r
 - Uploads stream through the backend straight to Google Drive or S3. **Nothing is stored on the server's disk.**
 - Google tokens and S3 credentials are encrypted in MySQL. App refresh tokens, API keys, preview tokens, and auth-handoff tokens are stored only as hashes.
 - CORS only allows `FRONTEND_URL`.
-- Never commit `.env` files or share `TOKEN_ENCRYPTION_KEY`, `JWT_ACCESS_SECRET`, `RECAPTCHA_SECRET_KEY`, OAuth client secrets, or raw share links you want to keep private.
+- Never commit `.env` files or share `TOKEN_ENCRYPTION_KEY`, `JWT_ACCESS_SECRET`, OAuth client secrets, or raw share links you want to keep private.
 
 ## Project structure
 
