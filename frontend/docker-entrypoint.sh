@@ -51,11 +51,23 @@ if [ -n "$SELF_HOST" ] && [ "$API_HOST" = "$SELF_HOST" ]; then
   API_HINT="API_UPSTREAM currently points at this same service (self-reference). "
 fi
 
-# 127.0.0.11 is Docker's embedded DNS and does not exist on Render/Railway/Fly,
-# where it fails with "recv() failed (111: Connection refused) ... resolver".
-case "${RESOLVER:-}" in
-  "") RESOLVER="8.8.8.8 1.1.1.1" ;;
-esac
+# Sources of a bad resolver, both of which produce
+#   recv() failed (111: Connection refused) while resolving, resolver: 127.0.0.11:53
+#   - docker-compose (fine, it sets 127.0.0.11 on purpose: that DNS exists there)
+#   - a stale RESOLVER env var on a hosted platform, where it does not
+# So keep 127.0.0.11 only when the container really uses it, i.e. when it is in
+# /etc/resolv.conf, and never end up with an empty list.
+RESOLV_CONF="${RESOLV_CONF:-/etc/resolv.conf}"
+usable=""
+for nameserver in ${RESOLVER:-}; do
+  if [ "$nameserver" = "127.0.0.11" ] && ! grep -qs 'nameserver[[:space:]]\+127\.0\.0\.11' "$RESOLV_CONF"; then
+    echo "[entrypoint] ignoring RESOLVER entry 127.0.0.11: Docker-only DNS, not used by this container"
+    continue
+  fi
+  usable="$usable $nameserver"
+done
+RESOLVER=$(printf '%s' "$usable" | sed -e 's/^ *//' -e 's/ *$//')
+[ -n "$RESOLVER" ] || RESOLVER="8.8.8.8 1.1.1.1"
 
 export API_UPSTREAM API_HINT RESOLVER
 echo "[entrypoint] PORT=${PORT:-80} API_UPSTREAM=${API_UPSTREAM} RESOLVER=${RESOLVER}"
