@@ -323,7 +323,7 @@ The repo ships two images. They talk to each other through a **runtime** proxy, 
 
 | Service | Root | Port | Health check | Env vars that matter |
 | --- | --- | --- | --- | --- |
-| `backend` | `./backend` | `$PORT` (fallback `4000`) | `/health` | `DATABASE_URL`, `DATABASE_CA_CERT`, `JWT_ACCESS_SECRET`, `TOKEN_ENCRYPTION_KEY`, `FRONTEND_URL` |
+| `backend` | `./backend` | `$PORT` (fallback `4000`) | `/health` (liveness), `/ready` (database) | `DATABASE_URL`, `DATABASE_CA_CERT`, `JWT_ACCESS_SECRET`, `TOKEN_ENCRYPTION_KEY`, `FRONTEND_URL` |
 | `frontend` | `./frontend` | `$PORT` (fallback `80`) | `/healthz` | `API_UPSTREAM` = the backend's public URL |
 
 Notes:
@@ -342,6 +342,9 @@ Notes:
 
 | Symptom | Cause / fix |
 | --- | --- |
+| Backend log: `No DATABASE_URL is present in this container's environment`, then the deploy exits | The backend service has no `DATABASE_URL`. Render → backend service → *Environment* → add it (`mysql://avnadmin:PASSWORD@HOST:PORT/defaultdb`) plus `DATABASE_CA_CERT` for Aiven, then redeploy. |
+| `GET /ready` returns `503 {"database":"unreachable"}` | Reachable process, broken database: wrong `DATABASE_URL`/`DATABASE_CA_CERT`, or the Aiven service is powered off. `npm run db:check` prints the exact failure. |
+| `GET /ready` returns `503 {"migrations":"missing"}` | Empty database: run `npm run db:migrate:deploy` (the container also does this on boot). |
 | `Unexpected token '<', "<!doctype "... is not valid JSON` | The API call got `index.html` back, so it never reached the API. Usually `VITE_API_URL` is set to the frontend's own URL. Builds now ignore a same-origin `VITE_API_URL` and fall back to `/api`, but delete the variable anyway (it is baked in at build time) and set `API_UPSTREAM` on the frontend service. The error message now names the URL and the fix. |
 | `405 Not Allowed` on `POST /api/auth/register`, and the frontend log shows a request to `POST /auth/register` arriving with a nested `X-Forwarded-For` | `API_UPSTREAM` points at the **frontend** service itself, so nginx proxies `/api/x` back to `/x` on the static site. Set it to the backend URL. The entrypoint now logs `ERROR: API_UPSTREAM=… points at this service itself` and `/api` answers `502` with a readable JSON message instead of a loop. |
 | `502` with `{"code":"API_UNREACHABLE", …}` | The backend service is not running, is still booting, or `API_UPSTREAM` is wrong/unset (default `http://backend:4000` only exists in docker-compose). Open `<API_UPSTREAM>/health` — it must return `{"status":"ok"}`. |
