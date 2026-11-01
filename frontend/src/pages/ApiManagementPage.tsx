@@ -19,7 +19,7 @@ form.append('filesMeta', JSON.stringify([
 ]))
 form.append('file-0', file)
 
-await fetch('${API_URL}/api/v1/uploads', {
+await fetch('${API_URL}/v1/uploads', {
   method: 'POST',
   headers: { Authorization: 'Bearer 9d_live_xxx' },
   body: form,

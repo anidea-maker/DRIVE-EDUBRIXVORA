@@ -1,8 +1,6 @@
 import { clearAuthSession, getAccessToken, getRefreshToken, setAccessToken } from '@/lib/auth'
 import { resolveApiBase } from '@/lib/api-base'
 
-const DEV_API_URL = 'http://localhost:4000'
-
 const resolved = resolveApiBase(
   import.meta.env.VITE_API_URL,
   typeof window === 'undefined' ? '' : window.location.host,
@@ -10,8 +8,24 @@ const resolved = resolveApiBase(
 
 if (resolved.note) console.warn(`[api] ${resolved.note}`)
 
-/** Same-origin `/api` (proxied by nginx) in production, absolute URL in dev. */
-export const API_URL = import.meta.env.PROD ? resolved.base : resolved.base.startsWith('/') ? DEV_API_URL : resolved.base
+/**
+ * Same-origin `/api` everywhere: nginx proxies it in the Docker image and the Vite
+ * dev/preview server proxies it to the backend (see vite.config.ts). A build-time
+ * `VITE_API_URL` that names a real API origin is still honoured.
+ */
+export const API_URL = resolved.base
+
+/** Turns a rejected `fetch` (no response at all) into something actionable. */
+export function networkError(url: string, error: unknown): Error {
+  const name = (error as { name?: string } | null)?.name
+  if (name === 'AbortError') return error instanceof Error ? error : new Error('Request aborted.')
+  const detail = error instanceof Error && error.message ? ` (${error.message})` : ''
+  return new Error(
+    `Could not reach the API at ${url}${detail}. The request never got a response: ` +
+      `start the backend ("npm run dev" in backend/, port 4000) or point API_PROXY_TARGET at it, ` +
+      `then reload.`,
+  )
+}
 
 type ApiOptions = RequestInit & { skipAuth?: boolean; retry?: boolean }
 
@@ -46,11 +60,16 @@ async function refreshAccessToken() {
   const refreshToken = getRefreshToken()
   if (!refreshToken) return false
   const url = `${API_URL}/auth/refresh`
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refreshToken }),
-  })
+  let response: Response
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken }),
+    })
+  } catch {
+    return false
+  }
   if (!response.ok) return false
   const data = (await readJson(response, url)) as { accessToken?: string } | null
   if (!data?.accessToken) return false
@@ -65,7 +84,12 @@ export async function apiFetch<T>(path: string, options: ApiOptions = {}): Promi
   if (options.body && !(options.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
 
   const url = `${API_URL}${path}`
-  const response = await fetch(url, { ...options, headers })
+  let response: Response
+  try {
+    response = await fetch(url, { ...options, headers })
+  } catch (error) {
+    throw networkError(url, error)
+  }
   if (response.status === 401 && options.retry !== false && !options.skipAuth && await refreshAccessToken()) {
     return apiFetch<T>(path, { ...options, retry: false })
   }
