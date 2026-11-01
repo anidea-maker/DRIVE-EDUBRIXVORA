@@ -41,6 +41,14 @@ if [ -z "$SELF_HOST" ] && [ -n "${RENDER_EXTERNAL_URL:-}" ]; then
 fi
 
 API_HINT=""
+if [ -n "$SELF_HOST" ] && [ "$API_UPSTREAM" = "http://backend:4000" ]; then
+  # The compose default on a hosted platform: resolvable nowhere, every /api 502s.
+  echo "[entrypoint] WARNING: API_UPSTREAM is unset and defaults to http://backend:4000,"
+  echo "[entrypoint]          which only exists inside docker-compose. Set API_UPSTREAM on"
+  echo "[entrypoint]          this service to the BACKEND service URL, e.g. https://your-backend.onrender.com"
+  API_HINT="API_UPSTREAM is not configured. "
+fi
+
 if [ -n "$SELF_HOST" ] && [ "$API_HOST" = "$SELF_HOST" ]; then
   # Pointing /api at this same container makes every API call loop back into the
   # static file handler -> "405 Not Allowed" and no way to register or log in.
