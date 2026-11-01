@@ -37,9 +37,12 @@ Stack:
 Important files:
 - `backend/src/server.ts`: server entrypoint.
 - `backend/src/app.ts`: Express app and route mounting.
-- `backend/src/config/env.ts`: environment validation.
+- `backend/src/config/env.ts`: environment validation (exits with a readable message naming the missing variables).
+- `backend/src/config/load-env.ts`: loads `backend/.env` from any working directory.
+- `backend/scripts/ensure-env.mjs`: creates/repairs `backend/.env`; run via `npm run env:setup`.
 - `backend/src/config/prisma.ts`: Prisma client.
 - `backend/prisma/schema.prisma`: database schema.
+- `backend/.env.example`: environment template (copy to `backend/.env`).
 - `backend/src/middleware/auth.middleware.ts`: bearer auth.
 - `backend/src/middleware/error.middleware.ts`: JSON error responses.
 - `backend/src/modules/**`: feature route modules and provider services.
@@ -52,6 +55,7 @@ Commands:
 - `cd backend && npm run start`: run compiled backend from `dist/server.js`.
 - `cd backend && npm run prisma:migrate`: run Prisma dev migration.
 - `cd backend && npm run prisma:generate`: regenerate Prisma client.
+- `cd backend && npm run env:setup`: create or repair `backend/.env` (runs automatically before `dev`, `start`, and every `prisma:*` script).
 - `cd backend && npm run seed:google-config`: store encrypted Google OAuth config.
 
 Environment:

@@ -177,7 +177,7 @@ cd ../frontend && npm install
 mysql -u root -e "CREATE DATABASE IF NOT EXISTS 9drive;"
 ```
 
-Create `backend/.env`:
+Create `backend/.env` (or run `cd backend && npm run env:setup` to have it written for you, then edit `DATABASE_URL`):
 
 ```env
 DATABASE_URL="mysql://root@localhost:3306/9drive"
@@ -414,6 +414,26 @@ Enable the Google Drive API in the **same** Cloud project as your OAuth client (
 <summary><b>"Access blocked … Error 403: access_denied"</b></summary>
 
 Your consent screen is in **Testing** mode. Add the Google account under *OAuth consent screen → Test users*.
+
+</details>
+
+<details>
+<summary><b>"Error: Prisma schema validation - (get-config wasm)" / "Error code: P1012" / "error: Environment variable not found: DATABASE_URL."</b></summary>
+
+Prisma reads `DATABASE_URL` from `backend/.env`. The error means that file is missing (fresh clone, fresh container, or the working directory has no `.env`), so Prisma refuses to load the schema.
+
+Fix it from the `backend/` folder:
+
+```bash
+npm run env:setup     # creates backend/.env from .env.example with random secrets
+npm run prisma:migrate
+```
+
+If your database is not on `localhost:3306`, edit `DATABASE_URL` in `backend/.env` first, or export it in the shell/Docker/PM2 environment (a value already in the environment always wins).
+
+`npm run dev`, `npm start` and every `prisma:*` / seed script now run that check automatically, so the file is created on first use. Typing `npx prisma ...` by hand skips the check, so run `npm run env:setup` once before that.
+
+The API also validates the same variables at boot and prints the exact ones that are missing instead of an opaque Zod error.
 
 </details>
 

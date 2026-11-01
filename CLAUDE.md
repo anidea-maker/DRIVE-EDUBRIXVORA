@@ -18,6 +18,7 @@ Other scripts that `AGENTS.md` doesn't list:
 - `cd backend && npm run start:deploy`: `prisma migrate deploy`, then start. For production, never use `migrate reset` there.
 - `cd backend && npm run test:s3` / `npm run test:api-upload`: manual smoke scripts in `backend/src/scripts/`.
 - `setup.sh` / `setup.ps1`: create `backend/.env` and `frontend/.env` with random secrets, run `npm install`, and generate the Prisma client.
+- `cd backend && npm run env:setup` (`node scripts/ensure-env.mjs`): creates `backend/.env` from `backend/.env.example` when it is missing, or appends only the missing keys to an incomplete one. Every `dev`, `start`, `prisma:*`, and seed script runs it first, so Prisma never hits `P1012 Environment variable not found: DATABASE_URL`. If `DATABASE_URL` is already exported (Docker, PM2, PaaS), it writes nothing. Manual `npx prisma ...` calls skip it, so run `npm run env:setup` once first.
 - On Windows, if `prisma generate` fails because a file is locked, stop the running dev servers first.
 
 ## Architecture beyond AGENTS.md

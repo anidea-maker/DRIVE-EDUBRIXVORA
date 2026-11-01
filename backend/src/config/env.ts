@@ -1,7 +1,7 @@
-import dotenv from 'dotenv'
 import { z } from 'zod'
+import { loadEnvFiles } from './load-env.js'
 
-dotenv.config()
+loadEnvFiles()
 
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
@@ -15,4 +15,34 @@ const envSchema = z.object({
   RECAPTCHA_SECRET_KEY: z.string().optional(),
 })
 
-export const env = envSchema.parse(process.env)
+const parsed = envSchema.safeParse(process.env)
+
+if (!parsed.success) {
+  const problems = parsed.error.issues.map((issue) => {
+    const key = issue.path.join('.') || '(env)'
+    const rawValue = process.env[key]
+    if (rawValue === undefined || rawValue.trim() === '') {
+      return `  - ${key} is missing`
+    }
+    return `  - ${key} is invalid: ${issue.message}`
+  })
+
+  console.error(
+    [
+      '',
+      'Backend environment is not configured, so the server cannot start.',
+      ...problems,
+      '',
+      'Fix it with one of these:',
+      '  cd backend && npm run env:setup      # creates backend/.env with defaults + random secrets',
+      '  cp backend/.env.example backend/.env # then edit the values by hand',
+      '',
+      'DATABASE_URL must be a MySQL connection string, e.g.',
+      '  DATABASE_URL="mysql://root@localhost:3306/9drive"',
+      '',
+    ].join('\n'),
+  )
+  process.exit(1)
+}
+
+export const env = parsed.data
