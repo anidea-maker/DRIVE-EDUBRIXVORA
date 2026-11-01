@@ -18,9 +18,10 @@ FROM nginx:1.27-alpine
 # Rendered into /etc/nginx/conf.d/default.conf by the image entrypoint, so the
 # container can adapt to the platform through plain environment variables:
 #   PORT=10000 API_UPSTREAM=https://api.example.com
+# RESOLVER defaults to public DNS (see docker-entrypoint.sh); docker compose sets
+# 127.0.0.11 there because that DNS only exists inside a compose network.
 ENV PORT=80 \
-    API_UPSTREAM=http://backend:4000 \
-    RESOLVER="127.0.0.11 8.8.8.8 1.1.1.1"
+    API_UPSTREAM=http://backend:4000
 
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY docker-entrypoint.sh /usr/local/bin/normalize-and-start.sh

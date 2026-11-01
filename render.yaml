@@ -1,15 +1,17 @@
-# Render blueprint (https://render.com/docs/blueprint-spec) for two Docker
-# services: the Express API and the nginx-served frontend.
+# Render blueprint (https://render.com/docs/blueprint-spec): two Docker services.
 #
-# Only the values marked `sync: false` need to be typed into the dashboard once:
-#   DATABASE_URL     mysql://avnadmin:PASSWORD@HOST:PORT/defaultdb
-#   DATABASE_CA_CERT the Aiven ca.pem content (PEM, base64, or a path)
-#   FRONTEND_URL     https://<frontend-service>.onrender.com
-#   API_UPSTREAM     https://<backend-service>.onrender.com  (frontend service)
+# The services are wired to each other automatically through `fromService`, so
+# the frontend can never be pointed at its own URL by mistake:
+#   frontend API_UPSTREAM  <- backend  host
+#   backend  FRONTEND_URL  <- frontend host
 #
-# Secrets generated here (JWT_ACCESS_SECRET, TOKEN_ENCRYPTION_KEY) must be kept
-# stable - regenerating TOKEN_ENCRYPTION_KEY makes stored Google/S3 credentials
-# unreadable. Render injects PORT itself; the app prefers it over APP_PORT.
+# Still to fill in the dashboard (`sync: false`):
+#   DATABASE_URL       mysql://avnadmin:PASSWORD@HOST:PORT/defaultdb   (Aiven)
+#   DATABASE_CA_CERT   contents of ca.pem (PEM, base64, or a path)
+#
+# JWT_ACCESS_SECRET / TOKEN_ENCRYPTION_KEY are generated once by Render. Keep
+# TOKEN_ENCRYPTION_KEY stable: changing it makes stored Google/S3 credentials
+# unreadable. Render injects PORT itself and the app prefers it over APP_PORT.
 services:
   - type: web
     name: 9drive-backend
@@ -28,8 +30,12 @@ services:
         generateValue: true
       - key: TOKEN_ENCRYPTION_KEY
         generateValue: true
+      # CORS origin. A bare host is accepted and upgraded to https://.
       - key: FRONTEND_URL
-        sync: false
+        fromService:
+          type: web
+          name: 9drive-frontend
+          property: host
       - key: MAX_UPLOAD_BYTES
         value: "5368709120"
       - key: ACCESS_TOKEN_TTL_SECONDS
@@ -50,6 +56,10 @@ services:
     dockerfilePath: ./frontend/Dockerfile
     healthCheckPath: /healthz
     envVars:
-      # The browser calls /api on the frontend origin; nginx forwards it here.
+      # The browser calls /api on the frontend origin; nginx forwards it to the
+      # backend. Bare host from Render is upgraded to https:// by the entrypoint.
       - key: API_UPSTREAM
-        sync: false
+        fromService:
+          type: web
+          name: 9drive-backend
+          property: host

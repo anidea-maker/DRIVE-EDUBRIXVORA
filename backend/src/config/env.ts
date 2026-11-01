@@ -3,13 +3,26 @@ import { loadEnvFiles } from './load-env.js'
 
 loadEnvFiles()
 
+/**
+ * Accepts "https://app.example.com", "app.example.com" or "app.example.com/".
+ * CORS needs a precise origin, and platforms hand out bare hostnames.
+ */
+function normalizeOrigin(value: string): string {
+  const trimmed = value.trim().replace(/\/+$/, '')
+  if (!trimmed) return trimmed
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) return trimmed
+  const isLocal = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(trimmed)
+  return `${isLocal ? 'http' : 'https'}://${trimmed}`
+}
+
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   // Platforms such as Render, Railway, Cloud Run and Heroku inject PORT and
   // health-check that exact port, so it takes precedence over APP_PORT.
   PORT: z.coerce.number().optional(),
   APP_PORT: z.coerce.number().default(4000),
-  FRONTEND_URL: z.string().url(),
+  // A bare host (as injected by platform blueprints) is upgraded to an origin.
+  FRONTEND_URL: z.string().min(1).transform(normalizeOrigin).pipe(z.string().url()),
   JWT_ACCESS_SECRET: z.string().min(32),
   TOKEN_ENCRYPTION_KEY: z.string().min(32),
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().default(900),
