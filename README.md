@@ -317,6 +317,25 @@ The backend runs `prisma migrate deploy` on boot, so the schema is created autom
 
 </details>
 
+## Deploying to Render (or any container host)
+
+The repo ships two images. They talk to each other through a **runtime** proxy, so nothing has to be rebuilt when a URL changes.
+
+| Service | Root | Port | Health check | Env vars that matter |
+| --- | --- | --- | --- | --- |
+| `backend` | `./backend` | `$PORT` (fallback `4000`) | `/health` | `DATABASE_URL`, `DATABASE_CA_CERT`, `JWT_ACCESS_SECRET`, `TOKEN_ENCRYPTION_KEY`, `FRONTEND_URL` |
+| `frontend` | `./frontend` | `$PORT` (fallback `80`) | `/healthz` | `API_UPSTREAM` = the backend's public URL |
+
+Notes:
+
+- **`PORT` is respected everywhere.** Render injects `PORT=10000`; the API uses it in preference to `APP_PORT`, and nginx listens on it (the config is rendered from `frontend/nginx.conf.template` at container start).
+- **`API_UPSTREAM`** takes a full URL (`https://9drive-backend.onrender.com`) or a bare host (`9drive-backend.onrender.com`); the entrypoint adds `http://` when the scheme is missing. A trailing slash is stripped.
+- **No `backend` DNS dependency.** The upstream is resolved per request, so the frontend starts even when the API is down or not deployed yet (that used to fail with `host not found in upstream "backend"`).
+- The frontend calls `/api/*` on its own origin and nginx forwards it to `API_UPSTREAM`, stripping the `/api` prefix. If you prefer the browser to call the API directly, build with `--build-arg VITE_API_URL=https://api.example.com` instead and leave `API_UPSTREAM` unset.
+- **`FRONTEND_URL` must match the frontend's public origin exactly** (scheme + host, no trailing slash), because CORS only allows that origin.
+- The backend applies pending migrations on boot (`prisma migrate deploy`), so the Aiven database is created/updated automatically on the first deploy.
+- `render.yaml` in the repo root declares both services; `sync: false` values are the ones to paste in the dashboard.
+
 ## Deploying to a server
 
 <details>

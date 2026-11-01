@@ -5,6 +5,9 @@ loadEnvFiles()
 
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
+  // Platforms such as Render, Railway, Cloud Run and Heroku inject PORT and
+  // health-check that exact port, so it takes precedence over APP_PORT.
+  PORT: z.coerce.number().optional(),
   APP_PORT: z.coerce.number().default(4000),
   FRONTEND_URL: z.string().url(),
   JWT_ACCESS_SECRET: z.string().min(32),
@@ -78,4 +81,7 @@ if (databaseParams.has('ssl-mode') || databaseParams.has('sslmode')) {
   )
 }
 
-export const env = parsed.data
+export const env = {
+  ...parsed.data,
+  APP_PORT: parsed.data.PORT ?? parsed.data.APP_PORT,
+}
