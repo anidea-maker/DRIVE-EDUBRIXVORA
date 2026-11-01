@@ -332,6 +332,7 @@ Notes:
 - **`API_UPSTREAM`** takes a full URL (`https://9drive-backend.onrender.com`) or a bare host (`9drive-backend.onrender.com`); the entrypoint adds `http://` when the scheme is missing. A trailing slash is stripped.
 - **No `backend` DNS dependency.** The upstream is resolved per request, so the frontend starts even when the API is down or not deployed yet (that used to fail with `host not found in upstream "backend"`).
 - The frontend calls `/api/*` on its own origin and nginx forwards it to `API_UPSTREAM`, stripping the `/api` prefix. If you prefer the browser to call the API directly, build with `--build-arg VITE_API_URL=https://api.example.com` instead and leave `API_UPSTREAM` unset.
+- A build-time `VITE_API_URL` that points at the frontend's own origin is ignored on purpose (it would make every request hit the SPA and return HTML); the app logs a warning and uses `/api` instead.
 - **`FRONTEND_URL` must match the frontend's public origin exactly** (scheme + host, no trailing slash), because CORS only allows that origin.
 - The backend applies pending migrations on boot (`prisma migrate deploy`), so the Aiven database is created/updated automatically on the first deploy.
 - `render.yaml` in the repo root declares both services and wires them together (`frontend.API_UPSTREAM <- backend.host`, `backend.FRONTEND_URL <- frontend.host`), so a self-reference is impossible. Only `DATABASE_URL` and `DATABASE_CA_CERT` need typing in.
@@ -341,6 +342,7 @@ Notes:
 
 | Symptom | Cause / fix |
 | --- | --- |
+| `Unexpected token '<', "<!doctype "... is not valid JSON` | The API call got `index.html` back, so it never reached the API. Usually `VITE_API_URL` is set to the frontend's own URL. Builds now ignore a same-origin `VITE_API_URL` and fall back to `/api`, but delete the variable anyway (it is baked in at build time) and set `API_UPSTREAM` on the frontend service. The error message now names the URL and the fix. |
 | `405 Not Allowed` on `POST /api/auth/register`, and the frontend log shows a request to `POST /auth/register` arriving with a nested `X-Forwarded-For` | `API_UPSTREAM` points at the **frontend** service itself, so nginx proxies `/api/x` back to `/x` on the static site. Set it to the backend URL. The entrypoint now logs `ERROR: API_UPSTREAM=… points at this service itself` and `/api` answers `502` with a readable JSON message instead of a loop. |
 | `502` with `{"code":"API_UNREACHABLE", …}` | The backend service is not running, is still booting, or `API_UPSTREAM` is wrong/unset (default `http://backend:4000` only exists in docker-compose). Open `<API_UPSTREAM>/health` — it must return `{"status":"ok"}`. |
 | Register returns `500` / the backend log shows Prisma errors | Database not reachable or schema missing: check `DATABASE_URL` + `DATABASE_CA_CERT` on the backend, then read the boot log for `prisma migrate deploy` output. |
