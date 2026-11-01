@@ -312,7 +312,14 @@ export function SettingsPage() {
   useEffect(() => {
     function onMessage(event: MessageEvent) {
       if (event.origin !== window.location.origin || event.data?.type !== 'GOOGLE_CONNECTED') return
-      setMessage(event.data.status === 'success' ? 'Google Drive connected.' : 'Google Drive connection failed.')
+      const { status, reason, quota } = event.data as { status?: string; reason?: string; quota?: string }
+      if (status === 'success') {
+        setMessage(quota === 'failed'
+          ? `Google Drive connected, but the storage quota could not be read (${reason ?? 'unknown reason'}). Use Sync once the Drive API is reachable.`
+          : 'Google Drive connected.')
+      } else {
+        setMessage(reason ? `Google Drive connection failed: ${reason}.` : 'Google Drive connection failed.')
+      }
       load().then(() => {
         window.dispatchEvent(new Event('9drive:storage-changed'))
       }).catch(() => undefined)

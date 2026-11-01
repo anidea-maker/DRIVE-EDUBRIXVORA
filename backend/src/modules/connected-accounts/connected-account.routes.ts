@@ -197,6 +197,47 @@ connectedAccountRouter.post('/s3', requireAuth, async (req: AuthRequest, res, ne
   }
 })
 
+/**
+ * Turns a failure from Google (or from the quota read) into a short code the
+ * frontend can explain. The previous catch-all redirected with `status=error`
+ * and nothing else, so a disabled Drive API looked identical to a broken build.
+ */
+type ConnectFailure = 'STATE_EXPIRED' | 'DRIVE_API_DISABLED' | 'PERMISSION_DENIED' | 'INVALID_GRANT' | 'TOKEN_EXCHANGE_FAILED' | 'QUOTA_SYNC' | 'UNKNOWN'
+
+function classifyGoogleError(error: unknown): ConnectFailure {
+  const err = error as {
+    code?: number
+    status?: number
+    message?: string
+    errors?: Array<{ reason?: string; message?: string }>
+    response?: { data?: { error?: { status?: string; message?: string; errors?: Array<{ reason?: string }> } } }
+  } | null
+
+  const status = err?.code ?? err?.status ?? err?.response?.data?.error?.status
+  const reasons = [
+    ...(err?.errors?.map((e) => e.reason) ?? []),
+    ...(err?.response?.data?.error?.errors?.map((e) => e.reason) ?? []),
+    err?.response?.data?.error?.status,
+    err?.message,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+
+  if (/has not been used|is disabled|accessnotconfigured|service_disabled|drive api/.test(reasons)) return 'DRIVE_API_DISABLED'
+  if (/insufficient|permission|forbidden/.test(reasons) || status === 403) return 'PERMISSION_DENIED'
+  if (/invalid_grant|revoked|expired/.test(reasons)) return 'INVALID_GRANT'
+  if (/invalid_scope|invalid_request|redirect_uri_mismatch/.test(reasons)) return 'TOKEN_EXCHANGE_FAILED'
+  return 'UNKNOWN'
+}
+
+/** Human-readable one-liner for the server log. */
+function describeGoogleError(error: unknown): string {
+  const err = error as { code?: number; message?: string; errors?: Array<{ reason?: string }> } | null
+  const reason = err?.errors?.map((e) => e.reason).filter(Boolean).join(', ')
+  return [err?.code, reason, err?.message].filter(Boolean).join(' | ') || String(error)
+}
+
 connectedAccountRouter.get('/google/connect-url', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const url = await createGoogleConnectUrl(req)
@@ -230,20 +271,50 @@ connectedAccountRouter.get('/google/connect', requireAuth, async (req: AuthReque
 })
 
 connectedAccountRouter.get('/google/callback', async (req, res, next) => {
+  const fail = (reason: ConnectFailure) => res.redirect(`${env.FRONTEND_URL}/google-connected?status=error&reason=${reason}`)
+
   try {
     const query = z.object({ code: z.string(), state: z.string() }).parse(req.query)
-    const oauthState = await prisma.oauthState.findUniqueOrThrow({ where: { stateHash: hashToken(query.state) }, include: { providerConfig: true } })
-    if (oauthState.usedAt || oauthState.expiresAt < new Date()) return res.status(400).json({ code: 'GOOGLE_OAUTH_STATE_INVALID', message: 'OAuth state expired.' })
+    const oauthState = await prisma.oauthState.findUnique({ where: { stateHash: hashToken(query.state) }, include: { providerConfig: true } })
+    if (!oauthState) {
+      console.error('[google-callback] unknown OAuth state - the link was reused, or the config changed between attempts')
+      return fail('STATE_EXPIRED')
+    }
+    if (oauthState.usedAt || oauthState.expiresAt < new Date()) {
+      console.error('[google-callback] OAuth state already used or expired', { usedAt: oauthState.usedAt, expiresAt: oauthState.expiresAt })
+      return fail('STATE_EXPIRED')
+    }
+
     const client = createOAuthClient(oauthState.providerConfig)
-    const tokenResult = await client.getToken(query.code)
-    const tokens = tokenResult.tokens
-    if (!tokens.access_token) return res.status(400).json({ code: 'GOOGLE_OAUTH_FAILED', message: 'Google did not return required tokens.' })
+
+    let tokens: { access_token?: string | null; refresh_token?: string | null; expiry_date?: number | null }
+    try {
+      tokens = (await client.getToken(query.code)).tokens
+    } catch (error) {
+      const reason = classifyGoogleError(error)
+      console.error('[google-callback] token exchange failed:', describeGoogleError(error))
+      return fail(reason === 'UNKNOWN' ? 'TOKEN_EXCHANGE_FAILED' : reason)
+    }
+    if (!tokens.access_token) {
+      console.error('[google-callback] Google returned no access token')
+      return fail('TOKEN_EXCHANGE_FAILED')
+    }
     client.setCredentials(tokens)
-    const oauth2 = google.oauth2({ version: 'v2', auth: client })
-    const profile = await oauth2.userinfo.get()
+
+    let profile
+    try {
+      const oauth2 = google.oauth2({ version: 'v2', auth: client })
+      profile = await oauth2.userinfo.get()
+    } catch (error) {
+      console.error('[google-callback] userinfo failed:', describeGoogleError(error))
+      return fail(classifyGoogleError(error))
+    }
     const providerAccountId = profile.data.id
     const email = profile.data.email
-    if (!providerAccountId || !email) return res.status(400).json({ code: 'GOOGLE_PROFILE_FAILED', message: 'Google profile missing id or email.' })
+    if (!providerAccountId || !email) {
+      console.error('[google-callback] Google profile is missing id or email')
+      return fail('UNKNOWN')
+    }
 
     if (oauthState.flow === 'login') {
       const name = profile.data.name || email.split('@')[0] || 'Google User'
@@ -256,7 +327,7 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
       const refreshTokenEncrypted = tokens.refresh_token ? encryptText(tokens.refresh_token) : existingAccount?.refreshTokenEncrypted
       if (!refreshTokenEncrypted) {
         console.error('Google login failed: no refresh token received and no existing account. Has refresh_token:', !!tokens.refresh_token)
-        return res.redirect(`${env.FRONTEND_URL}/google-auth?status=error`)
+        return res.redirect(`${env.FRONTEND_URL}/google-auth?status=error&reason=INVALID_GRANT`)
       }
       const account = await prisma.connectedAccount.upsert({
         where: { userId_provider_providerAccountId: { userId: user.id, provider: 'google_drive', providerAccountId } },
@@ -293,10 +364,17 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
       return res.redirect(`${env.FRONTEND_URL}/google-auth?token=${handoffToken}`)
     }
 
-    if (oauthState.flow !== 'connect' || !oauthState.userId) return res.status(400).json({ code: 'GOOGLE_OAUTH_STATE_INVALID', message: 'OAuth state expired.' })
+    if (oauthState.flow !== 'connect' || !oauthState.userId) {
+      console.error('[google-callback] state is not a connect flow', { flow: oauthState.flow, userId: oauthState.userId })
+      return fail('STATE_EXPIRED')
+    }
+
     const existingAccount = await prisma.connectedAccount.findUnique({ where: { userId_provider_providerAccountId: { userId: oauthState.userId, provider: 'google_drive', providerAccountId } } })
     const refreshTokenEncrypted = tokens.refresh_token ? encryptText(tokens.refresh_token) : existingAccount?.refreshTokenEncrypted
-    if (!refreshTokenEncrypted) return res.status(400).json({ code: 'GOOGLE_OAUTH_FAILED', message: 'Google did not return required tokens.' })
+    if (!refreshTokenEncrypted) {
+      console.error('[google-callback] Google returned no refresh token and there is no stored one - consent was not given offline access')
+      return fail('INVALID_GRANT')
+    }
 
     const account = await prisma.connectedAccount.upsert({
       where: { userId_provider_providerAccountId: { userId: oauthState.userId, provider: 'google_drive', providerAccountId } },
@@ -327,11 +405,24 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
       },
     })
     await prisma.oauthState.update({ where: { id: oauthState.id }, data: { usedAt: new Date() } })
-    await syncGoogleQuota(account.id)
-    return res.redirect(`${env.FRONTEND_URL}/google-connected?status=success`)
+
+    // The account is connected at this point. A failing quota read (Drive API not
+    // enabled, transient 5xx, rate limit) must not turn a success into an error
+    // screen - it only means the storage numbers are missing until the next sync.
+    let quotaReason: ConnectFailure | null = null
+    try {
+      await syncGoogleQuota(account.id)
+    } catch (error) {
+      quotaReason = classifyGoogleError(error)
+      console.error(`[google-callback] account ${account.id} connected, but the quota sync failed (${quotaReason}):`, describeGoogleError(error))
+    }
+
+    const params = new URLSearchParams({ status: 'success', quota: quotaReason ? 'failed' : 'ok' })
+    if (quotaReason) params.set('reason', quotaReason)
+    return res.redirect(`${env.FRONTEND_URL}/google-connected?${params.toString()}`)
   } catch (error) {
-    console.error('Google OAuth callback failed:', error)
-    return res.redirect(`${env.FRONTEND_URL}/google-connected?status=error`)
+    console.error('Google OAuth callback failed:', describeGoogleError(error))
+    return fail(classifyGoogleError(error))
   }
 })
 
