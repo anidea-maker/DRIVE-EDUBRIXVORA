@@ -43,6 +43,7 @@ Important files:
 - `backend/src/config/prisma.ts`: Prisma client.
 - `backend/prisma/schema.prisma`: database schema.
 - `backend/.env.example`: environment template (copy to `backend/.env`).
+- `frontend/scripts/check-nginx.mjs` (`npm run check:nginx`, part of `npm run build`): validates the nginx template for every deployment shape without needing nginx.
 - `frontend/nginx.conf.template`: runtime-rendered nginx config (env vars `PORT`, `API_UPSTREAM`, `RESOLVER`); the backend honors a platform `PORT` too.
 - `docker-compose.external-db.yml`: compose override that points the backend at a hosted MySQL instead of the bundled container.
 - `backend/src/middleware/auth.middleware.ts`: bearer auth.

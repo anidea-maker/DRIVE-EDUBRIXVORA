@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview"
+    "build": "tsc && vite build && node scripts/check-nginx.mjs",
+    "preview": "vite preview",
+    "check:nginx": "node scripts/check-nginx.mjs"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.0",
