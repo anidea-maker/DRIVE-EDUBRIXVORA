@@ -69,7 +69,6 @@ Environment:
 - `JWT_ACCESS_SECRET`
 - `TOKEN_ENCRYPTION_KEY`
 - `DATABASE_CA_CERT` (optional; provider CA as PEM/base64/path, materialized to `backend/prisma/certs/db-ca.pem`)
-- `RECAPTCHA_SECRET_KEY` (optional; enables captcha verification when paired with frontend site key)
 - `ACCESS_TOKEN_TTL_SECONDS`
 - `REFRESH_TOKEN_TTL_DAYS`
 - `MAX_UPLOAD_BYTES`
@@ -90,7 +89,6 @@ Backend conventions:
 - Keep Google-specific OAuth/Drive behavior in provider modules/services when possible.
 - Keep public-token routes outside `requireAuth`; verify token hash, status, and expiry before streaming/returning data.
 - Google sign-in/register uses one-time auth handoff tokens; never send app access/refresh tokens through URL query params.
-- Email/password registration verifies reCAPTCHA only when `RECAPTCHA_SECRET_KEY` is configured.
 
 Security rules:
 - Never commit `.env` files or secrets.
@@ -146,7 +144,6 @@ Commands:
 
 Environment:
 - `VITE_API_URL`: backend base URL. Vite embeds this at build time.
-- `VITE_RECAPTCHA_SITE_KEY`: optional reCAPTCHA site key. Vite embeds this at build time; blank disables captcha UI.
 
 Frontend conventions:
 - Use `@/*` imports for files under `frontend/src`.

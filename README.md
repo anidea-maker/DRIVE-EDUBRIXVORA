@@ -93,7 +93,7 @@ Try the live preview at **[9drive.zenhosta.com](https://9drive.zenhosta.com)**.
 - In-app API docs with cURL and JavaScript examples.
 
 **Accounts and admin**
-- Email/password sign-up (optional reCAPTCHA) or **Continue with Google**, which connects your first Drive automatically.
+- Email/password sign-up or **Continue with Google**, which connects your first Drive automatically.
 - Google OAuth credentials can be set in **Settings**. No `.env` editing needed.
 - Backup/restore and one-click updates from Settings (for PM2 setups).
 
@@ -188,7 +188,6 @@ TOKEN_ENCRYPTION_KEY="change-this-encryption-key-32bytes!"
 ACCESS_TOKEN_TTL_SECONDS=900
 REFRESH_TOKEN_TTL_DAYS=30
 MAX_UPLOAD_BYTES=5368709120
-RECAPTCHA_SECRET_KEY=""
 
 # Only read by `npm run seed:google-config`, which stores them encrypted in the database.
 GOOGLE_CLIENT_ID=""
@@ -200,7 +199,6 @@ Create `frontend/.env`:
 
 ```env
 VITE_API_URL=http://localhost:4000
-VITE_RECAPTCHA_SITE_KEY=
 ```
 
 Then run `npm run prisma:migrate` in `backend/` and start both dev servers as shown above.
@@ -262,7 +260,6 @@ Either way, the credentials are encrypted and stored in MySQL as one global conf
 | `ACCESS_TOKEN_TTL_SECONDS` | Access token lifetime (default `900`). |
 | `REFRESH_TOKEN_TTL_DAYS` | Refresh token lifetime (default `30`). |
 | `MAX_UPLOAD_BYTES` | Largest allowed upload (default 5 GB). |
-| `RECAPTCHA_SECRET_KEY` | Optional. Turns on captcha for sign-up, together with the frontend site key. |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` | Only read by the seed command. The app reads the encrypted copy from the database. |
 
 </details>
@@ -273,9 +270,6 @@ Either way, the credentials are encrypted and stored in MySQL as one global conf
 | Variable | What it does |
 | --- | --- |
 | `VITE_API_URL` | Backend URL. Vite bakes it in at build time, so **rebuild the frontend after changing it**. |
-| `VITE_RECAPTCHA_SITE_KEY` | Optional reCAPTCHA site key. Leave it empty to turn captcha off. Also baked in at build time. |
-
-Captcha only turns on when **both** `VITE_RECAPTCHA_SITE_KEY` and `RECAPTCHA_SECRET_KEY` are set.
 
 </details>
 
@@ -352,7 +346,7 @@ The backend runs `prisma migrate deploy` on boot, so the schema is created autom
 Production tips:
 - Put the frontend and backend behind an HTTPS reverse proxy.
 - Don't expose the MySQL port to the internet.
-- Rebuild the frontend whenever `VITE_API_URL` or `VITE_RECAPTCHA_SITE_KEY` changes.
+- Rebuild the frontend whenever `VITE_API_URL` changes (it is baked in at build time).
 - Publish the OAuth consent screen when you're ready. Google may ask to verify public apps.
 
 </details>
@@ -501,7 +495,7 @@ Vite bakes `VITE_API_URL` into the build. Rebuild the frontend, or with Docker r
 - Uploads stream through the backend straight to Google Drive or S3. **Nothing is stored on the server's disk.**
 - Google tokens and S3 credentials are encrypted in MySQL. App refresh tokens, API keys, preview tokens, and auth-handoff tokens are stored only as hashes.
 - CORS only allows `FRONTEND_URL`.
-- Never commit `.env` files or share `TOKEN_ENCRYPTION_KEY`, `JWT_ACCESS_SECRET`, `RECAPTCHA_SECRET_KEY`, OAuth client secrets, or raw share links you want to keep private.
+- Never commit `.env` files or share `TOKEN_ENCRYPTION_KEY`, `JWT_ACCESS_SECRET`, OAuth client secrets, or raw share links you want to keep private.
 
 ## Project structure
 
