@@ -9,7 +9,6 @@ import {
   LogOut,
   Menu,
   Moon,
-  MoreVertical,
   Search,
   Settings,
   Share2,
@@ -26,12 +25,12 @@ import {
   Upload
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { AccountMenu } from '@/components/drive/AccountMenu'
 import { BrandLogo } from '@/components/drive/BrandLogo'
 import { Input } from '@/components/ui/input'
 import { API_URL, apiFetch, formatBytes } from '@/lib/api'
 import { useUpload } from '@/context/UploadContext'
 import { clearAuthSession, getAccessToken, getStoredUser, updateStoredUser, type AuthUser } from '@/lib/auth'
-import { getGravatarUrl } from '@/lib/gravatar'
 import { cn } from '@/lib/utils'
 
 const menu = [
@@ -111,20 +110,12 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
   const used = Number(storage?.usedBytes ?? 0)
   const total = Number(storage?.totalBytes ?? 0)
   const progress = total > 0 ? Math.min(100, (used / total) * 100) : 0
-  const [profileImageUrl, setProfileImageUrl] = useState('')
-  const [avatarError, setAvatarError] = useState(false)
-  const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const items = [
     ['Photo', formatBytes(breakdown.photo), 'bg-lime-500'],
     ['Video', formatBytes(breakdown.video), 'bg-yellow-400'],
     ['Document', formatBytes(breakdown.document), 'bg-cyan-400'],
     ['Free Storage', formatBytes(storage?.availableBytes), 'bg-orange-500'],
   ]
-
-  useEffect(() => {
-    setAvatarError(false)
-    getGravatarUrl(user?.email, 64).then(setProfileImageUrl).catch(() => setProfileImageUrl(''))
-  }, [user?.email])
 
   return (
     <aside className="flex h-full w-64 flex-col border-slate-200/60 bg-slate-50/40 backdrop-blur-xl lg:border-r">
@@ -136,55 +127,8 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
         <span className="text-xl font-extrabold tracking-tight bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">9Drive</span>
       </div>
 
-      <div className="relative flex items-center gap-2.5 border-y border-slate-200/60 py-3 my-3">
-        {!profileImageUrl || avatarError ? (
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 text-xs font-bold text-white shadow-sm border border-blue-400/20">
-            {(user?.name ?? user?.email ?? 'U').trim().charAt(0).toUpperCase()}
-          </div>
-        ) : (
-          <img
-            src={profileImageUrl}
-            alt="User avatar"
-            className="h-8 w-8 rounded-full border border-slate-200 object-cover"
-            onError={() => setAvatarError(true)}
-          />
-        )}
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-[15px] font-bold text-slate-900 leading-none">{user?.name ?? 'User'}</p>
-          <p className="truncate text-xs text-slate-500 mt-1">{user?.email ?? 'Loading...'}</p>
-        </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8 shrink-0 text-slate-400"
-          aria-label="Account menu"
-          aria-expanded={accountMenuOpen}
-          onClick={() => setAccountMenuOpen((open) => !open)}
-        >
-          <MoreVertical className="h-4 w-4" />
-        </Button>
-
-        {accountMenuOpen ? (
-          <>
-            <div className="fixed inset-0 z-40" aria-hidden onClick={() => setAccountMenuOpen(false)} />
-            <div className="absolute right-0 top-full z-50 mt-1 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-xl">
-              <NavLink
-                to="/settings"
-                onClick={() => { setAccountMenuOpen(false); onNavigate?.() }}
-                className="flex items-center gap-2 px-3 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-100"
-              >
-                <Settings className="h-4 w-4" /> Settings
-              </NavLink>
-              <button
-                type="button"
-                onClick={() => { setAccountMenuOpen(false); onLogout() }}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] font-semibold text-red-600 hover:bg-red-50"
-              >
-                <LogOut className="h-4 w-4" /> Log out
-              </button>
-            </div>
-          </>
-        ) : null}
+      <div className="border-y border-slate-200/60 py-2 my-3">
+        <AccountMenu user={user} onLogout={onLogout} onNavigate={onNavigate} />
       </div>
 
       <nav className="grid gap-1">
@@ -549,9 +493,13 @@ export function DriveLayout() {
                 {headerActions}
               </div>
             ) : null}
-             <div className="relative hidden flex-wrap gap-2 lg:flex shrink-0">
+             <div className="relative hidden flex-wrap items-center gap-2 lg:flex shrink-0">
               <Button variant="outline" size="icon" aria-label="Toggle theme" onClick={toggleTheme}>
                 {theme === 'light' ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
+              </Button>
+              {/* Always reachable on desktop, whatever the sidebar is doing. */}
+              <Button variant="outline" size="sm" onClick={logout}>
+                <LogOut className="h-4 w-4" /> Log out
               </Button>
               <Button variant="outline" size="icon" className="relative" aria-label="System info" aria-expanded={infoOpen} onClick={() => setInfoOpen(!infoOpen)}>
                 <Bell className="h-5 w-5" />
