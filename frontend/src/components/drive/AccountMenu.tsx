@@ -82,8 +82,8 @@ export function AccountMenu({
         onClick={() => setOpen((value) => !value)}
         className={cn(
           'flex w-full cursor-pointer items-center gap-2.5 rounded-xl border border-transparent px-1.5 py-2 text-left transition-colors',
-          'hover:bg-slate-200/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-          open && 'bg-slate-200/60',
+          'hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+          open && 'bg-slate-100',
         )}
       >
         {!profileImageUrl || avatarError ? (
@@ -109,7 +109,10 @@ export function AccountMenu({
         <div
           role="menu"
           aria-label="Account"
-          className="absolute left-0 right-0 top-full z-[60] mt-1 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-xl"
+          // `bg-white` is forced transparent by the global stylesheet
+          // (`div.bg-white:not(button)`), which made the menu open invisibly. Use the
+          // themed card surface so it is opaque in both light and dark mode.
+          className="absolute left-0 right-0 top-full z-[60] mt-1 overflow-hidden rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] py-1 shadow-xl backdrop-blur-xl"
         >
           <NavLink
             to="/settings"
@@ -118,7 +121,7 @@ export function AccountMenu({
               close()
               onNavigate?.()
             }}
-            className="flex items-center gap-2 px-3 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-100"
+            className="flex items-center gap-2 px-3 py-2 text-[13px] font-semibold text-slate-600 hover:bg-slate-100"
           >
             <Settings className="h-4 w-4" /> Settings
           </NavLink>
