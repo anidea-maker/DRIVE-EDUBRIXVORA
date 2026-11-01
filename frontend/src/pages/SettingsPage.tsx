@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { DummyModal } from '@/components/drive/DummyModal'
 import { PageHeader } from '@/components/drive/PageHeader'
-import { apiFetch, formatBytes, API_URL } from '@/lib/api'
+import { apiFetch, formatBytes, API_URL, safeJson } from '@/lib/api'
 import { getGravatarUrl } from '@/lib/gravatar'
 import { getStoredUser, getAccessToken, clearAuthSession } from '@/lib/auth'
 
@@ -126,13 +126,13 @@ export function SettingsPage() {
         body: formData
       })
 
-      const data = await response.json()
+      const data = (await safeJson(response)) as { message?: string }
       if (!response.ok) {
-        throw new Error(data.message || 'Failed to restore database.')
+        throw new Error(data?.message || 'Failed to restore database.')
       }
 
       setRestoreSuccess(true)
-      setRestoreMessage(data.message || 'Database restored successfully! Logging you out and reloading...')
+      setRestoreMessage(data?.message || 'Database restored successfully! Logging you out and reloading...')
 
       setTimeout(() => {
         clearAuthSession()

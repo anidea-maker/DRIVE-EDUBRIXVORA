@@ -56,9 +56,41 @@ authRouter.post('/login', async (req, res, next) => {
   }
 })
 
+/**
+ * Is Google sign-in usable right now? Public (no auth): the login/register pages
+ * ask this so they can explain what is missing instead of bouncing the user to a
+ * provider that was never configured. No secrets are exposed.
+ */
+authRouter.get('/google/status', async (_req, res, next) => {
+  try {
+    const config = await prisma.providerConfig.findFirst({
+      where: { userId: null, provider: 'google_drive', status: 'active' },
+      orderBy: { createdAt: 'desc' },
+      select: { redirectUri: true },
+    })
+    return res.json({
+      configured: Boolean(config),
+      redirectUri: config?.redirectUri ?? null,
+      hint: config
+        ? null
+        : 'Add your Google OAuth client ID and secret in Settings -> Google Credentials, or set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET and run `npm run seed:google-config`.',
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 authRouter.get('/google/url', async (_req, res, next) => {
   try {
-    const config = await prisma.providerConfig.findFirstOrThrow({ where: { userId: null, provider: 'google_drive', status: 'active' }, orderBy: { createdAt: 'desc' } })
+    // findFirst (not findFirstOrThrow): a missing config is a setup problem, and it
+    // must not reach the browser as a Prisma stack trace.
+    const config = await prisma.providerConfig.findFirst({ where: { userId: null, provider: 'google_drive', status: 'active' }, orderBy: { createdAt: 'desc' } })
+    if (!config) {
+      return res.status(409).json({
+        code: 'GOOGLE_NOT_CONFIGURED',
+        message: 'Google sign-in is not set up yet. Add your Google OAuth client ID and secret in Settings -> Google Credentials, then try again.',
+      })
+    }
     const state = randomToken()
     await prisma.oauthState.create({ data: { providerConfigId: config.id, flow: 'login', stateHash: hashToken(state), expiresAt: new Date(Date.now() + 10 * 60_000) } })
     const client = createOAuthClient(config)
@@ -139,7 +171,7 @@ authRouter.get('/google/callback', async (req, res) => {
     await prisma.authHandoff.create({ data: { userId: user.id, tokenHash: hashToken(handoffToken), expiresAt: new Date(Date.now() + 5 * 60_000) } })
     return res.redirect(`${env.FRONTEND_URL}/google-auth?token=${handoffToken}`)
   } catch (error) {
-    console.error('Google Auth callback failed:', error)
+    console.error('Google Auth callback failed:', error instanceof Error ? error.message : error)
     return res.redirect(`${env.FRONTEND_URL}/google-auth?status=error`)
   }
 })

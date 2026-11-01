@@ -6,6 +6,7 @@ import { Card } from '@/components/ui/card'
 import { GoogleLogo } from '@/components/auth/GoogleLogo'
 import { Input } from '@/components/ui/input'
 import { apiFetch } from '@/lib/api'
+import { startGoogleAuth } from '@/lib/google-auth'
 import { setAuthSession, type AuthUser } from '@/lib/auth'
 
 type AuthResponse = { accessToken: string; refreshToken: string; user: AuthUser }
@@ -22,8 +23,7 @@ export function RegisterPage() {
     setGoogleLoading(true)
     setError('')
     try {
-      const data = await apiFetch<{ url: string }>('/auth/google/url', { skipAuth: true })
-      window.location.href = data.url
+      await startGoogleAuth()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Google register failed')
       setGoogleLoading(false)

@@ -34,6 +34,14 @@ async function readJson(response: Response, url: string): Promise<unknown> {
   }
 }
 
+/**
+ * Parses a Response as JSON, with the same HTML-body diagnosis as `readJson`.
+ * Exported for the few call sites that need the raw Response (uploads, backups).
+ */
+export async function safeJson(response: Response): Promise<unknown> {
+  return readJson(response, response.url || '(response)')
+}
+
 async function refreshAccessToken() {
   const refreshToken = getRefreshToken()
   if (!refreshToken) return false

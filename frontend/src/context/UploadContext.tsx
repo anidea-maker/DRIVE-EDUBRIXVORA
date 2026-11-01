@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, type ReactNode } from 'react'
-import { API_URL, apiFetch } from '@/lib/api'
+import { API_URL, apiFetch, safeJson } from '@/lib/api'
 import { getAccessToken } from '@/lib/auth'
 
 export type UploadProgressStatus = 'uploading' | 'done' | 'error' | 'partial'
@@ -85,7 +85,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         throw new Error('Chunk upload failed')
       }
 
-      const resData = await response.json() as { status: string; offset?: string }
+      const resData = (await safeJson(response)) as { status: string; offset?: string }
       if (resData.status === 'completed') {
         onProgress(100)
         break
