@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, type FormEvent } from 'react'
-import { Bell, Cloud, Database, Globe, HardDrive, Link2, RefreshCw, Trash2 } from 'lucide-react'
+import { Bell, Cloud, Database, Globe, HardDrive, Link2, LogOut, RefreshCw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { DummyModal } from '@/components/drive/DummyModal'
@@ -7,6 +7,7 @@ import { PageHeader } from '@/components/drive/PageHeader'
 import { apiFetch, formatBytes, API_URL, safeJson } from '@/lib/api'
 import { getGravatarUrl } from '@/lib/gravatar'
 import { getStoredUser, getAccessToken, clearAuthSession } from '@/lib/auth'
+import { useNavigate } from 'react-router-dom'
 
 type ConnectedAccount = { id: string; provider: string; email: string; displayName?: string | null; status: string; storageAccount?: { totalBytes: string | null; usedBytes: string; availableBytes: string | null; lastSyncedAt: string | null } | null }
 
@@ -26,6 +27,7 @@ function availableLabel(account: ConnectedAccount) {
 }
 
 export function SettingsPage() {
+  const navigate = useNavigate()
   const user = getStoredUser()
   const [accounts, setAccounts] = useState<ConnectedAccount[]>([])
   const [message, setMessage] = useState('')
@@ -259,6 +261,18 @@ export function SettingsPage() {
     }
   }
 
+  /**
+   * Same contract as the sidebar: clear locally and leave at once, revoke the
+   * server session in the background so a slow API cannot trap the user here.
+   */
+  function logout() {
+    const token = getAccessToken()
+    clearAuthSession()
+    navigate('/login', { replace: true })
+    if (!token) return
+    void fetch(`${API_URL}/auth/logout`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }).catch(() => undefined)
+  }
+
   const selectedAccount = accounts.find((account) => account.id === selectedAccountId) ?? accounts[0] ?? null
 
   async function load() {
@@ -377,7 +391,7 @@ export function SettingsPage() {
 
   return (
     <>
-      <PageHeader title="Setting" description="Manage account and connected storage." actions={<><Button variant="outline" size="sm" onClick={() => setS3Open(true)}><Database className="h-4 w-4" />Connect S3</Button><Button size="sm" onClick={connectDrive} disabled={connecting}><Link2 className="h-4 w-4" />{connecting ? 'Connecting...' : 'Connect Drive'}</Button></>} />
+      <PageHeader title="Setting" description="Manage account and connected storage." actions={<><Button variant="outline" size="sm" onClick={() => setS3Open(true)}><Database className="h-4 w-4" />Connect S3</Button><Button size="sm" onClick={connectDrive} disabled={connecting}><Link2 className="h-4 w-4" />{connecting ? 'Connecting...' : 'Connect Drive'}</Button><Button variant="danger" size="sm" onClick={logout}><LogOut className="h-4 w-4" />Log out</Button></>} />
       {message ? <p className="mt-4 rounded-xl bg-blue-50 p-3 text-sm text-blue-700">{message}</p> : null}
       <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_280px]">
         <div className="grid gap-4">

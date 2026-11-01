@@ -28,9 +28,9 @@ import {
 import { Button } from '@/components/ui/button'
 import { BrandLogo } from '@/components/drive/BrandLogo'
 import { Input } from '@/components/ui/input'
-import { apiFetch, formatBytes } from '@/lib/api'
+import { API_URL, apiFetch, formatBytes } from '@/lib/api'
 import { useUpload } from '@/context/UploadContext'
-import { clearAuthSession, getStoredUser, updateStoredUser, type AuthUser } from '@/lib/auth'
+import { clearAuthSession, getAccessToken, getStoredUser, updateStoredUser, type AuthUser } from '@/lib/auth'
 import { getGravatarUrl } from '@/lib/gravatar'
 import { cn } from '@/lib/utils'
 
@@ -113,6 +113,7 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
   const progress = total > 0 ? Math.min(100, (used / total) * 100) : 0
   const [profileImageUrl, setProfileImageUrl] = useState('')
   const [avatarError, setAvatarError] = useState(false)
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const items = [
     ['Photo', formatBytes(breakdown.photo), 'bg-lime-500'],
     ['Video', formatBytes(breakdown.video), 'bg-yellow-400'],
@@ -126,13 +127,16 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
   }, [user?.email])
 
   return (
-    <aside className="flex h-full w-64 flex-col border-slate-200/60 bg-slate-50/40 backdrop-blur-xl p-4 lg:border-r">
+    <aside className="flex h-full w-64 flex-col border-slate-200/60 bg-slate-50/40 backdrop-blur-xl lg:border-r">
+      {/* Scrolls on its own: at ~800px of nav + storage the log-out control used to
+          fall below the fold with no way to reach it. */}
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
       <div className="flex items-center gap-2.5 pb-3 pt-1">
         <BrandLogo className="h-8 w-8" />
         <span className="text-xl font-extrabold tracking-tight bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">9Drive</span>
       </div>
 
-      <div className="flex items-center gap-2.5 border-y border-slate-200/60 py-3 my-3">
+      <div className="relative flex items-center gap-2.5 border-y border-slate-200/60 py-3 my-3">
         {!profileImageUrl || avatarError ? (
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 text-xs font-bold text-white shadow-sm border border-blue-400/20">
             {(user?.name ?? user?.email ?? 'U').trim().charAt(0).toUpperCase()}
@@ -149,7 +153,38 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
           <p className="truncate text-[15px] font-bold text-slate-900 leading-none">{user?.name ?? 'User'}</p>
           <p className="truncate text-xs text-slate-500 mt-1">{user?.email ?? 'Loading...'}</p>
         </div>
-        <MoreVertical className="h-4 w-4 text-slate-400" />
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 shrink-0 text-slate-400"
+          aria-label="Account menu"
+          aria-expanded={accountMenuOpen}
+          onClick={() => setAccountMenuOpen((open) => !open)}
+        >
+          <MoreVertical className="h-4 w-4" />
+        </Button>
+
+        {accountMenuOpen ? (
+          <>
+            <div className="fixed inset-0 z-40" aria-hidden onClick={() => setAccountMenuOpen(false)} />
+            <div className="absolute right-0 top-full z-50 mt-1 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-xl">
+              <NavLink
+                to="/settings"
+                onClick={() => { setAccountMenuOpen(false); onNavigate?.() }}
+                className="flex items-center gap-2 px-3 py-2 text-[13px] font-semibold text-slate-700 hover:bg-slate-100"
+              >
+                <Settings className="h-4 w-4" /> Settings
+              </NavLink>
+              <button
+                type="button"
+                onClick={() => { setAccountMenuOpen(false); onLogout() }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] font-semibold text-red-600 hover:bg-red-50"
+              >
+                <LogOut className="h-4 w-4" /> Log out
+              </button>
+            </div>
+          </>
+        ) : null}
       </div>
 
       <nav className="grid gap-1">
@@ -166,7 +201,7 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
         ))}
       </nav>
 
-      <div className="mt-auto border-t border-slate-200/60 pt-4 text-[13px]">
+      <div className="sticky bottom-0 mt-4 border-t border-slate-200/60 bg-slate-50/95 pt-4 pb-1 text-[13px] backdrop-blur">
         <div className="mb-3 space-y-1.5">
           {items.map(([label, value, color]) => (
             <div key={label} className="flex items-center justify-between text-slate-500 font-medium">
@@ -185,6 +220,7 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
         <Button variant="danger" size="sm" className="mt-3 w-full justify-start h-10 px-3 text-[13px] font-bold" onClick={onLogout}>
           <LogOut className="h-4 w-4" />Log Out
         </Button>
+      </div>
       </div>
     </aside>
   )
@@ -297,10 +333,23 @@ export function DriveLayout() {
     setFilterEndDate(rawEnd ? rawEnd.split('T')[0] : '')
   }, [searchParams])
 
-  async function logout() {
-    await apiFetch('/auth/logout', { method: 'POST' }).catch(() => undefined)
+  /**
+   * Logging out must never depend on the network: the session was previously kept
+   * because the request was awaited first, so a dead or restarting API left the
+   * user stuck signed in. Clear locally and navigate immediately, then revoke the
+   * server-side session in the background.
+   */
+  function logout() {
+    const token = getAccessToken()
     clearAuthSession()
-    navigate('/login')
+    setSidebarOpen(false)
+    navigate('/login', { replace: true })
+
+    if (!token) return
+    void fetch(`${API_URL}/auth/logout`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    }).catch(() => undefined)
   }
 
   function applyFilters() {
@@ -412,6 +461,11 @@ export function DriveLayout() {
               <div className="flex gap-2">
                 <Button variant="outline" size="icon" aria-label="Toggle theme" onClick={toggleTheme}>
                   {theme === 'light' ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
+                </Button>
+                {/* Small screens have no visible sidebar footer, so logging out needs
+                    a target in the header too. */}
+                <Button variant="outline" size="icon" aria-label="Log out" title="Log out" onClick={logout}>
+                  <LogOut className="h-5 w-5" />
                 </Button>
                 <div className="relative shrink-0">
                   <Button variant="outline" size="icon" className="relative" aria-label="System info" aria-expanded={infoOpen} onClick={() => setInfoOpen(!infoOpen)}>

@@ -19,6 +19,21 @@ export const API_URL = resolved.base
 /** First try plus two retries: enough to survive a restart without feeling stuck. */
 const ATTEMPTS = 3
 
+/**
+ * The session is gone and could not be refreshed (revoked, expired, or the
+ * database was replaced). Clear it and go to the login page once, instead of
+ * leaving the app on screen with every request failing.
+ */
+let redirectingToLogin = false
+function endSession() {
+  clearAuthSession()
+  if (typeof window === 'undefined' || redirectingToLogin) return
+  const { pathname } = window.location
+  if (pathname === '/login' || pathname === '/register' || pathname === '/google-auth') return
+  redirectingToLogin = true
+  window.location.replace(`/login?reason=session&next=${encodeURIComponent(pathname + window.location.search)}`)
+}
+
 /** True when the app is being served from this machine, where the dev hints apply. */
 function isLocalOrigin(): boolean {
   if (typeof window === 'undefined') return false
@@ -134,7 +149,9 @@ export async function apiFetch<T>(path: string, options: ApiOptions = {}): Promi
 
   if (!response.ok) {
     const error = (await readJson(response, url).catch(() => null)) as { message?: string; code?: string } | null
-    if (response.status === 401) clearAuthSession()
+    // `skipAuth` means the caller was not relying on a session (login, register),
+    // so a 401 there is a wrong password, not an expired session.
+    if (response.status === 401 && !options.skipAuth) endSession()
     throw new Error(error?.message ?? `Request failed (${response.status})`)
   }
 
