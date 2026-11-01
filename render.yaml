@@ -18,12 +18,17 @@ services:
     runtime: docker
     dockerContext: ./backend
     dockerfilePath: ./backend/Dockerfile
+    # Liveness only (no DB query) so a MySQL blip cannot restart the service.
+    # Use /ready to check the database from a browser.
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
+      # Required. mysql://avnadmin:PASSWORD@HOST:PORT/defaultdb
       - key: DATABASE_URL
         sync: false
+      # Required for Aiven/managed MySQL (paste ca.pem: PEM, base64, or a path).
+      # Turns into sslcert=certs/db-ca.pem&sslaccept=strict at runtime.
       - key: DATABASE_CA_CERT
         sync: false
       - key: JWT_ACCESS_SECRET
