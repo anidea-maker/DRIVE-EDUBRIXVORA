@@ -334,7 +334,17 @@ Notes:
 - The frontend calls `/api/*` on its own origin and nginx forwards it to `API_UPSTREAM`, stripping the `/api` prefix. If you prefer the browser to call the API directly, build with `--build-arg VITE_API_URL=https://api.example.com` instead and leave `API_UPSTREAM` unset.
 - **`FRONTEND_URL` must match the frontend's public origin exactly** (scheme + host, no trailing slash), because CORS only allows that origin.
 - The backend applies pending migrations on boot (`prisma migrate deploy`), so the Aiven database is created/updated automatically on the first deploy.
-- `render.yaml` in the repo root declares both services; `sync: false` values are the ones to paste in the dashboard.
+- `render.yaml` in the repo root declares both services and wires them together (`frontend.API_UPSTREAM <- backend.host`, `backend.FRONTEND_URL <- frontend.host`), so a self-reference is impossible. Only `DATABASE_URL` and `DATABASE_CA_CERT` need typing in.
+- **Both services are required.** With only the frontend deployed, the SPA loads but every API call fails — there is nothing to proxy to.
+
+### If registration/login fails after deploying
+
+| Symptom | Cause / fix |
+| --- | --- |
+| `405 Not Allowed` on `POST /api/auth/register`, and the frontend log shows a request to `POST /auth/register` arriving with a nested `X-Forwarded-For` | `API_UPSTREAM` points at the **frontend** service itself, so nginx proxies `/api/x` back to `/x` on the static site. Set it to the backend URL. The entrypoint now logs `ERROR: API_UPSTREAM=… points at this service itself` and `/api` answers `502` with a readable JSON message instead of a loop. |
+| `502` with `{"code":"API_UNREACHABLE", …}` | The backend service is not running, is still booting, or `API_UPSTREAM` is wrong/unset (default `http://backend:4000` only exists in docker-compose). Open `<API_UPSTREAM>/health` — it must return `{"status":"ok"}`. |
+| Register returns `500` / the backend log shows Prisma errors | Database not reachable or schema missing: check `DATABASE_URL` + `DATABASE_CA_CERT` on the backend, then read the boot log for `prisma migrate deploy` output. |
+| Browser console: `blocked by CORS policy` | `FRONTEND_URL` on the backend must equal the frontend origin. Bare hosts are accepted and upgraded to `https://`, but the host must match exactly. |
 
 ## Deploying to a server
 

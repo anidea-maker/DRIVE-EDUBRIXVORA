@@ -46,6 +46,8 @@ services:
     environment:
       PORT: 80
       API_UPSTREAM: http://backend:4000
+      # Docker's embedded DNS - required to resolve the "backend" service name.
+      RESOLVER: 127.0.0.11
     restart: unless-stopped
     depends_on:
       - backend

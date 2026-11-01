@@ -12,6 +12,11 @@
 #                 If the frontend is built with VITE_API_URL instead, /api/* is
 #                 simply never called and this value is irrelevant.
 #   RESOLVER      DNS servers used to resolve API_UPSTREAM (see `resolver`).
+#                 Public resolvers by default; docker compose overrides it with
+#                 127.0.0.11 (Docker's embedded DNS), which does not exist on
+#                 Render/Railway/Fly.
+#   API_HINT      Filled in by docker-entrypoint.sh; appended to the /api error
+#                 message when API_UPSTREAM is obviously misconfigured.
 
 # gzip* directives are only valid in the http context. This file is included from
 # http {} (include /etc/nginx/conf.d/*.conf), so they live outside `server`.
@@ -35,6 +40,17 @@ server {
   # happens on single-service hosts such as Render, Railway or Fly.
   resolver ${RESOLVER} valid=10s ipv6=off;
   set $api_target "${API_UPSTREAM}";
+
+  # Any /api failure gets a readable JSON body instead of nginx's HTML page, so
+  # the SPA shows the real reason ("API unreachable at http://backend:4000")
+  # rather than a generic "Request failed".
+  error_page 500 502 503 504 = @api_unreachable;
+
+  location @api_unreachable {
+    default_type application/json;
+    add_header Cache-Control "no-store" always;
+    return 502 '{"code":"API_UNREACHABLE","message":"The frontend could not reach the API at ${API_UPSTREAM}. ${API_HINT}Set API_UPSTREAM on this service to the backend service URL, e.g. https://your-backend.onrender.com"}';
+  }
 
   # Health probe for the platform (Render, k8s, load balancers).
   location = /healthz {
@@ -85,6 +101,13 @@ server {
   }
 
   location / {
+    # A POST/PUT/PATCH/DELETE to a non-API path means something is pointing this
+    # traffic at the static site (usually a misconfigured API_UPSTREAM loop).
+    # Answer in JSON so it is obvious instead of a bare 405 from the file handler.
+    limit_except GET HEAD {
+      default_type application/json;
+      return 405 '{"code":"NOT_AN_API_ENDPOINT","message":"This host only serves the SPA. The API is not proxied here - check API_UPSTREAM on this service."}';
+    }
     try_files $uri $uri/ /index.html;
   }
 }
