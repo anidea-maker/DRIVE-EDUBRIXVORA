@@ -137,6 +137,33 @@ section.bg-white:not(button) {
   background-color: var(--slate-200-override) !important;
 }
 
+/*
+ * Opacity variants need their own rules.
+ *
+ * `.bg-slate-50` is remapped to a theme variable, but `.bg-slate-50/95`
+ * compiles to a *different* selector (`.bg-slate-50\/95`) that Tailwind resolves
+ * with color-mix() against the raw palette. Forgetting this is how a light
+ * `#f8fafc` band appeared inside the dark sidebar.
+ */
+.bg-slate-50\/95,
+.bg-slate-50\/80 {
+  background-color: var(--slate-50-override) !important;
+}
+.bg-slate-100\/80 {
+  background-color: var(--slate-100-override) !important;
+}
+.bg-slate-200\/60,
+.bg-slate-200\/70 {
+  background-color: var(--slate-200-override) !important;
+}
+
+/* Text shades used by the UI but missing from the mapping above, so they render
+   dark-slate-on-dark instead of following the theme. */
+.text-slate-700,
+.text-slate-800 {
+  color: var(--text-secondary) !important;
+}
+
 /* Map Tailwind Alert background and text utilities to theme variables */
 .bg-blue-50 {
   background-color: var(--blue-bg-override) !important;

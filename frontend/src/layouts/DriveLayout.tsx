@@ -145,23 +145,23 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
         ))}
       </nav>
 
-      <div className="sticky bottom-0 mt-4 border-t border-slate-200/60 bg-slate-50/95 pt-4 pb-1 text-[13px] backdrop-blur">
+      <div className="sticky bottom-0 mt-4 border-t border-[var(--sidebar-border)] bg-[var(--sidebar-bg)] pt-4 pb-1 text-[13px] backdrop-blur-xl">
         <div className="mb-3 space-y-1.5">
           {items.map(([label, value, color]) => (
             <div key={label} className="flex items-center justify-between text-slate-500 font-medium">
               <span className="flex items-center gap-1.5"><span className={cn('h-1.5 w-1.5 rounded-full', color)} />{label}</span>
-              <span className="font-semibold text-slate-700">{value}</span>
+              <span className="font-semibold text-slate-600">{value}</span>
             </div>
           ))}
         </div>
-        <div className="flex justify-between text-sm font-bold text-slate-700">
+        <div className="flex justify-between text-sm font-bold text-slate-600">
           <span>{formatBytes(storage?.usedBytes)} used</span>
           <span className="text-slate-400">{formatBytes(storage?.totalBytes)}</span>
         </div>
-        <div className="my-2 h-1.5 rounded-full bg-slate-200/60 overflow-hidden">
+        <div className="my-2 h-1.5 rounded-full bg-slate-200 overflow-hidden">
           <div className="h-full rounded-full bg-blue-600 transition-all duration-300" style={{ width: `${progress}%` }} />
         </div>
-        <Button variant="danger" size="sm" className="mt-3 w-full justify-start h-10 px-3 text-[13px] font-bold" onClick={onLogout}>
+        <Button variant="ghost" size="sm" className="mt-3 w-full justify-start h-10 px-3 text-[13px] font-bold text-slate-600 hover:text-red-500" onClick={onLogout}>
           <LogOut className="h-4 w-4" />Log Out
         </Button>
       </div>
