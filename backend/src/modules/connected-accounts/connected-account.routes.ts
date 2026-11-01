@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { env } from '../../config/env.js'
 import { prisma } from '../../config/prisma.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
-import { decryptText, encryptText, hashToken, randomToken } from '../../utils/crypto.js'
+import { encryptText, hashToken, randomToken } from '../../utils/crypto.js'
 import { hashPassword } from '../../utils/password.js'
 import { createOAuthClient, syncGoogleQuota } from '../google/google.service.js'
 import { syncS3Quota, testS3Connection } from '../s3/s3.service.js'
@@ -62,13 +62,44 @@ connectedAccountRouter.get('/', requireAuth, async (req: AuthRequest, res, next)
   }
 })
 
-async function createGoogleConnectUrl(req: AuthRequest) {
-  const query = z.object({ providerConfigId: z.string().min(1).optional() }).parse(req.query)
+async function createGoogleConnectUrl(req: AuthRequest): Promise<string | null> {
+  const query = z.object({
+    providerConfigId: z.string().min(1).optional(),
+  }).parse(req.query)
+
   const config = query.providerConfigId
-    ? await prisma.providerConfig.findFirstOrThrow({ where: { id: query.providerConfigId, OR: [{ userId: req.user!.id }, { userId: null }], provider: 'google_drive', status: 'active' } })
-    : await prisma.providerConfig.findFirstOrThrow({ where: { userId: null, provider: 'google_drive', status: 'active' }, orderBy: { createdAt: 'desc' } })
+    ? await prisma.providerConfig.findFirst({
+        where: {
+          id: query.providerConfigId,
+          OR: [{ userId: req.user!.id }, { userId: null }],
+          provider: 'google_drive',
+          status: 'active',
+        },
+      })
+    : await prisma.providerConfig.findFirst({
+        where: {
+          userId: null,
+          provider: 'google_drive',
+          status: 'active',
+        },
+        orderBy: { createdAt: 'desc' },
+      })
+
+  // No matching active Google Drive configuration exists.
+  // Return null so the route can respond with a clear 404.
+  if (!config) return null
+
   const state = randomToken()
-  await prisma.oauthState.create({ data: { userId: req.user!.id, providerConfigId: config.id, flow: 'connect', stateHash: hashToken(state), expiresAt: new Date(Date.now() + 10 * 60_000) } })
+  await prisma.oauthState.create({
+    data: {
+      userId: req.user!.id,
+      providerConfigId: config.id,
+      flow: 'connect',
+      stateHash: hashToken(state),
+      expiresAt: new Date(Date.now() + 10 * 60_000),
+    },
+  })
+
   const client = createOAuthClient(config)
   return client.generateAuthUrl({
     access_type: 'offline',
@@ -82,7 +113,17 @@ async function createGoogleConnectUrl(req: AuthRequest) {
 connectedAccountRouter.post('/s3', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const body = s3ConnectSchema.parse(req.body)
-    const providerConfig = await prisma.providerConfig.findFirstOrThrow({ where: { provider: 'google_drive', status: 'active' }, orderBy: { createdAt: 'desc' } })
+    const providerConfig = await prisma.providerConfig.findFirst({
+      where: { provider: 'google_drive', status: 'active' },
+      orderBy: { createdAt: 'desc' },
+    })
+    if (!providerConfig) {
+      return res.status(404).json({
+        error: 'PROVIDER_CONFIG_NOT_FOUND',
+        message: 'No active provider configuration is available for this storage connection.',
+      })
+    }
+
     const providerAccountId = `${body.bucket}:${body.endpoint || body.region}`
     const existingAccount = await prisma.connectedAccount.findUnique({ where: { userId_provider_providerAccountId: { userId: req.user!.id, provider: 's3', providerAccountId } } })
     const account = existingAccount
@@ -159,6 +200,12 @@ connectedAccountRouter.post('/s3', requireAuth, async (req: AuthRequest, res, ne
 connectedAccountRouter.get('/google/connect-url', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const url = await createGoogleConnectUrl(req)
+    if (!url) {
+      return res.status(404).json({
+        error: 'GOOGLE_PROVIDER_CONFIG_NOT_FOUND',
+        message: 'No active Google Drive provider configuration was found.',
+      })
+    }
     return res.json({ url })
   } catch (error) {
     return next(error)
@@ -168,6 +215,12 @@ connectedAccountRouter.get('/google/connect-url', requireAuth, async (req: AuthR
 connectedAccountRouter.get('/google/connect', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const url = await createGoogleConnectUrl(req)
+    if (!url) {
+      return res.status(404).json({
+        error: 'GOOGLE_PROVIDER_CONFIG_NOT_FOUND',
+        message: 'No active Google Drive provider configuration was found.',
+      })
+    }
     return res.redirect(url)
   } catch (error) {
     return next(error)
