@@ -14,3 +14,7 @@ services:
   backend:
     environment:
       DATABASE_URL: "${DATABASE_URL:?Set DATABASE_URL in .env when using an external MySQL}"
+      # Optional: provider CA certificate (PEM text, base64, or a path in the image).
+      # The backend writes it to prisma/certs/db-ca.pem and upgrades DATABASE_URL to
+      # sslcert=certs/db-ca.pem&sslaccept=strict on boot.
+      DATABASE_CA_CERT: "${DATABASE_CA_CERT:-}"

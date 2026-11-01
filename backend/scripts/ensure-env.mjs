@@ -19,6 +19,10 @@
  *     when it does not exist. Existing values are never overwritten.
  *   - Secrets are generated with crypto.randomBytes, so a repaired file is
  *     usable immediately.
+ *   - A `DATABASE_CA_CERT` / `DATABASE_SSL_CA` env var (PEM text, base64, or a
+ *     file path) is written to `prisma/certs/db-ca.pem` and referenced from the
+ *     `DATABASE_URL` stored in `backend/.env`, because Prisma's CLI only reads
+ *     TLS parameters from the URL. The API does the same at runtime.
  *
  * Run it directly with: `npm run env:setup`
  * It also runs automatically before `dev`, `start`, and every `prisma:*` script.
@@ -30,6 +34,12 @@ import { fileURLToPath } from 'node:url'
 
 const backendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const envPath = path.join(backendDir, '.env')
+const prismaDir = path.join(backendDir, 'prisma')
+
+/** Prisma resolves `sslcert=` relative to `backend/prisma`. */
+const CA_FILE = path.join(prismaDir, 'certs', 'db-ca.pem')
+const CA_FILE_FOR_URL = 'certs/db-ca.pem'
+const CA_ENV_KEYS = ['DATABASE_CA_CERT', 'DATABASE_SSL_CA']
 
 const randomKey = () => randomBytes(32).toString('hex')
 
@@ -62,8 +72,8 @@ const serialize = ([key, valueOrFactory]) => {
   return `${key}="${value}"`
 }
 
-/** Minimal .env parser: enough to detect which keys are present. */
-function readEnvKeys(contents) {
+/** Minimal .env parser: enough to detect keys and rewrite single values. */
+function readEnv(contents) {
   const keys = new Map()
   for (const rawLine of contents.split(/\r?\n/)) {
     const line = rawLine.trim()
@@ -80,19 +90,113 @@ function readEnvKeys(contents) {
   return keys
 }
 
+/** Replaces `KEY=...` in place, keeping comments and ordering. */
+function setEnvValue(contents, key, value) {
+  const pattern = new RegExp(`^\\s*(export\\s+)?${key}\\s*=.*$`, 'm')
+  const line = `${key}="${value}"`
+  if (pattern.test(contents)) return contents.replace(pattern, line)
+  const separator = contents === '' || contents.endsWith('\n') ? '' : '\n'
+  return `${contents}${separator}${line}\n`
+}
+
 /** Containers and orchestrators inject their own env - never invent a localhost DB there. */
 const isManagedRuntime = () =>
   process.env.NODE_ENV === 'production' ||
   fs.existsSync('/.dockerenv') ||
   Boolean(process.env.KUBERNETES_SERVICE_HOST)
 
-function main() {
-  const shellDatabaseUrl = process.env.DATABASE_URL?.trim()
-  if (shellDatabaseUrl) {
-    console.log('[env] DATABASE_URL is set in the environment - leaving backend/.env untouched.')
-    return
+function normalizePem(value) {
+  const trimmed = value.trim()
+
+  if (!trimmed.includes('BEGIN') && /\.(pem|crt)$/i.test(trimmed)) {
+    try {
+      const fromFile = fs.readFileSync(path.resolve(process.cwd(), trimmed), 'utf8')
+      if (fromFile.includes('BEGIN CERTIFICATE')) return toPem(fromFile)
+    } catch {
+      // not a readable path - keep trying other shapes
+    }
   }
 
+  if (!trimmed.includes('-----') && /^[A-Za-z0-9+/=\s]+$/.test(trimmed)) {
+    const decoded = Buffer.from(trimmed, 'base64').toString('utf8')
+    if (decoded.includes('BEGIN CERTIFICATE')) return toPem(decoded)
+  }
+
+  if (trimmed.includes('BEGIN CERTIFICATE')) return toPem(trimmed.replace(/\\n/g, '\n'))
+
+  return ''
+}
+
+function toPem(text) {
+  const blocks = text.match(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g)
+  return blocks ? `${blocks.join('\n')}\n` : ''
+}
+
+/** Adds `sslcert`/`sslaccept=strict` to a MySQL URL and drops ssl-mode/sslmode. */
+function withCaCert(databaseUrl) {
+  let url
+  try {
+    url = new URL(databaseUrl)
+  } catch {
+    return databaseUrl
+  }
+  if (url.protocol !== 'mysql:') return databaseUrl
+  url.searchParams.delete('ssl-mode')
+  url.searchParams.delete('sslmode')
+  url.searchParams.set('sslcert', CA_FILE_FOR_URL)
+  url.searchParams.set('sslaccept', 'strict')
+  // Rebuild without percent-encoding so sslcert stays "certs/db-ca.pem".
+  const credentials = url.username ? `${url.username}${url.password ? `:${url.password}` : ''}@` : ''
+  const query = [...url.searchParams.entries()].map(([key, value]) => `${key}=${value}`).join('&')
+  return `${url.protocol}//${credentials}${url.host}${url.pathname}${query ? `?${query}` : ''}`
+}
+
+/**
+ * Materializes the CA certificate when it arrives as an env var and points
+ * `DATABASE_URL` at it. Returns the (possibly updated) .env contents.
+ */
+function syncCaCertificate(contents, databaseUrlFromEnv) {
+  const caValue = CA_ENV_KEYS.map((key) => process.env[key]).find((value) => value?.trim())
+  if (!caValue) return contents
+
+  const pem = normalizePem(caValue)
+  if (!pem) {
+    console.warn(
+      `[env] ${CA_ENV_KEYS[0]} is set but contains no "BEGIN CERTIFICATE" block - ignoring it.`,
+    )
+    return contents
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(CA_FILE), { recursive: true })
+    fs.writeFileSync(CA_FILE, pem, { mode: 0o600 })
+  } catch (error) {
+    console.warn(`[env] Could not write ${CA_FILE}: ${error.message}`)
+    return contents
+  }
+  console.log('[env] Saved the database CA certificate to prisma/certs/db-ca.pem')
+
+  const current = readEnv(contents).get('DATABASE_URL') ?? databaseUrlFromEnv ?? ''
+  if (!current.startsWith('mysql://')) return contents
+
+  const patched = withCaCert(current)
+
+  if (databaseUrlFromEnv) {
+    console.warn(
+      '[env] DATABASE_URL also comes from the process environment, which overrides backend/.env.\n' +
+        '      The Prisma CLI will use that value, so add the TLS parameters there too:\n' +
+        `      ${withCaCert(databaseUrlFromEnv)}`,
+    )
+  } else if (patched !== current) {
+    console.log('[env] DATABASE_URL set to use sslcert=certs/db-ca.pem&sslaccept=strict')
+  }
+
+  return setEnvValue(contents, 'DATABASE_URL', patched)
+}
+
+function main() {
+  const shellDatabaseUrl = process.env.DATABASE_URL?.trim()
+  const caValue = CA_ENV_KEYS.map((key) => process.env[key]).find((value) => value?.trim())
   const exists = fs.existsSync(envPath)
 
   if (!exists && isManagedRuntime()) {
@@ -103,14 +207,19 @@ function main() {
     return
   }
 
-  const existingContents = exists ? fs.readFileSync(envPath, 'utf8') : ''
-  const existingKeys = readEnvKeys(existingContents)
+  if (shellDatabaseUrl && !caValue) {
+    console.log('[env] DATABASE_URL is set in the environment - leaving backend/.env untouched.')
+    return
+  }
 
+  const existingContents = exists ? fs.readFileSync(envPath, 'utf8') : ''
+  const withTls = syncCaCertificate(existingContents, shellDatabaseUrl)
+  const existingKeys = readEnv(withTls)
   const missing = REQUIRED_KEYS.filter(([key]) => !existingKeys.get(key)?.trim())
 
-  if (exists && missing.length === 0) return
+  if (exists && missing.length === 0 && withTls === existingContents) return
 
-  if (!exists) {
+  if (!exists && withTls === '') {
     const lines = [
       HEADER,
       ...REQUIRED_KEYS.map(serialize),
@@ -124,21 +233,36 @@ function main() {
     return
   }
 
-  const appended = missing.map(serialize)
-  const separator = existingContents.endsWith('\n') || existingContents === '' ? '' : '\n'
-  fs.writeFileSync(
-    envPath,
-    `${existingContents}${separator}\n# Added by backend/scripts/ensure-env.mjs\n${appended.join('\n')}\n`,
-    { mode: 0o600 },
-  )
+  let contents = withTls
+  let created = false
 
-  const names = missing.map(([key]) => key).join(', ')
-  console.log(`[env] backend/.env was incomplete - added: ${names}.`)
-  if (missing.some(([key]) => key === 'DATABASE_URL')) {
-    console.log('[env] DATABASE_URL defaults to mysql://root@localhost:3306/9drive - edit backend/.env if needed.')
+  if (!exists) {
+    contents = `${HEADER}\n${withTls}`
+    created = true
   }
-  if (missing.some(([key]) => key === 'JWT_ACCESS_SECRET' || key === 'TOKEN_ENCRYPTION_KEY')) {
-    console.log('[env] Generated new random values for the missing secret(s).')
+
+  if (missing.length > 0) {
+    const appended = missing.map(serialize)
+    const separator = contents === '' || contents.endsWith('\n') ? '' : '\n'
+    contents = `${contents}${separator}\n# Added by backend/scripts/ensure-env.mjs\n${appended.join('\n')}\n`
+  }
+
+  fs.writeFileSync(envPath, contents, { mode: 0o600 })
+
+  if (created) {
+    console.log('[env] Created backend/.env from the environment (DATABASE_URL included).')
+  }
+  if (missing.length > 0) {
+    const names = missing.map(([key]) => key).join(', ')
+    console.log(`[env] backend/.env was incomplete - added: ${names}.`)
+    if (missing.some(([key]) => key === 'DATABASE_URL')) {
+      console.log('[env] DATABASE_URL defaults to mysql://root@localhost:3306/9drive - edit backend/.env if needed.')
+    }
+    if (missing.some(([key]) => key === 'JWT_ACCESS_SECRET' || key === 'TOKEN_ENCRYPTION_KEY')) {
+      console.log('[env] Generated new random values for the missing secret(s).')
+    }
+  } else if (contents !== existingContents) {
+    console.log('[env] Updated backend/.env.')
   }
 }
 

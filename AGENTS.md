@@ -68,6 +68,7 @@ Environment:
 - `FRONTEND_URL`
 - `JWT_ACCESS_SECRET`
 - `TOKEN_ENCRYPTION_KEY`
+- `DATABASE_CA_CERT` (optional; provider CA as PEM/base64/path, materialized to `backend/prisma/certs/db-ca.pem`)
 - `RECAPTCHA_SECRET_KEY` (optional; enables captcha verification when paired with frontend site key)
 - `ACCESS_TOKEN_TTL_SECONDS`
 - `REFRESH_TOKEN_TTL_DAYS`

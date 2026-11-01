@@ -6,7 +6,9 @@
  * (Aiven / PlanetScale / Azure) and the bundled Docker MySQL, then runs a
  * query through Prisma.
  */
+import fs from 'node:fs'
 import net from 'node:net'
+import path from 'node:path'
 import { loadEnvFiles } from '../config/load-env.js'
 
 loadEnvFiles()
@@ -109,6 +111,25 @@ async function main() {
     )
   }
 
+  const sslcert = params.get('sslcert')
+  if (sslcert) {
+    // Prisma resolves sslcert relative to backend/prisma.
+    const caFile = path.resolve(process.cwd(), 'prisma', sslcert)
+    if (fs.existsSync(caFile)) {
+      const pem = fs.readFileSync(caFile, 'utf8')
+      const verified = pem.includes('BEGIN CERTIFICATE')
+      console.log(`CA certificate ${caFile} ${verified ? '(PEM looks valid)' : '(no BEGIN CERTIFICATE - wrong file?)'}`)
+    } else {
+      stop([
+        `sslcert=${sslcert} was set but the file does not exist at:`,
+        `  ${caFile}`,
+        '',
+        'Either put the CA there, or set DATABASE_CA_CERT to the PEM text / base64 / a file',
+        'path in the environment and it will be written to prisma/certs/db-ca.pem for you.',
+      ])
+    }
+  }
+
   const host = parsed.hostname
   const reachable = await checkTcp(host, port)
   if (reachable === 'ok') {
@@ -146,6 +167,17 @@ async function main() {
     )
     const row = rows[0] ?? {}
     console.log(`Connected     ${row.db} (MySQL ${row.version}, ${row.charset})`)
+
+    // Prove whether the wire is actually encrypted - hosted MySQL often requires TLS.
+    const cipher = await prisma.$queryRawUnsafe<Array<{ Variable_name: string; Value: string }>>(
+      "SHOW STATUS LIKE 'Ssl_cipher'",
+    )
+    const cipherValue = cipher[0]?.Value || ''
+    console.log(
+      cipherValue
+        ? `TLS           encrypted (${cipherValue})`
+        : 'TLS           NOT encrypted - traffic to the database is in plain text',
+    )
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     const hints: string[] = []

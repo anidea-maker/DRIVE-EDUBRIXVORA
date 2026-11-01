@@ -253,7 +253,8 @@ Either way, the credentials are encrypted and stored in MySQL as one global conf
 
 | Variable | What it does |
 | --- | --- |
-| `DATABASE_URL` | MySQL connection string. |
+| `DATABASE_URL` | MySQL connection string. For managed MySQL use `sslaccept` (not `ssl-mode`) as described above. |
+| `DATABASE_CA_CERT` | Optional. Provider CA certificate as PEM text, base64, or a file path. Materialized to `prisma/certs/db-ca.pem` and applied as `sslcert` + `sslaccept=strict`. |
 | `APP_PORT` | Backend port (default `4000`). |
 | `FRONTEND_URL` | The frontend's URL. CORS only allows this origin. |
 | `JWT_ACCESS_SECRET` | Secret for signing access tokens. At least 32 characters, random. |
@@ -292,6 +293,14 @@ Three things trip people up:
 1. **TLS.** Prisma's MySQL connector has no `ssl-mode` / `sslmode` parameter, so Aiven's copy-paste string (`?ssl-mode=REQUIRED`) is *ignored* and the connection ends up **unencrypted**. Ask for TLS the Prisma way:
    - `?sslaccept=accept_invalid_certs` — encrypted, certificate not verified. Fine to get started.
    - `?sslcert=certs/aiven-ca.pem&sslaccept=strict` — encrypted **and** verified. Download the CA from the provider (Aiven: *Service page → CA certificate*) to `backend/prisma/certs/aiven-ca.pem`; `sslcert` paths resolve relative to `backend/prisma/`.
+
+   On a platform that only lets you set environment variables (Render, Railway, Fly, PM2, Docker), skip the file entirely and put the certificate in `DATABASE_CA_CERT` — PEM text, base64, or a path:
+
+   ```env
+   DATABASE_CA_CERT="-----BEGIN CERTIFICATE-----\nMIID...\n-----END CERTIFICATE-----"
+   ```
+
+   The backend writes it to `prisma/certs/db-ca.pem` and upgrades `DATABASE_URL` to `sslcert=certs/db-ca.pem&sslaccept=strict` on boot. `npm run db:check` prints `TLS  encrypted (…)` once the connection really is encrypted.
 2. **Migrations.** Managed databases usually cannot create the temporary *shadow database* that `prisma migrate dev` needs, so apply the committed migrations instead:
    ```bash
    cd backend
