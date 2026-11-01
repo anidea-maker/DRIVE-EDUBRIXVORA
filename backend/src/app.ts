@@ -35,7 +35,31 @@ const BUILD_ENVIRONMENT = process.env.NODE_ENV ?? 'development'
 export const app = express()
 app.set('trust proxy', true)
 
-app.use(cors({ origin: env.FRONTEND_URL }))
+/**
+ * CORS: only the configured frontend origin is allowed in production.
+ *
+ * In development any localhost/127.0.0.1 port is accepted, because the Vite dev
+ * server port can differ from FRONTEND_URL (and `localhost` vs `127.0.0.1` are
+ * different origins to the browser). Rejecting them shows up in the browser as a
+ * bare "Failed to fetch", which says nothing about the real cause.
+ *
+ * A missing Origin header (curl, same-origin, server-to-server) is always fine.
+ */
+const allowAnyLocalOrigin = process.env.NODE_ENV !== 'production'
+const localOriginPattern = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin) return callback(null, true)
+      if (origin === env.FRONTEND_URL) return callback(null, true)
+      if (allowAnyLocalOrigin && localOriginPattern.test(origin)) return callback(null, true)
+      // Refuse without throwing: a 500 here hides the actual misconfiguration.
+      return callback(null, false)
+    },
+    credentials: true,
+  }),
+)
 app.use(express.json({ limit: '1mb' }))
 
 /**

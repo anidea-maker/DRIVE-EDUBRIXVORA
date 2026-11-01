@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, type ReactNode } from 'react'
-import { API_URL, apiFetch, safeJson } from '@/lib/api'
+import { API_URL, apiFetch, networkError, safeJson } from '@/lib/api'
 import { getAccessToken } from '@/lib/auth'
 
 export type UploadProgressStatus = 'uploading' | 'done' | 'error' | 'partial'
@@ -71,15 +71,21 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       const chunk = file.slice(startOffset, endOffset)
 
       // We use raw fetch with authorization header for binary stream upload
-      const response = await fetch(`${API_URL}/uploads/resumable/chunk/${sessionId}`, {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${getAccessToken()}`,
-          'Content-Range': `bytes ${startOffset}-${endOffset - 1}/${file.size}`,
-          'Content-Length': String(chunk.size)
-        },
-        body: chunk
-      })
+      const chunkUrl = `${API_URL}/uploads/resumable/chunk/${sessionId}`
+      let response: Response
+      try {
+        response = await fetch(chunkUrl, {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${getAccessToken()}`,
+            'Content-Range': `bytes ${startOffset}-${endOffset - 1}/${file.size}`,
+            'Content-Length': String(chunk.size)
+          },
+          body: chunk
+        })
+      } catch (error) {
+        throw networkError(chunkUrl, error)
+      }
 
       if (!response.ok) {
         throw new Error('Chunk upload failed')

@@ -57,6 +57,9 @@ COPY --from=frontend /app/dist ./public
 
 # `prisma migrate deploy` runs on boot; `ensure-env` refuses to start without a
 # database instead of failing later with an opaque P1012.
-CMD ["sh", "-c", "npm run db:migrate:deploy && npm run seed:google-config:docker && node dist/server.js"]
+# Migrations are fatal (a missing database should fail loudly), but the Google
+# seed is not: a missing/invalid OAuth client must never stop the API from
+# booting, or nobody can register an email/password account.
+CMD ["sh", "-c", "npm run db:migrate:deploy && { npm run seed:google-config:docker || echo '[startup] google config seed skipped'; } && node dist/server.js"]
 
 EXPOSE 4000

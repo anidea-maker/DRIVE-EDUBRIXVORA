@@ -198,8 +198,25 @@ GOOGLE_REDIRECT_URI="http://localhost:4000/connected-accounts/google/callback"
 Create `frontend/.env`:
 
 ```env
-VITE_API_URL=http://localhost:4000
+VITE_API_URL=/api
 ```
+
+Nothing else to configure: the Vite dev server proxies `/api` to `http://localhost:4000`,
+so the browser only ever talks to its own origin — the same shape as the Docker
+image. If your backend runs somewhere else, point the proxy at it instead of
+changing the SPA:
+
+```env
+API_PROXY_TARGET=http://localhost:4000
+```
+
+If the backend is not running, `/api/*` now answers
+`502 {"code":"API_UNREACHABLE","message":"The dev server could not reach the backend at …"}`
+instead of a bare `Failed to fetch`.
+
+Note: `VITE_API_URL=http://localhost:4000` from older instructions still works (it is
+rewritten to `/api`), but it is no longer the recommended value — it makes the browser
+call a different origin, which needs CORS to line up.
 
 Then run `npm run prisma:migrate` in `backend/` and start both dev servers as shown above.
 
@@ -269,7 +286,8 @@ Either way, the credentials are encrypted and stored in MySQL as one global conf
 
 | Variable | What it does |
 | --- | --- |
-| `VITE_API_URL` | Backend URL. Vite bakes it in at build time, so **rebuild the frontend after changing it**. |
+| `VITE_API_URL` | API base. Defaults to `/api` (same origin: nginx or the Vite proxy forwards it). Only set it to an absolute URL if the API really lives on another origin. Vite bakes it in at build time, so **rebuild after changing it**. |
+| `API_PROXY_TARGET` | Dev/preview server only: where `npm run dev` proxies `/api` (default `http://localhost:4000`). |
 
 </details>
 
@@ -374,6 +392,8 @@ Notes:
 | App loads but every API call fails (or `/api/*` returns `502`) | In the two-service setup `API_UPSTREAM` is missing/wrong. Switch to the single-service image (`./Dockerfile`) and there is nothing to configure. |
 | `Cannot GET /ready` (plain text, often with an HTML-ish page) | The backend is answering but on a **build older than the one that added `/ready`**. Check `/health` → `commit`, then redeploy the backend from `main`. Unknown routes now return JSON with the running `commit` instead. |
 | `GET /ready` returns `503 {"migrations":"missing"}` | Empty database: run `npm run db:migrate:deploy` (the container also does this on boot). |
+| Local dev shows **Failed to fetch** on All Files / Quota Tracker | The browser never reached the API. Start the backend (`npm run dev` in `backend/`, port 4000) — `/api/*` on the dev server is proxied there. If it runs elsewhere, set `API_PROXY_TARGET`. The UI now names the URL and the reason (`502 {"code":"API_UNREACHABLE",…}`) instead of a bare `Failed to fetch`. |
+| `Blocked request. This host is not allowed` from Vite | The dev server only trusts localhost by default; this config sets `allowedHosts: true` so tunnels, containers and phone-on-LAN work. Restart `npm run dev` after pulling. |
 | `Unexpected token '<', "<!doctype "... is not valid JSON` | The API call got `index.html` back, so it never reached the API. Usually `VITE_API_URL` is set to the frontend's own URL. Builds now ignore a same-origin `VITE_API_URL` and fall back to `/api`, but delete the variable anyway (it is baked in at build time) and set `API_UPSTREAM` on the frontend service. The error message now names the URL and the fix. |
 | `405 Not Allowed` on `POST /api/auth/register`, and the frontend log shows a request to `POST /auth/register` arriving with a nested `X-Forwarded-For` | `API_UPSTREAM` points at the **frontend** service itself, so nginx proxies `/api/x` back to `/x` on the static site. Set it to the backend URL. The entrypoint now logs `ERROR: API_UPSTREAM=… points at this service itself` and `/api` answers `502` with a readable JSON message instead of a loop. |
 | `502` with `{"code":"API_UNREACHABLE", …}` | The backend service is not running, is still booting, or `API_UPSTREAM` is wrong/unset (default `http://backend:4000` only exists in docker-compose). Open `<API_UPSTREAM>/health` — it must return `{"status":"ok"}`. |
