@@ -45,4 +45,38 @@ if (!parsed.success) {
   process.exit(1)
 }
 
+/**
+ * Placeholder passwords copied from a provider dashboard fail every query with a
+ * cryptic "Access denied for user", so catch them at boot instead.
+ */
+const DATABASE_URL_PLACEHOLDERS = [
+  'CLICK_TO_REVEAL_PASSWORD',
+  'REPLACE_WITH',
+  'change-this-database-password',
+]
+
+const placeholder = DATABASE_URL_PLACEHOLDERS.find((token) => parsed.data.DATABASE_URL.includes(token))
+
+if (placeholder) {
+  console.error(
+    [
+      '',
+      `DATABASE_URL still contains the placeholder "${placeholder}".`,
+      'Paste the real database password into backend/.env, then start the server again.',
+      '',
+    ].join('\n'),
+  )
+  process.exit(1)
+}
+
+const databaseParams = new URL(parsed.data.DATABASE_URL).searchParams
+
+if (databaseParams.has('ssl-mode') || databaseParams.has('sslmode')) {
+  console.warn(
+    '[env] DATABASE_URL uses "ssl-mode"/"sslmode", which Prisma MySQL ignores - the ' +
+      'connection will not be encrypted. Use sslaccept=accept_invalid_certs, or ' +
+      'sslcert=certs/aiven-ca.pem&sslaccept=strict for verified TLS.',
+  )
+}
+
 export const env = parsed.data

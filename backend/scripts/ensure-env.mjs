@@ -80,6 +80,12 @@ function readEnvKeys(contents) {
   return keys
 }
 
+/** Containers and orchestrators inject their own env - never invent a localhost DB there. */
+const isManagedRuntime = () =>
+  process.env.NODE_ENV === 'production' ||
+  fs.existsSync('/.dockerenv') ||
+  Boolean(process.env.KUBERNETES_SERVICE_HOST)
+
 function main() {
   const shellDatabaseUrl = process.env.DATABASE_URL?.trim()
   if (shellDatabaseUrl) {
@@ -88,6 +94,15 @@ function main() {
   }
 
   const exists = fs.existsSync(envPath)
+
+  if (!exists && isManagedRuntime()) {
+    console.warn(
+      '[env] No backend/.env and no DATABASE_URL in the environment. Containers and ' +
+        'production runtimes are expected to inject DATABASE_URL - set it there and retry.',
+    )
+    return
+  }
+
   const existingContents = exists ? fs.readFileSync(envPath, 'utf8') : ''
   const existingKeys = readEnvKeys(existingContents)
 

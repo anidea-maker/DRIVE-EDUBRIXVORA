@@ -11,6 +11,8 @@
     "prisma:generate": "node scripts/ensure-env.mjs && prisma generate",
     "prisma:migrate": "node scripts/ensure-env.mjs && prisma migrate dev",
     "db:migrate:deploy": "node scripts/ensure-env.mjs && prisma migrate deploy",
+    "db:status": "node scripts/ensure-env.mjs && prisma migrate status",
+    "db:check": "node scripts/ensure-env.mjs && tsx src/scripts/check-db.ts",
     "seed:google-config": "node scripts/ensure-env.mjs && tsx src/scripts/seed-google-config.ts",
     "seed:google-config:docker": "node scripts/ensure-env.mjs && tsx src/scripts/seed-google-config-if-present.ts",
     "test:s3": "node scripts/ensure-env.mjs && tsx src/scripts/test-s3-connection.ts",

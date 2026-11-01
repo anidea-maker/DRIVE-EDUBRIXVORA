@@ -43,6 +43,7 @@ Important files:
 - `backend/src/config/prisma.ts`: Prisma client.
 - `backend/prisma/schema.prisma`: database schema.
 - `backend/.env.example`: environment template (copy to `backend/.env`).
+- `docker-compose.external-db.yml`: compose override that points the backend at a hosted MySQL instead of the bundled container.
 - `backend/src/middleware/auth.middleware.ts`: bearer auth.
 - `backend/src/middleware/error.middleware.ts`: JSON error responses.
 - `backend/src/modules/**`: feature route modules and provider services.
@@ -56,10 +57,13 @@ Commands:
 - `cd backend && npm run prisma:migrate`: run Prisma dev migration.
 - `cd backend && npm run prisma:generate`: regenerate Prisma client.
 - `cd backend && npm run env:setup`: create or repair `backend/.env` (runs automatically before `dev`, `start`, and every `prisma:*` script).
+- `cd backend && npm run db:check`: diagnose `DATABASE_URL` (reachability, credentials, TLS parameters, schema state).
+- `cd backend && npm run db:status`: applied/pending migrations.
+- Managed MySQL (Aiven/PlanetScale/RDS): apply the committed migrations with `npm run db:migrate:deploy`; `migrate dev` needs a shadow database those services usually cannot create.
 - `cd backend && npm run seed:google-config`: store encrypted Google OAuth config.
 
 Environment:
-- `DATABASE_URL`
+- `DATABASE_URL` (MySQL URL; Prisma MySQL has no `ssl-mode`/`sslmode` parameter - use `sslaccept`, plus `sslcert=certs/<ca>.pem` for verified TLS)
 - `APP_PORT`
 - `FRONTEND_URL`
 - `JWT_ACCESS_SECRET`

@@ -2,3 +2,7 @@ node_modules
 dist
 .env.local
 .env.*.local
+
+# Database TLS certificates (per environment)
+prisma/certs/*
+!prisma/certs/README.md

@@ -19,6 +19,9 @@ Other scripts that `AGENTS.md` doesn't list:
 - `cd backend && npm run test:s3` / `npm run test:api-upload`: manual smoke scripts in `backend/src/scripts/`.
 - `setup.sh` / `setup.ps1`: create `backend/.env` and `frontend/.env` with random secrets, run `npm install`, and generate the Prisma client.
 - `cd backend && npm run env:setup` (`node scripts/ensure-env.mjs`): creates `backend/.env` from `backend/.env.example` when it is missing, or appends only the missing keys to an incomplete one. Every `dev`, `start`, `prisma:*`, and seed script runs it first, so Prisma never hits `P1012 Environment variable not found: DATABASE_URL`. If `DATABASE_URL` is already exported (Docker, PM2, PaaS), it writes nothing. Manual `npx prisma ...` calls skip it, so run `npm run env:setup` once first.
+- `cd backend && npm run db:check`: prints the masked `DATABASE_URL`, checks TCP reachability, warns about errors Prisma MySQL ignores (`ssl-mode`/`sslmode`) and about `sslaccept=strict` without `sslcert`, then runs a query.
+- `cd backend && npm run db:status`: `prisma migrate status`.
+- Hosted MySQL (Aiven and friends): use `?sslaccept=accept_invalid_certs`, or `?sslcert=certs/aiven-ca.pem&sslaccept=strict` with the CA in `backend/prisma/certs/` (git-ignored; `sslcert` resolves relative to `backend/prisma`). Use `npm run db:migrate:deploy`, not `migrate dev` - no shadow database. With Docker use `docker-compose.external-db.yml`.
 - On Windows, if `prisma generate` fails because a file is locked, stop the running dev servers first.
 
 ## Architecture beyond AGENTS.md

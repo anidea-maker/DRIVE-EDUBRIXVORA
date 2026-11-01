@@ -278,6 +278,42 @@ Captcha only turns on when **both** `VITE_RECAPTCHA_SITE_KEY` and `RECAPTCHA_SEC
 
 </details>
 
+<details>
+<summary><b>Hosted MySQL (Aiven, PlanetScale, RDS, Azure …)</b></summary>
+
+Point `DATABASE_URL` in `backend/.env` at the service and keep everything else the same:
+
+```env
+DATABASE_URL="mysql://avnadmin:PASSWORD@mysql-xxxx.y.aivencloud.com:12299/defaultdb?sslaccept=accept_invalid_certs"
+```
+
+Three things trip people up:
+
+1. **TLS.** Prisma's MySQL connector has no `ssl-mode` / `sslmode` parameter, so Aiven's copy-paste string (`?ssl-mode=REQUIRED`) is *ignored* and the connection ends up **unencrypted**. Ask for TLS the Prisma way:
+   - `?sslaccept=accept_invalid_certs` — encrypted, certificate not verified. Fine to get started.
+   - `?sslcert=certs/aiven-ca.pem&sslaccept=strict` — encrypted **and** verified. Download the CA from the provider (Aiven: *Service page → CA certificate*) to `backend/prisma/certs/aiven-ca.pem`; `sslcert` paths resolve relative to `backend/prisma/`.
+2. **Migrations.** Managed databases usually cannot create the temporary *shadow database* that `prisma migrate dev` needs, so apply the committed migrations instead:
+   ```bash
+   cd backend
+   npm run db:check           # reachability + credentials + TLS sanity check
+   npm run db:migrate:deploy  # applies prisma/migrations (never resets data)
+   npm run db:status          # what is applied / pending
+   ```
+3. **Password quoting.** Keep the URL in double quotes; if the password contains `@`, `:`, `/` or `?`, URL-encode it (`@` → `%40`, `:` → `%3A`, `/` → `%2F`, `?` → `%3F`).
+
+With Docker, add the override file instead of editing the bundled MySQL service:
+
+```bash
+# .env next to docker-compose.yml
+DATABASE_URL="mysql://avnadmin:PASSWORD@mysql-xxxx.y.aivencloud.com:12299/defaultdb?sslaccept=accept_invalid_certs"
+
+docker compose -f docker-compose.yml -f docker-compose.external-db.yml up -d --build
+```
+
+The backend runs `prisma migrate deploy` on boot, so the schema is created automatically. Hosted platforms (Render, Railway, Fly, …) only need the `DATABASE_URL` env var — the local `backend/.env` helper steps aside whenever the variable is already set.
+
+</details>
+
 ## Deploying to a server
 
 <details>
