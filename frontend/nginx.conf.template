@@ -100,14 +100,21 @@ server {
     try_files $uri =404;
   }
 
+  # A POST/PUT/PATCH/DELETE to a non-API path means traffic is pointed at the
+  # static site (usually a misconfigured API_UPSTREAM loop). Answer in JSON so it
+  # is obvious instead of a bare 405 from the static file handler.
+  #
+  # This must go through error_page: `limit_except` only accepts access/auth/proxy
+  # directives, so `default_type`/`return`/`try_files` inside it make nginx refuse
+  # the whole config ("directive is not allowed here") and the container dies.
   location / {
-    # A POST/PUT/PATCH/DELETE to a non-API path means something is pointing this
-    # traffic at the static site (usually a misconfigured API_UPSTREAM loop).
-    # Answer in JSON so it is obvious instead of a bare 405 from the file handler.
-    limit_except GET HEAD {
-      default_type application/json;
-      return 405 '{"code":"NOT_AN_API_ENDPOINT","message":"This host only serves the SPA. The API is not proxied here - check API_UPSTREAM on this service."}';
-    }
+    error_page 405 = @not_an_api_endpoint;
     try_files $uri $uri/ /index.html;
+  }
+
+  location @not_an_api_endpoint {
+    default_type application/json;
+    add_header Cache-Control "no-store" always;
+    return 405 '{"code":"NOT_AN_API_ENDPOINT","message":"This host only serves the SPA. The API is not proxied here - check API_UPSTREAM on this service."}';
   }
 }
