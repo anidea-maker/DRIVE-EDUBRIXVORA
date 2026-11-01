@@ -1,5 +1,6 @@
 import { clearAuthSession, getAccessToken, getRefreshToken, setAccessToken } from '@/lib/auth'
 import { resolveApiBase } from '@/lib/api-base'
+import { fetchWithRetry } from '@/lib/fetch-retry'
 
 const resolved = resolveApiBase(
   import.meta.env.VITE_API_URL,
@@ -15,15 +16,40 @@ if (resolved.note) console.warn(`[api] ${resolved.note}`)
  */
 export const API_URL = resolved.base
 
-/** Turns a rejected `fetch` (no response at all) into something actionable. */
-export function networkError(url: string, error: unknown): Error {
+/** First try plus two retries: enough to survive a restart without feeling stuck. */
+const ATTEMPTS = 3
+
+/** True when the app is being served from this machine, where the dev hints apply. */
+function isLocalOrigin(): boolean {
+  if (typeof window === 'undefined') return false
+  return /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)$/i.test(window.location.hostname)
+}
+
+/**
+ * Turns a rejected `fetch` (no response at all) into something actionable, with
+ * advice that matches where the app is actually running - telling someone on a
+ * deployed site to run `npm run dev` is worse than saying nothing.
+ */
+export function networkError(url: string, error: unknown, attempts = 1): Error {
   const name = (error as { name?: string } | null)?.name
   if (name === 'AbortError') return error instanceof Error ? error : new Error('Request aborted.')
-  const detail = error instanceof Error && error.message ? ` (${error.message})` : ''
+
+  const reason = error instanceof Error && error.message ? error.message : 'connection failed'
+  const tried = attempts > 1 ? ` after ${attempts} attempts` : ''
+
+  if (isLocalOrigin()) {
+    return new Error(
+      `Could not reach the API at ${url}${tried} (${reason}). ` +
+        `Start the backend with "npm run dev" in backend/ (port 4000), or set API_PROXY_TARGET in frontend/.env ` +
+        `to the port it actually uses, then retry.`,
+    )
+  }
+
   return new Error(
-    `Could not reach the API at ${url}${detail}. The request never got a response: ` +
-      `start the backend ("npm run dev" in backend/, port 4000) or point API_PROXY_TARGET at it, ` +
-      `then reload.`,
+    `Could not reach the API at ${url}${tried} (${reason}). ` +
+      `The server may be restarting or waking from sleep - wait a few seconds and try again. ` +
+      `If it keeps failing, open ${typeof window === 'undefined' ? '/health' : `${window.location.origin}/health`} - ` +
+      `it must return JSON with a "commit" field.`,
   )
 }
 
@@ -62,11 +88,11 @@ async function refreshAccessToken() {
   const url = `${API_URL}/auth/refresh`
   let response: Response
   try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken }),
-    })
+    response = await fetchWithRetry(
+      url,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refreshToken }) },
+      { attempts: 2, delays: [600] },
+    )
   } catch {
     return false
   }
@@ -84,11 +110,23 @@ export async function apiFetch<T>(path: string, options: ApiOptions = {}): Promi
   if (options.body && !(options.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
 
   const url = `${API_URL}${path}`
+  const attempts = ATTEMPTS
+  let tries = 0
   let response: Response
   try {
-    response = await fetch(url, { ...options, headers })
+    response = await fetchWithRetry(
+      url,
+      { ...options, headers },
+      {
+        attempts,
+        onRetry: ({ attempt }) => {
+          tries = attempt
+          console.warn(`[api] ${url} did not answer (attempt ${attempt}/${attempts}); retrying`)
+        },
+      },
+    )
   } catch (error) {
-    throw networkError(url, error)
+    throw networkError(url, error, Math.max(tries + 1, 1))
   }
   if (response.status === 401 && options.retry !== false && !options.skipAuth && await refreshAccessToken()) {
     return apiFetch<T>(path, { ...options, retry: false })

@@ -202,8 +202,9 @@ connectedAccountRouter.get('/google/connect-url', requireAuth, async (req: AuthR
     const url = await createGoogleConnectUrl(req)
     if (!url) {
       return res.status(404).json({
-        error: 'GOOGLE_PROVIDER_CONFIG_NOT_FOUND',
-        message: 'No active Google Drive provider configuration was found.',
+        code: 'GOOGLE_PROVIDER_CONFIG_NOT_FOUND',
+        message:
+          'Google Drive is not connected yet because no OAuth client is configured. Save your Client ID and Secret in Settings -> Google OAuth Credentials (Redirect URI can stay empty), then try again.',
       })
     }
     return res.json({ url })
@@ -217,8 +218,9 @@ connectedAccountRouter.get('/google/connect', requireAuth, async (req: AuthReque
     const url = await createGoogleConnectUrl(req)
     if (!url) {
       return res.status(404).json({
-        error: 'GOOGLE_PROVIDER_CONFIG_NOT_FOUND',
-        message: 'No active Google Drive provider configuration was found.',
+        code: 'GOOGLE_PROVIDER_CONFIG_NOT_FOUND',
+        message:
+          'Google Drive is not connected yet because no OAuth client is configured. Save your Client ID and Secret in Settings -> Google OAuth Credentials (Redirect URI can stay empty), then try again.',
       })
     }
     return res.redirect(url)
