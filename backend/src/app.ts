@@ -1,7 +1,7 @@
 import cors from 'cors'
 import express from 'express'
-import fs from 'node:fs'
-import path from 'node:path'
+import { BUILD_COMMIT, BUILD_ENVIRONMENT, FEATURES } from './config/build.js'
+import { frontendDir, spaEnabled, spaIndex, spaWarning } from './config/spa.js'
 import { env } from './config/env.js'
 import { errorMiddleware } from './middleware/error.middleware.js'
 import { prisma } from './config/prisma.js'
@@ -18,22 +18,13 @@ import { apiKeyRouter } from './modules/api-keys/api-key.routes.js'
 import { publicApiRouter } from './modules/public-api/public-api.routes.js'
 import { auditLogRouter } from './modules/audit-logs/audit-log.routes.js'
 import { systemRouter } from './modules/system/system.routes.js'
-
-/**
- * Which build is actually running. Render/GitHub/Railway/Fly all expose the
- * deployed revision under one of these names; "unknown" means nobody set it.
- */
-const BUILD_COMMIT =
-  process.env.RENDER_GIT_COMMIT?.slice(0, 7) ||
-  process.env.GIT_COMMIT?.slice(0, 7) ||
-  process.env.SOURCE_VERSION?.slice(0, 7) ||
-  process.env.COMMIT_SHA?.slice(0, 7) ||
-  'unknown'
-
-const BUILD_ENVIRONMENT = process.env.NODE_ENV ?? 'development'
+import { frontendUrl } from './utils/redirect.js'
 
 export const app = express()
 app.set('trust proxy', true)
+
+if (spaWarning) console.warn(spaWarning)
+
 
 /**
  * CORS: only the configured frontend origin is allowed in production.
@@ -73,6 +64,9 @@ const healthPayload = () => ({
   commit: BUILD_COMMIT,
   environment: BUILD_ENVIRONMENT,
   uptimeSeconds: Math.round(process.uptime()),
+  // Compiled into the bundle, so this proves which code is running even when the
+  // platform's commit variable is stale.
+  features: FEATURES,
 })
 
 app.get(['/health', '/api/health'], (_req, res) => res.json(healthPayload()))
@@ -112,6 +106,122 @@ app.get(['/ready', '/api/ready'], async (_req, res) => {
   }
 })
 /**
+ * One request that answers "is this deployment wired correctly?".
+ *
+ * Added after a production Google connect failed with a blank HTTP 500 on both
+ * OAuth callbacks: the redirect target was built from `FRONTEND_URL`, and nothing
+ * exposed the value actually in use. Public on purpose and free of secrets - it
+ * names the build, the redirect mode, the database and the Google redirect URI.
+ */
+app.get(['/api/diagnostics', '/diagnostics'], async (req, res) => {
+  const requestOrigin = `${req.protocol}://${req.get('host')}`
+  const expectedRedirectUri = `${requestOrigin}/connected-accounts/google/callback`
+  const hints: string[] = []
+
+  let database: Record<string, unknown>
+  try {
+    await prisma.$queryRawUnsafe('SELECT 1')
+    const rows = (await prisma.$queryRawUnsafe(
+      'SELECT COUNT(*) AS n FROM `_prisma_migrations`',
+    )) as Array<{ n: bigint | number }>
+    database = { ok: true, migrations: String(rows[0]?.n ?? 0) }
+  } catch (error) {
+    database = { ok: false, message: error instanceof Error ? error.message : String(error) }
+    hints.push('The database is unreachable: check DATABASE_URL and DATABASE_CA_CERT, then redeploy.')
+  }
+
+  let google: Record<string, unknown>
+  try {
+    const config = await prisma.providerConfig.findFirst({
+      where: { userId: null, provider: 'google_drive', status: 'active' },
+      orderBy: { createdAt: 'desc' },
+      select: { redirectUri: true },
+    })
+    const redirectUri = config?.redirectUri ?? null
+    const matchesThisHost = redirectUri === expectedRedirectUri
+    google = { configured: Boolean(config), redirectUri, expectedRedirectUri, redirectUriMatchesThisHost: matchesThisHost }
+    if (!config) {
+      hints.push('Google OAuth is not configured: save the Client ID and Secret in Settings -> Google OAuth Credentials.')
+    } else if (!matchesThisHost) {
+      hints.push(`Google sends the browser to ${redirectUri}, which is not this host. In Google Cloud -> Credentials -> Authorized redirect URIs add exactly: ${expectedRedirectUri}`)
+    }
+  } catch (error) {
+    google = { error: error instanceof Error ? error.message : String(error) }
+  }
+
+  const hasControlChars = /[\u0000-\u001f\u007f]/.test(env.FRONTEND_URL)
+  if (hasControlChars) {
+    hints.push('FRONTEND_URL contains control characters (usually a pasted newline). Remove them - the value is wrong even though redirects stay safe.')
+  }
+  if (spaEnabled) {
+    hints.push('Single-service mode: OAuth callbacks redirect with a relative path, so FRONTEND_URL cannot send the browser to the wrong host.')
+  } else if (env.FRONTEND_URL_SOURCE === 'default' && BUILD_ENVIRONMENT === 'production') {
+    hints.push(`FRONTEND_URL fell back to localhost in production - set it to this site's origin, or deploy with the root Dockerfile so the SPA is served here.`)
+  }
+
+  return res.json({
+    commit: BUILD_COMMIT,
+    environment: BUILD_ENVIRONMENT,
+    uptimeSeconds: Math.round(process.uptime()),
+    features: FEATURES,
+    requestOrigin,
+    frontend: {
+      mode: spaEnabled ? 'single-service' : 'split',
+      url: env.FRONTEND_URL,
+      source: env.FRONTEND_URL_SOURCE,
+      headerSafe: !hasControlChars,
+      // Exactly where a failed connect attempt sends the browser.
+      oauthRedirectPreview: frontendUrl('/google-connected', { status: 'error', reason: 'STATE_EXPIRED' }),
+    },
+    spa: { enabled: spaEnabled, directory: frontendDir || null },
+    database,
+    google,
+    hints,
+  })
+})
+
+/**
+ * Self-test of the two OAuth callbacks, run inside the deployed process.
+ *
+ * It calls this app over loopback with a deliberately invalid code/state, so it
+ * exercises the real route, the real error handler and the real redirect - without
+ * Google, without a browser and without needing the Render log. Whatever the
+ * callbacks do in production appears here verbatim.
+ */
+app.get(['/api/diagnostics/oauth', '/diagnostics/oauth'], async (_req, res) => {
+  const port = process.env.PORT ?? String(env.APP_PORT)
+  const probe = async (path: string) => {
+    const url = `http://127.0.0.1:${port}${path}`
+    try {
+      const response = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(5000) })
+      const body = (await response.text()).slice(0, 300)
+      return { path, status: response.status, location: response.headers.get('location'), body }
+    } catch (error) {
+      return { path, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  const [connect, signIn] = await Promise.all([
+    probe('/api/connected-accounts/google/callback?code=self-test&state=self-test'),
+    probe('/api/auth/google/callback?code=self-test&state=self-test'),
+  ])
+
+  const ok = (result: { status?: number; location?: string | null }) =>
+    result.status === 302 && Boolean(result.location && result.location.includes('reason='))
+
+  return res.json({
+    commit: BUILD_COMMIT,
+    verdict: ok(connect) && ok(signIn) ? 'callbacks redirect with a reason' : 'a callback did not redirect - see results',
+    connect,
+    signIn,
+    expectation: {
+      status: 302,
+      location: '/google-connected?status=error&reason=STATE_EXPIRED (or an absolute URL with the same path)',
+    },
+  })
+})
+
+/**
  * Public REST API used by external clients (`/api/v1/uploads`). Mounted first so
  * the `/api` prefix below cannot shadow it.
  */
@@ -141,21 +251,6 @@ const API_ROUTERS: Array<[string, import('express').Router]> = [
 for (const [prefix, router] of API_ROUTERS) {
   app.use(prefix, router)
   app.use(`/api${prefix}`, router)
-}
-/**
- * Single-service mode: serve the built SPA from this same process.
- *
- * Set `SERVE_FRONTEND` to the directory containing `index.html` (the root
- * Dockerfile uses /app/public). The browser then talks to the API on its own
- * origin, so there is no `API_UPSTREAM`, no CORS and no build-time API URL to get
- * wrong - one deployment, one URL.
- */
-const frontendDir = process.env.SERVE_FRONTEND?.trim()
-const spaIndex = frontendDir ? path.join(frontendDir, 'index.html') : ''
-const spaEnabled = Boolean(spaIndex) && fs.existsSync(spaIndex)
-
-if (frontendDir && !spaEnabled) {
-  console.warn(`[app] SERVE_FRONTEND=${frontendDir} has no index.html - SPA hosting disabled.`)
 }
 if (spaEnabled) {
   console.log(`[app] Serving the SPA from ${frontendDir}`)

@@ -8,6 +8,8 @@ import { hashPassword, verifyPassword } from '../../utils/password.js'
 import { encryptText, hashToken, randomToken } from '../../utils/crypto.js'
 import { signAccessToken } from '../../utils/jwt.js'
 import { createOAuthClient, syncGoogleQuota } from '../google/google.service.js'
+import { classifyGoogleError, describeGoogleError, type ConnectFailure } from '../google/google-error.js'
+import { redirectToFrontend } from '../../utils/redirect.js'
 
 export const authRouter = Router()
 
@@ -117,22 +119,81 @@ authRouter.get('/google/url', async (_req, res, next) => {
 })
 
 authRouter.get('/google/callback', async (req, res) => {
+  /**
+   * Sign-in failures have to end on the SPA, never on a blank 500. This route used
+   * to fall through with `findUniqueOrThrow` + a bare `res.redirect()` inside its
+   * catch, so an expired link (or a mistyped FRONTEND_URL) produced HTTP 500 with
+   * no message at all - the browser just showed an empty page.
+   */
+  const fail = (reason: ConnectFailure) => {
+    console.error(`[google-auth-callback] sign-in failed: ${reason}`)
+    return redirectToFrontend(
+      res,
+      '/google-auth',
+      { status: 'error', reason },
+      {
+        title: 'Google sign-in failed',
+        detail: 'Close this tab and try signing in again.',
+      },
+    )
+  }
+
   try {
+    console.log('[google-auth-callback] sign-in callback hit', { hasCode: typeof req.query.code === 'string', hasState: typeof req.query.state === 'string' })
+    // Google sends ?error=access_denied when the user cancels the consent screen.
+    const denial = typeof req.query.error === 'string' ? req.query.error : ''
+    if (denial) {
+      console.error('[google-auth-callback] Google returned an error instead of a code:', denial)
+      return fail(denial === 'access_denied' ? 'PERMISSION_DENIED' : 'TOKEN_EXCHANGE_FAILED')
+    }
+
     const query = z.object({ code: z.string(), state: z.string() }).parse(req.query)
-    const oauthState = await prisma.oauthState.findUniqueOrThrow({ where: { stateHash: hashToken(query.state) }, include: { providerConfig: true } })
-    if (oauthState.flow !== 'login' || oauthState.usedAt || oauthState.expiresAt < new Date()) return res.redirect(`${env.FRONTEND_URL}/google-auth?status=error`)
+    const oauthState = await prisma.oauthState.findUnique({
+      where: { stateHash: hashToken(query.state) },
+      include: { providerConfig: true },
+    })
+    if (!oauthState) {
+      console.error('[google-auth-callback] unknown OAuth state - the sign-in link was reused or the config changed')
+      return fail('STATE_EXPIRED')
+    }
+    if (oauthState.flow !== 'login' || oauthState.usedAt || oauthState.expiresAt < new Date()) {
+      console.error('[google-auth-callback] state is not a usable login state', {
+        flow: oauthState.flow,
+        usedAt: oauthState.usedAt,
+        expiresAt: oauthState.expiresAt,
+      })
+      return fail('STATE_EXPIRED')
+    }
 
     const client = createOAuthClient(oauthState.providerConfig)
-    const tokenResult = await client.getToken(query.code)
-    const tokens = tokenResult.tokens
-    if (!tokens.access_token) return res.redirect(`${env.FRONTEND_URL}/google-auth?status=error`)
+
+    let tokens: { access_token?: string | null; refresh_token?: string | null; expiry_date?: number | null }
+    try {
+      tokens = (await client.getToken(query.code)).tokens
+    } catch (error) {
+      console.error('[google-auth-callback] token exchange failed:', describeGoogleError(error))
+      const reason = classifyGoogleError(error)
+      return fail(reason === 'UNKNOWN' ? 'TOKEN_EXCHANGE_FAILED' : reason)
+    }
+    if (!tokens.access_token) {
+      console.error('[google-auth-callback] Google returned no access token')
+      return fail('TOKEN_EXCHANGE_FAILED')
+    }
     client.setCredentials(tokens)
 
-    const oauth2 = google.oauth2({ version: 'v2', auth: client })
-    const profile = await oauth2.userinfo.get()
+    let profile
+    try {
+      profile = await google.oauth2({ version: 'v2', auth: client }).userinfo.get()
+    } catch (error) {
+      console.error('[google-auth-callback] userinfo failed:', describeGoogleError(error))
+      return fail(classifyGoogleError(error))
+    }
     const providerAccountId = profile.data.id
     const email = profile.data.email
-    if (!providerAccountId || !email) return res.redirect(`${env.FRONTEND_URL}/google-auth?status=error`)
+    if (!providerAccountId || !email) {
+      console.error('[google-auth-callback] Google profile is missing id or email')
+      return fail('UNKNOWN')
+    }
 
     const name = profile.data.name || email.split('@')[0] || 'Google User'
     const user = await prisma.user.upsert({
@@ -142,7 +203,10 @@ authRouter.get('/google/callback', async (req, res) => {
     })
     const existingAccount = await prisma.connectedAccount.findUnique({ where: { userId_provider_providerAccountId: { userId: user.id, provider: 'google_drive', providerAccountId } } })
     const refreshTokenEncrypted = tokens.refresh_token ? encryptText(tokens.refresh_token) : existingAccount?.refreshTokenEncrypted
-    if (!refreshTokenEncrypted) return res.redirect(`${env.FRONTEND_URL}/google-auth?status=error`)
+    if (!refreshTokenEncrypted) {
+      console.error('[google-auth-callback] no refresh token and no stored account - consent was not for offline access')
+      return fail('INVALID_GRANT')
+    }
 
     const account = await prisma.connectedAccount.upsert({
       where: { userId_provider_providerAccountId: { userId: user.id, provider: 'google_drive', providerAccountId } },
@@ -178,10 +242,10 @@ authRouter.get('/google/callback', async (req, res) => {
 
     const handoffToken = randomToken()
     await prisma.authHandoff.create({ data: { userId: user.id, tokenHash: hashToken(handoffToken), expiresAt: new Date(Date.now() + 5 * 60_000) } })
-    return res.redirect(`${env.FRONTEND_URL}/google-auth?token=${handoffToken}`)
+    return redirectToFrontend(res, '/google-auth', { token: handoffToken })
   } catch (error) {
-    console.error('Google Auth callback failed:', error instanceof Error ? error.message : error)
-    return res.redirect(`${env.FRONTEND_URL}/google-auth?status=error`)
+    console.error('[google-auth-callback] unexpected failure:', describeGoogleError(error), error)
+    return fail(classifyGoogleError(error))
   }
 })
 

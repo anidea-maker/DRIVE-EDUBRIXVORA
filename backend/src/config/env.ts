@@ -17,12 +17,23 @@ function defaultFrontendUrl(): string {
   return 'http://localhost:5173'
 }
 
+/** Control characters make a `Location` header invalid (Node throws ERR_INVALID_CHAR). */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g
+
 /**
  * Accepts "https://app.example.com", "app.example.com" or "app.example.com/".
  * CORS needs a precise origin, and platforms hand out bare hostnames.
+ *
+ * Control characters (a pasted newline, say) are removed here: `z.string().url()`
+ * accepts a value with a trailing newline, and the resulting redirect then throws
+ * at request time - which showed up as a blank HTTP 500 on every OAuth callback.
  */
 function normalizeOrigin(value: string): string {
-  const trimmed = value.trim().replace(/\/+$/, '')
+  const stripped = value.replace(CONTROL_CHARS, '')
+  if (stripped !== value) {
+    console.warn('[env] FRONTEND_URL contained control characters - they were removed. Re-check the value in your host dashboard.')
+  }
+  const trimmed = stripped.trim().replace(/\/+$/, '')
   if (!trimmed) return trimmed
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) return trimmed
   const isLocal = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(trimmed)
@@ -48,6 +59,12 @@ const envSchema = z.object({
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().default(900),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().default(30),
   MAX_UPLOAD_BYTES: z.coerce.number().default(5 * 1024 * 1024 * 1024),
+  /**
+   * Directory holding the built SPA. Set by the single-service Dockerfile, and the
+   * signal that this process is also the web server - so browser redirects can be
+   * relative and do not depend on FRONTEND_URL at all.
+   */
+  SERVE_FRONTEND: z.string().optional(),
 })
 
 const parsed = envSchema.safeParse(process.env)
@@ -114,7 +131,19 @@ if (databaseParams.has('ssl-mode') || databaseParams.has('sslmode')) {
   )
 }
 
+/**
+ * Where FRONTEND_URL came from. `configured` means an operator set it, `platform`
+ * means it was derived from the host's own public hostname, `default` means local
+ * development with nothing set.
+ */
+const FRONTEND_URL_SOURCE: 'configured' | 'platform' | 'default' = process.env.FRONTEND_URL?.trim()
+  ? 'configured'
+  : defaultFrontendUrl().includes('localhost')
+    ? 'default'
+    : 'platform'
+
 export const env = {
   ...parsed.data,
   APP_PORT: parsed.data.PORT ?? parsed.data.APP_PORT,
+  FRONTEND_URL_SOURCE,
 }
