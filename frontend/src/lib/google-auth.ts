@@ -3,6 +3,8 @@ import { apiFetch } from '@/lib/api'
 export interface GoogleAuthStatus {
   configured: boolean
   redirectUri: string | null
+  expectedRedirectUri: string | null
+  redirectUriMatchesOrigin: boolean
   hint: string | null
 }
 
@@ -29,6 +31,20 @@ export async function startGoogleAuth(): Promise<void> {
     )
   }
 
+  // The stored redirect URI is handed to Google verbatim. A localhost value
+  // saved during a local run can never complete on a deployed site, so stop with
+  // instructions instead of sending the user to a dead callback. Any other
+  // mismatch is only a warning: Google may legitimately have it registered.
+  const localHostPattern = /^(localhost|127\.0\.0\.1)(:\d+)?$/i
+  const storedHost = parseHost(status.redirectUri)
+  const originIsLocal = localHostPattern.test(window.location.host)
+  if (storedHost && localHostPattern.test(storedHost) && !originIsLocal) {
+    throw new Error(
+      `Google sign-in is configured for ${status.redirectUri}, which only works on your machine. ` +
+        `Open Settings -> Google OAuth Credentials, clear the Redirect URI field and save again to use this site's URL.`,
+    )
+  }
+
   let url: string
   try {
     const data = await apiFetch<{ url: string }>('/auth/google/url', { skipAuth: true })
@@ -38,6 +54,15 @@ export async function startGoogleAuth(): Promise<void> {
   }
 
   window.location.href = url
+}
+
+function parseHost(url: string | null): string {
+  if (!url) return ''
+  try {
+    return new URL(url).host
+  } catch {
+    return ''
+  }
 }
 
 function explain(error: unknown, fallback: string): string {

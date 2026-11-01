@@ -61,20 +61,29 @@ authRouter.post('/login', async (req, res, next) => {
  * ask this so they can explain what is missing instead of bouncing the user to a
  * provider that was never configured. No secrets are exposed.
  */
-authRouter.get('/google/status', async (_req, res, next) => {
+authRouter.get('/google/status', async (req, res, next) => {
   try {
     const config = await prisma.providerConfig.findFirst({
       where: { userId: null, provider: 'google_drive', status: 'active' },
       orderBy: { createdAt: 'desc' },
       select: { redirectUri: true },
     })
-    return res.json({
-      configured: Boolean(config),
-      redirectUri: config?.redirectUri ?? null,
-      hint: config
+
+    // The redirect URI is stored in the database and handed to Google verbatim,
+    // so one saved while running locally (or on an old host) breaks sign-in with
+    // redirect_uri_mismatch on the deployed site. Report it instead of guessing.
+    const origin = `${req.protocol}://${req.get('host')}`
+    const expected = `${origin}/connected-accounts/google/callback`
+    const redirectUri = config?.redirectUri ?? null
+    const matchesOrigin = redirectUri ? redirectUri === expected : false
+
+    const hint = !config
+      ? 'Add your Google OAuth client ID and secret in Settings -> Google Credentials, or set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET and redeploy.'
+      : matchesOrigin
         ? null
-        : 'Add your Google OAuth client ID and secret in Settings -> Google Credentials, or set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET and run `npm run seed:google-config`.',
-    })
+        : `The saved redirect URI (${redirectUri}) does not match this site (${expected}). Open Settings -> Google OAuth Credentials, leave the Redirect URI field empty and save again to use the current origin.`
+
+    return res.json({ configured: Boolean(config), redirectUri, expectedRedirectUri: expected, redirectUriMatchesOrigin: matchesOrigin, hint })
   } catch (error) {
     return next(error)
   }

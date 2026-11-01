@@ -135,16 +135,92 @@ systemRouter.get('/google-config', requireAuth, async (req, res, next) => {
   }
 })
 
+/**
+ * Reads the body sent by Settings -> Google OAuth Credentials and validates it
+ * before anything is written.
+ *
+ * Every rejection names the field and the fix: a paste that includes a label, a
+ * trailing space copied from the Google console, or a redirect URI for the wrong
+ * host are the usual reasons a save "just doesn't work".
+ */
+// Deliberately loose: any OAuth *web* client ID ends in this suffix. Only reject
+// values that clearly are not one (a project number, an API key, a URL).
+const googleClientIdPattern = /^[^\s]+\.apps\.googleusercontent\.com$/i
+
+function readGoogleBody(body: unknown, request: { protocol: string; host: string }) {
+  const input = (body ?? {}) as { clientId?: unknown; clientSecret?: unknown; redirectUri?: unknown }
+
+  const clientId = typeof input.clientId === 'string' ? input.clientId.trim() : ''
+  const clientSecret = typeof input.clientSecret === 'string' ? input.clientSecret.trim() : ''
+  const rawRedirect = typeof input.redirectUri === 'string' ? input.redirectUri.trim() : ''
+
+  if (!clientId) {
+    return { error: { code: 'BAD_REQUEST', message: 'Client ID is required. Copy it from Google Cloud -> APIs & Services -> Credentials.' } } as const
+  }
+  if (/\s/.test(clientId)) {
+    return { error: { code: 'BAD_REQUEST', message: 'Client ID contains a space or line break. Copy just the ID, with no surrounding whitespace.' } } as const
+  }
+  if (/^https?:\/\//i.test(clientId) || clientId.includes('console.cloud.google.com')) {
+    return { error: { code: 'BAD_REQUEST', message: 'That looks like a URL, not a Client ID. Use the value ending in ".apps.googleusercontent.com".' } } as const
+  }
+  if (!googleClientIdPattern.test(clientId)) {
+    return {
+      error: {
+        code: 'BAD_REQUEST',
+        message: 'Client ID should look like "123456789012-abcdef.apps.googleusercontent.com". Check that you copied the OAuth client ID (not the project number or the API key).',
+      },
+    } as const
+  }
+  if (/\s/.test(clientSecret)) {
+    return { error: { code: 'BAD_REQUEST', message: 'Client Secret contains a space or line break. Copy it again without surrounding whitespace.' } } as const
+  }
+
+  // The default has to be reachable over https: Google rejects http redirect URIs
+  // for anything except localhost, and behind a proxy req.protocol can be http.
+  const host = request.host || 'localhost:4000'
+  const isLocalHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(host)
+  const scheme = request.protocol === 'http' && !isLocalHost ? 'https' : request.protocol || 'http'
+  const defaultRedirect = `${scheme}://${host}/connected-accounts/google/callback`
+
+  let redirectUri = defaultRedirect
+  if (rawRedirect) {
+    let parsed: URL
+    try {
+      parsed = new URL(rawRedirect)
+    } catch {
+      return { error: { code: 'BAD_REQUEST', message: `Redirect URI "${rawRedirect}" is not a full URL. Use ${defaultRedirect}.` } } as const
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return { error: { code: 'BAD_REQUEST', message: 'Redirect URI must start with https:// (or http:// for localhost).' } } as const
+    }
+    if (parsed.protocol === 'http:' && !/^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(parsed.host)) {
+      return {
+        error: {
+          code: 'BAD_REQUEST',
+          message: `Google rejects http:// redirect URIs. Use https://${parsed.host}${parsed.pathname}.`,
+        },
+      } as const
+    }
+    if (!parsed.pathname.endsWith('/connected-accounts/google/callback')) {
+      return {
+        error: {
+          code: 'BAD_REQUEST',
+          message: `Redirect URI must end with /connected-accounts/google/callback (got ${parsed.pathname}). Use ${defaultRedirect} unless you changed the route on purpose.`,
+        },
+      } as const
+    }
+    redirectUri = parsed.toString()
+  }
+
+  return { clientId, clientSecret, redirectUri, defaultRedirect } as const
+}
+
 systemRouter.post('/google-config', requireAuth, async (req, res, next) => {
   try {
-    const { clientId, clientSecret, redirectUri } = req.body
+    const parsed = readGoogleBody(req.body, { protocol: req.protocol, host: req.get('host') ?? '' })
+    if ('error' in parsed) return res.status(400).json(parsed.error)
 
-    if (!clientId) {
-      return res.status(400).json({ code: 'BAD_REQUEST', message: 'Client ID is required.' })
-    }
-
-    const defaultRedirect = `${req.protocol}://${req.get('host')}/connected-accounts/google/callback`
-    const finalRedirectUri = redirectUri || defaultRedirect
+    const { clientId, clientSecret, redirectUri } = parsed
 
     const scopes = [
       'https://www.googleapis.com/auth/drive',
@@ -152,50 +228,75 @@ systemRouter.post('/google-config', requireAuth, async (req, res, next) => {
       'https://www.googleapis.com/auth/userinfo.profile',
     ]
 
-    // Disable old global active config
-    await prisma.providerConfig.updateMany({
-      where: { userId: null, provider: 'google_drive', status: 'active' },
-      data: { status: 'disabled' }
-    })
-
-    // Retrieve the old config to see if we need to reuse the secret if it was not provided in the request
+    // Reuse the stored secret when the form only changes the client ID.
     let finalSecret = clientSecret
     if (!finalSecret) {
-      const oldConfig = await prisma.providerConfig.findFirst({
-        where: { userId: null, provider: 'google_drive', status: 'disabled' },
-        orderBy: { createdAt: 'desc' }
+      const previous = await prisma.providerConfig.findFirst({
+        where: { userId: null, provider: 'google_drive' },
+        orderBy: { createdAt: 'desc' },
       })
-      if (oldConfig) {
+      if (previous) {
         try {
-          finalSecret = decryptText(oldConfig.clientSecretEncrypted)
+          finalSecret = decryptText(previous.clientSecretEncrypted)
         } catch {
-          // ignore
+          // Stored with a different TOKEN_ENCRYPTION_KEY; ask for the secret again.
         }
       }
     }
-
     if (!finalSecret) {
-      return res.status(400).json({ code: 'BAD_REQUEST', message: 'Client Secret is required for first-time setup.' })
+      return res.status(400).json({ code: 'BAD_REQUEST', message: 'Client Secret is required for first-time setup. Paste it from Google Cloud -> Credentials.' })
     }
 
+    const clientIdEncrypted = encryptText(clientId)
+    const clientSecretEncrypted = encryptText(finalSecret)
+
+    // Write the new config first, then retire the old ones. The previous order
+    // disabled the working config before creating the replacement, so a failed
+    // save left Google sign-in broken with nothing to fall back to.
     const config = await prisma.providerConfig.create({
-      data: {
-        userId: null,
-        provider: 'google_drive',
-        clientIdEncrypted: encryptText(clientId),
-        clientSecretEncrypted: encryptText(finalSecret),
-        redirectUri: finalRedirectUri,
-        scopes,
-        status: 'active'
-      }
+      data: { userId: null, provider: 'google_drive', clientIdEncrypted, clientSecretEncrypted, redirectUri, scopes, status: 'active' },
     })
+    try {
+      await prisma.providerConfig.updateMany({
+        where: { userId: null, provider: 'google_drive', status: 'active', id: { not: config.id } },
+        data: { status: 'disabled' },
+      })
+    } catch (cleanupError) {
+      // Roll the new row back: keeping two active configs around is confusing, and
+      // the old one is still the one Google accounts were linked against.
+      await prisma.providerConfig.deleteMany({ where: { id: config.id } }).catch(() => undefined)
+      throw cleanupError
+    }
+
+    // Prove the round trip: if the key cannot decrypt what we just wrote, the
+    // credentials would silently fail at sign-in time.
+    let verified = false
+    try {
+      verified = decryptText(config.clientIdEncrypted) === clientId && decryptText(config.clientSecretEncrypted) === finalSecret
+    } catch {
+      verified = false
+    }
+    if (!verified) {
+      return res.status(500).json({
+        code: 'CONFIG_NOT_VERIFIABLE',
+        message: 'Credentials were saved but could not be read back. TOKEN_ENCRYPTION_KEY is probably missing or different from the one used before - set it and save again.',
+      })
+    }
 
     return res.status(201).json({
       status: 'success',
-      message: 'Global Google OAuth configuration updated successfully.',
-      id: config.id
+      message: `Google OAuth credentials saved. Add this exact URL to Google Cloud -> Credentials -> Authorized redirect URIs: ${redirectUri}`,
+      id: config.id,
+      clientId,
+      redirectUri,
+      hasSecret: true,
+      existed: Boolean(config.id),
     })
   } catch (error) {
+    const message = error instanceof Error ? error.message : ''
+    if (/unique constraint|P2002/i.test(message)) {
+      return res.status(409).json({ code: 'CONFLICT', message: 'A Google config was created at the same moment. Reload the page and try again.' })
+    }
     return next(error)
   }
 })
