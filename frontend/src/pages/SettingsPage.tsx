@@ -48,6 +48,9 @@ export function SettingsPage() {
   const [googleClientSecret, setGoogleClientSecret] = useState('')
   const [googleRedirectUri, setGoogleRedirectUri] = useState('')
   const [defaultRedirectUri, setDefaultRedirectUri] = useState('')
+  // Feedback for the OAuth form itself: the shared `message` banner sits at the
+  // top of the page, where it is easy to miss while scrolled down to this card.
+  const [googleSaveState, setGoogleSaveState] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
   const [hasSecret, setHasSecret] = useState(false)
   const [savingGoogleConfig, setSavingGoogleConfig] = useState(false)
   const [showGoogleHelp, setShowGoogleHelp] = useState(false)
@@ -214,22 +217,43 @@ export function SettingsPage() {
 
   async function saveGoogleConfig(event: FormEvent) {
     event.preventDefault()
+    const clientId = googleClientId.trim()
+    const clientSecret = googleClientSecret.trim()
+    const redirectUri = googleRedirectUri.trim()
+
+    // Catch the paste mistakes here so the user gets an answer without a round trip.
+    if (!clientId) {
+      setGoogleSaveState({ tone: 'error', text: 'Client ID is required.' })
+      return
+    }
+    if (!clientSecret && !hasSecret) {
+      setGoogleSaveState({ tone: 'error', text: 'Client Secret is required the first time you save.' })
+      return
+    }
+
     setSavingGoogleConfig(true)
     setMessage('')
+    setGoogleSaveState(null)
     try {
-      const res = await apiFetch<{ message: string }>('/system/google-config', {
+      const res = await apiFetch<{ message: string; clientId?: string; redirectUri?: string }>('/system/google-config', {
         method: 'POST',
-        body: JSON.stringify({
-          clientId: googleClientId,
-          clientSecret: googleClientSecret || undefined,
-          redirectUri: googleRedirectUri || defaultRedirectUri,
-        }),
+        body: JSON.stringify({ clientId, clientSecret: clientSecret || undefined, redirectUri: redirectUri || undefined }),
       })
-      setMessage(res.message || 'Google OAuth credentials saved.')
+
+      // Trust the server's read-back rather than the form: it is what sign-in will use.
       setHasSecret(true)
       setGoogleClientSecret('')
+      if (res.clientId) setGoogleClientId(res.clientId)
+      if (res.redirectUri) {
+        setGoogleRedirectUri(res.redirectUri)
+        setDefaultRedirectUri((current) => current || res.redirectUri!)
+      }
+      setGoogleSaveState({ tone: 'ok', text: res.message || 'Google OAuth credentials saved.' })
+      setMessage('')
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to save Google OAuth configuration')
+      const text = error instanceof Error ? error.message : 'Failed to save Google OAuth configuration'
+      setGoogleSaveState({ tone: 'error', text })
+      setMessage(text)
     } finally {
       setSavingGoogleConfig(false)
     }
@@ -489,6 +513,19 @@ export function SettingsPage() {
                   {savingGoogleConfig ? 'Saving...' : 'Save Credentials'}
                 </Button>
               </div>
+
+              {googleSaveState ? (
+                <p
+                  className={
+                    googleSaveState.tone === 'ok'
+                      ? 'rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs leading-relaxed text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300'
+                      : 'rounded-xl border border-red-200 bg-red-50 p-3 text-xs leading-relaxed text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300'
+                  }
+                  role="status"
+                >
+                  {googleSaveState.text}
+                </p>
+              ) : null}
             </form>
           </Card>
 
