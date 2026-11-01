@@ -319,6 +319,31 @@ The backend runs `prisma migrate deploy` on boot, so the schema is created autom
 
 ## Deploying to Render (or any container host)
 
+### Recommended: one service (no API URL to configure)
+
+The root `Dockerfile` builds the API and the SPA into a single image. Express serves `/` (SPA), `/api/*` (API), `/health` and `/ready`, so the browser always calls the API on its own origin — no `API_UPSTREAM`, no `VITE_API_URL`, no CORS, nothing to get out of sync.
+
+Render: **New → Web Service → Docker**, *Dockerfile Path* `./Dockerfile`, health check `/health`, then set only:
+
+```env
+DATABASE_URL      = mysql://avnadmin:PASSWORD@mysql-<id>.<region>.aivencloud.com:PORT/defaultdb
+DATABASE_CA_CERT  = <contents of ca.pem>        # Aiven / any managed MySQL
+JWT_ACCESS_SECRET = <32+ random chars>
+TOKEN_ENCRYPTION_KEY = <32+ random chars>
+```
+
+`FRONTEND_URL` is optional here (it defaults to the service's own origin) and `PORT` is injected by the host. Verify with `/ready` → `{"status":"ok","database":"ok","migrations":"16"}`, then open `/register` on the same URL.
+
+Local equivalent:
+
+```bash
+docker build -t 9drive .
+docker run --rm -p 4000:4000 --env-file backend/.env 9drive
+# → app and API both on http://localhost:4000
+```
+
+### Alternative: two services (API + static SPA)
+
 The repo ships two images. They talk to each other through a **runtime** proxy, so nothing has to be rebuilt when a URL changes.
 
 | Service | Root | Port | Health check | Env vars that matter |
@@ -344,6 +369,7 @@ Notes:
 | --- | --- |
 | Backend log: `No DATABASE_URL is present in this container's environment`, then the deploy exits | The backend service has no `DATABASE_URL`. Render → backend service → *Environment* → add it (`mysql://avnadmin:PASSWORD@HOST:PORT/defaultdb`) plus `DATABASE_CA_CERT` for Aiven, then redeploy. |
 | `GET /ready` returns `503 {"database":"unreachable"}` | Reachable process, broken database: wrong `DATABASE_URL`/`DATABASE_CA_CERT`, or the Aiven service is powered off. `npm run db:check` prints the exact failure. |
+| App loads but every API call fails (or `/api/*` returns `502`) | In the two-service setup `API_UPSTREAM` is missing/wrong. Switch to the single-service image (`./Dockerfile`) and there is nothing to configure. |
 | `Cannot GET /ready` (plain text, often with an HTML-ish page) | The backend is answering but on a **build older than the one that added `/ready`**. Check `/health` → `commit`, then redeploy the backend from `main`. Unknown routes now return JSON with the running `commit` instead. |
 | `GET /ready` returns `503 {"migrations":"missing"}` | Empty database: run `npm run db:migrate:deploy` (the container also does this on boot). |
 | `Unexpected token '<', "<!doctype "... is not valid JSON` | The API call got `index.html` back, so it never reached the API. Usually `VITE_API_URL` is set to the frontend's own URL. Builds now ignore a same-origin `VITE_API_URL` and fall back to `/api`, but delete the variable anyway (it is baked in at build time) and set `API_UPSTREAM` on the frontend service. The error message now names the URL and the fix. |

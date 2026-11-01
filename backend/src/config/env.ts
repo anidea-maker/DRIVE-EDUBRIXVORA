@@ -4,6 +4,20 @@ import { loadEnvFiles } from './load-env.js'
 loadEnvFiles()
 
 /**
+ * Best guess for this deployment's own public origin, used when FRONTEND_URL is
+ * not configured: Render/Railway/Fly expose it, local dev falls back to Vite.
+ */
+function defaultFrontendUrl(): string {
+  const platformHost =
+    process.env.RENDER_EXTERNAL_HOSTNAME ||
+    process.env.RAILWAY_PUBLIC_DOMAIN ||
+    process.env.FLY_APP_NAME?.concat('.fly.dev') ||
+    ''
+  if (platformHost) return `https://${platformHost}`
+  return 'http://localhost:5173'
+}
+
+/**
  * Accepts "https://app.example.com", "app.example.com" or "app.example.com/".
  * CORS needs a precise origin, and platforms hand out bare hostnames.
  */
@@ -22,7 +36,13 @@ const envSchema = z.object({
   PORT: z.coerce.number().optional(),
   APP_PORT: z.coerce.number().default(4000),
   // A bare host (as injected by platform blueprints) is upgraded to an origin.
-  FRONTEND_URL: z.string().min(1).transform(normalizeOrigin).pipe(z.string().url()),
+  // Optional: when the SPA is served by this same process there is no CORS
+  // negotiation at all, so the platform's own hostname is a safe default.
+  FRONTEND_URL: z
+    .string()
+    .optional()
+    .transform((value) => normalizeOrigin(value?.trim() || defaultFrontendUrl()))
+    .pipe(z.string().url()),
   JWT_ACCESS_SECRET: z.string().min(32),
   TOKEN_ENCRYPTION_KEY: z.string().min(32),
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().default(900),

@@ -2,6 +2,9 @@ FROM node:20-alpine AS base
 
 WORKDIR /app
 
+# Runtime stage only: the build stage still needs devDependencies (tsc/prisma).
+ENV NODE_ENV=production
+
 COPY package*.json ./
 COPY prisma ./prisma
 
