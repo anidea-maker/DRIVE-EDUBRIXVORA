@@ -14,6 +14,7 @@ export type ConnectFailureReason =
   | 'TOKEN_EXCHANGE_FAILED'
   | 'STATE_EXPIRED'
   | 'QUOTA_SYNC'
+  | 'CONFIG_MISSING'
   | 'UNKNOWN'
 
 const CONNECT: Record<ConnectFailureReason, string> = {
@@ -26,6 +27,8 @@ const CONNECT: Record<ConnectFailureReason, string> = {
   TOKEN_EXCHANGE_FAILED:
     'Google rejected the code exchange. Usually the redirect URI in Google Cloud does not exactly match this site - check Settings -> Google OAuth Credentials and the Authorized redirect URIs.',
   STATE_EXPIRED: 'This connection attempt expired or was already used. Start it again.',
+  CONFIG_MISSING:
+    'The saved Google OAuth client is not accepted by Google (invalid client or missing secret). Open Settings -> Google OAuth Credentials and save the Client ID and Secret again.',
   QUOTA_SYNC: 'The Drive account was connected, but reading its storage quota failed.',
   UNKNOWN: 'Google returned an unexpected error. The backend log shows the exact reason.',
 }
@@ -37,6 +40,7 @@ const SIGN_IN: Record<ConnectFailureReason, string> = {
     'Google did not grant offline access. Retry and approve every permission. If it repeats, remove 9Drive from your Google account permissions and sign in again.',
   TOKEN_EXCHANGE_FAILED: CONNECT.TOKEN_EXCHANGE_FAILED,
   STATE_EXPIRED: 'That sign-in link expired. Please start again.',
+  CONFIG_MISSING: CONNECT.CONFIG_MISSING,
   QUOTA_SYNC: CONNECT.QUOTA_SYNC,
   UNKNOWN: 'Google sign-in failed. Please try again.',
 }

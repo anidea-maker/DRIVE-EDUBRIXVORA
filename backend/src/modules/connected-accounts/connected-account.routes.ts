@@ -7,6 +7,8 @@ import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.
 import { encryptText, hashToken, randomToken } from '../../utils/crypto.js'
 import { hashPassword } from '../../utils/password.js'
 import { createOAuthClient, syncGoogleQuota } from '../google/google.service.js'
+import { classifyGoogleError, describeGoogleError, type ConnectFailure } from '../google/google-error.js'
+import { redirectToFrontend } from '../../utils/redirect.js'
 import { syncS3Quota, testS3Connection } from '../s3/s3.service.js'
 
 export const connectedAccountRouter = Router()
@@ -198,46 +200,9 @@ connectedAccountRouter.post('/s3', requireAuth, async (req: AuthRequest, res, ne
 })
 
 /**
- * Turns a failure from Google (or from the quota read) into a short code the
- * frontend can explain. The previous catch-all redirected with `status=error`
- * and nothing else, so a disabled Drive API looked identical to a broken build.
+ * The URL the popup is opened with. A missing OAuth client is a setup problem, so
+ * it comes back as JSON with an instruction rather than a stack trace.
  */
-type ConnectFailure = 'STATE_EXPIRED' | 'DRIVE_API_DISABLED' | 'PERMISSION_DENIED' | 'INVALID_GRANT' | 'TOKEN_EXCHANGE_FAILED' | 'QUOTA_SYNC' | 'UNKNOWN'
-
-function classifyGoogleError(error: unknown): ConnectFailure {
-  const err = error as {
-    code?: number
-    status?: number
-    message?: string
-    errors?: Array<{ reason?: string; message?: string }>
-    response?: { data?: { error?: { status?: string; message?: string; errors?: Array<{ reason?: string }> } } }
-  } | null
-
-  const status = err?.code ?? err?.status ?? err?.response?.data?.error?.status
-  const reasons = [
-    ...(err?.errors?.map((e) => e.reason) ?? []),
-    ...(err?.response?.data?.error?.errors?.map((e) => e.reason) ?? []),
-    err?.response?.data?.error?.status,
-    err?.message,
-  ]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase()
-
-  if (/has not been used|is disabled|accessnotconfigured|service_disabled|drive api/.test(reasons)) return 'DRIVE_API_DISABLED'
-  if (/insufficient|permission|forbidden/.test(reasons) || status === 403) return 'PERMISSION_DENIED'
-  if (/invalid_grant|revoked|expired/.test(reasons)) return 'INVALID_GRANT'
-  if (/invalid_scope|invalid_request|redirect_uri_mismatch/.test(reasons)) return 'TOKEN_EXCHANGE_FAILED'
-  return 'UNKNOWN'
-}
-
-/** Human-readable one-liner for the server log. */
-function describeGoogleError(error: unknown): string {
-  const err = error as { code?: number; message?: string; errors?: Array<{ reason?: string }> } | null
-  const reason = err?.errors?.map((e) => e.reason).filter(Boolean).join(', ')
-  return [err?.code, reason, err?.message].filter(Boolean).join(' | ') || String(error)
-}
-
 connectedAccountRouter.get('/google/connect-url', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const url = await createGoogleConnectUrl(req)
@@ -264,16 +229,42 @@ connectedAccountRouter.get('/google/connect', requireAuth, async (req: AuthReque
           'Google Drive is not connected yet because no OAuth client is configured. Save your Client ID and Secret in Settings -> Google OAuth Credentials (Redirect URI can stay empty), then try again.',
       })
     }
-    return res.redirect(url)
+    try {
+      return res.redirect(url)
+    } catch (error) {
+      console.error('[google-connect] Google returned a URL that cannot be used as a redirect:', describeGoogleError(error))
+      return res.status(500).json({ code: 'GOOGLE_URL_INVALID', message: 'The saved Google OAuth client settings look malformed. Re-save the Client ID and Secret in Settings -> Google OAuth Credentials.' })
+    }
   } catch (error) {
     return next(error)
   }
 })
 
 connectedAccountRouter.get('/google/callback', async (req, res, next) => {
-  const fail = (reason: ConnectFailure) => res.redirect(`${env.FRONTEND_URL}/google-connected?status=error&reason=${reason}`)
+  /**
+   * Every OAuth failure ends on the SPA's result page with a reason code - never a
+   * bare 500 and never a blank screen. `redirectToFrontend` cannot throw.
+   */
+  const fail = (reason: ConnectFailure) => {
+    console.error(`[google-callback] connect flow failed: ${reason}`)
+    return redirectToFrontend(
+      res,
+      '/google-connected',
+      { status: 'error', reason },
+      {
+        title: 'Connection failed',
+        detail: `Google returned ${reason.toLowerCase().replace(/_/g, ' ')}. Close this tab and start the connection again.`,
+      },
+    )
+  }
 
   try {
+    if (typeof req.query.error === 'string') {
+      console.error('[google-callback] Google returned an error instead of a code:', req.query.error)
+      return fail(req.query.error === 'access_denied' ? 'PERMISSION_DENIED' : 'TOKEN_EXCHANGE_FAILED')
+    }
+    console.log('[google-callback] connect callback hit', { hasCode: typeof req.query.code === 'string', hasState: typeof req.query.state === 'string' })
+
     const query = z.object({ code: z.string(), state: z.string() }).parse(req.query)
     const oauthState = await prisma.oauthState.findUnique({ where: { stateHash: hashToken(query.state) }, include: { providerConfig: true } })
     if (!oauthState) {
@@ -327,7 +318,7 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
       const refreshTokenEncrypted = tokens.refresh_token ? encryptText(tokens.refresh_token) : existingAccount?.refreshTokenEncrypted
       if (!refreshTokenEncrypted) {
         console.error('Google login failed: no refresh token received and no existing account. Has refresh_token:', !!tokens.refresh_token)
-        return res.redirect(`${env.FRONTEND_URL}/google-auth?status=error&reason=INVALID_GRANT`)
+        return redirectToFrontend(res, '/google-auth', { status: 'error', reason: 'INVALID_GRANT' })
       }
       const account = await prisma.connectedAccount.upsert({
         where: { userId_provider_providerAccountId: { userId: user.id, provider: 'google_drive', providerAccountId } },
@@ -361,7 +352,7 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
       await syncGoogleQuota(account.id).catch(() => undefined)
       const handoffToken = randomToken()
       await prisma.authHandoff.create({ data: { userId: user.id, tokenHash: hashToken(handoffToken), expiresAt: new Date(Date.now() + 5 * 60_000) } })
-      return res.redirect(`${env.FRONTEND_URL}/google-auth?token=${handoffToken}`)
+      return redirectToFrontend(res, '/google-auth', { token: handoffToken })
     }
 
     if (oauthState.flow !== 'connect' || !oauthState.userId) {
@@ -417,11 +408,17 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
       console.error(`[google-callback] account ${account.id} connected, but the quota sync failed (${quotaReason}):`, describeGoogleError(error))
     }
 
-    const params = new URLSearchParams({ status: 'success', quota: quotaReason ? 'failed' : 'ok' })
-    if (quotaReason) params.set('reason', quotaReason)
-    return res.redirect(`${env.FRONTEND_URL}/google-connected?${params.toString()}`)
+    return redirectToFrontend(
+      res,
+      '/google-connected',
+      { status: 'success', quota: quotaReason ? 'failed' : 'ok', reason: quotaReason },
+      {
+        title: 'Drive connected',
+        detail: 'The account was connected. Open Settings to see it.',
+      },
+    )
   } catch (error) {
-    console.error('Google OAuth callback failed:', describeGoogleError(error))
+    console.error('[google-callback] unexpected failure:', describeGoogleError(error), error)
     return fail(classifyGoogleError(error))
   }
 })
