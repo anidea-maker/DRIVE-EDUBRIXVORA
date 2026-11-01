@@ -4,6 +4,7 @@ import { HardDrive } from 'lucide-react'
 import { Card } from '@/components/ui/card'
 import { apiFetch } from '@/lib/api'
 import { setAuthSession, type AuthUser } from '@/lib/auth'
+import { explainSignInFailure } from '@/lib/google-connect-errors'
 
 type AuthResponse = { accessToken: string; refreshToken: string; user: AuthUser }
 
@@ -16,7 +17,7 @@ export function GoogleAuthPage() {
 
   useEffect(() => {
     if (status === 'error' || !token) {
-      setMessage('Google sign-in failed. Please try again.')
+      setMessage(explainSignInFailure(params.get('reason')))
       return
     }
 
