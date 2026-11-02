@@ -18,7 +18,7 @@ export const connectedAccountRouter = Router()
 
 /**
  * `provider` names a backend described by the environment (`B2_*`, `IDRIVE_E2_*`,
- * `FILEBASE_*`). The other fields then become overrides: anything left blank is
+ * `TIGRIS_*`, `S3_*`). The other fields then become overrides: anything left blank is
  * filled from the environment, so the browser never has to send a secret it does
  * not know.
  */

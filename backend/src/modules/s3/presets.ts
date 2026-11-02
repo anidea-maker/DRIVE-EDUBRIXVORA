@@ -18,7 +18,7 @@ import { looksLikePlaceholder } from '../../utils/placeholder.js'
  * variables, not code.
  */
 
-export type StorageBackendId = 'b2' | 'idrive_e2' | 'filebase' | 'custom'
+export type StorageBackendId = 'b2' | 'idrive_e2' | 'tigris' | 'custom'
 
 /**
  * State of one environment variable, without ever exposing its value.
@@ -76,8 +76,8 @@ function readEnv(name: string): string | null {
 /**
  * The first of several acceptable names.
  *
- * Dashboards and tutorials disagree about names (`FILEBASE_KEY_ID` vs
- * `FILEBASE_ACCESS_KEY`), and a value typed under the "wrong" name looked exactly
+ * Dashboards and tutorials disagree about names (`TIGRIS_KEY_ID` vs
+ * `TIGRIS_ACCESS_KEY`), and a value typed under the "wrong" name looked exactly
  * like nothing configured. Both work; the canonical name is what diagnostics lists.
  */
 function readAny(...names: string[]): string | null {
@@ -223,27 +223,35 @@ function resolveIdriveE2(): Resolved {
 }
 
 /**
- * Filebase. One global endpoint (`https://s3.filebase.io`) and region `auto`; the
- * console calls the pair "Access Key" and "Secret Key". IPFS-backed buckets live on
- * a *different* host (`s3.filebase.com`) - set `FILEBASE_ENDPOINT_URL` for those.
+ * Tigris - a globally distributed S3-compatible store.
+ *
+ * One endpoint (`https://t3.storage.dev`), region `auto`, path-style addressing.
+ * On Fly.io the endpoint is `https://fly.storage.tigris.dev` instead, so it is
+ * overridable. Credentials are an access key ID + secret access key pair created
+ * in the Tigris console (`tigris.dev` -> Access keys).
+ *
+ * Filebase used to live here and was removed: its object-storage buckets answered
+ * `NotFound - UnknownError` on every connect attempt from this deployment, because
+ * the bucket and the key belonged to the IPFS tier (`s3.filebase.com`, us-east-1),
+ * and a preset that cannot connect is worse than no preset.
  */
-function resolveFilebase(): Resolved {
-  const explicitEndpoint = readEnv('FILEBASE_ENDPOINT_URL')
-  const endpoint = normalizeEndpoint(explicitEndpoint) ?? 'https://s3.filebase.io'
-  const region = readEnv('FILEBASE_REGION') ?? 'auto'
-  const quota = megabytesToBytes('FILEBASE_STORAGE_MAX_MB')
+function resolveTigris(): Resolved {
+  const explicitEndpoint = readEnv('TIGRIS_ENDPOINT_URL')
+  const endpoint = normalizeEndpoint(explicitEndpoint) ?? 'https://t3.storage.dev'
+  const region = readEnv('TIGRIS_REGION') ?? 'auto'
+  const quota = megabytesToBytes('TIGRIS_STORAGE_MAX_MB')
   const notes: string[] = [
-    'Filebase: FILEBASE_KEY_ID is the console\'s "Access Key", FILEBASE_SECRET_KEY is the "Secret Key". Region is "auto".',
+    'Tigris: endpoint https://t3.storage.dev, region auto, path-style. Set TIGRIS_ENDPOINT_URL=https://fly.storage.tigris.dev if the bucket was created inside Fly.io.',
   ]
   if (quota.note) notes.push(quota.note)
   const normalised = endpointNote(explicitEndpoint, endpoint)
   if (normalised) notes.push(normalised)
-  if (endpoint === 'https://s3.filebase.com') {
-    notes.push('Using the IPFS tier endpoint (s3.filebase.com). Region must be us-east-1 there - set FILEBASE_REGION=us-east-1.')
+  if (/filebase/i.test(endpoint)) {
+    notes.push('That endpoint belongs to a different provider - Tigris is https://t3.storage.dev.')
   }
-  const accessKeyId = readAny('FILEBASE_KEY_ID', 'FILEBASE_ACCESS_KEY', 'FILEBASE_ACCESS_KEY_ID')
-  const secretAccessKey = readAny('FILEBASE_SECRET_KEY', 'FILEBASE_SECRET_ACCESS_KEY', 'FILEBASE_SECRET')
-  const bucket = readAny('FILEBASE_BUCKET', 'FILEBASE_BUCKET_NAME')
+  const accessKeyId = readAny('TIGRIS_KEY_ID', 'TIGRIS_ACCESS_KEY', 'TIGRIS_ACCESS_KEY_ID')
+  const secretAccessKey = readAny('TIGRIS_SECRET_KEY', 'TIGRIS_SECRET_ACCESS_KEY')
+  const bucket = readAny('TIGRIS_BUCKET', 'TIGRIS_BUCKET_NAME')
 
   return {
     bucket,
@@ -254,9 +262,9 @@ function resolveFilebase(): Resolved {
     quotaBytes: quota.value,
     notes,
     required: [
-      ['FILEBASE_KEY_ID', accessKeyId],
-      ['FILEBASE_SECRET_KEY', secretAccessKey],
-      ['FILEBASE_BUCKET', bucket],
+      ['TIGRIS_KEY_ID', accessKeyId],
+      ['TIGRIS_SECRET_KEY', secretAccessKey],
+      ['TIGRIS_BUCKET', bucket],
     ],
   }
 }
@@ -351,12 +359,12 @@ const DEFINITIONS: Definition[] = [
     resolve: resolveIdriveE2,
   },
   {
-    id: 'filebase',
-    label: 'Filebase',
-    name: 'Filebase',
+    id: 'tigris',
+    label: 'Tigris',
+    name: 'Tigris',
     pathStyle: true,
-    credentialsHint: 'Filebase console -> S3 API Access Keys: "Access Key" goes in FILEBASE_KEY_ID, "Secret Key" in FILEBASE_SECRET_KEY. Endpoint is https://s3.filebase.io, region auto.',
-    resolve: resolveFilebase,
+    credentialsHint: 'Tigris console -> Access keys: TIGRIS_KEY_ID + TIGRIS_SECRET_KEY, and TIGRIS_BUCKET. Endpoint is https://t3.storage.dev, region auto (override both for Fly.io).',
+    resolve: resolveTigris,
   },
   {
     id: 'custom',
@@ -424,8 +432,8 @@ const BACKEND_ALIASES: Record<string, StorageBackendId> = {
   idrive_e2: 'idrive_e2',
   'idrive-e2': 'idrive_e2',
   idrivee2: 'idrive_e2',
-  filebase: 'filebase',
-  fb: 'filebase',
+  tigris: 'tigris',
+  tigris_storage: 'tigris',
   custom: 'custom',
   generic: 'custom',
   s3_gen: 'custom',
