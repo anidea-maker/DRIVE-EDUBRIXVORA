@@ -1,4 +1,7 @@
 import type { Request } from 'express'
+
+/** The two things needed to know an origin; `Request` satisfies this. */
+export type OriginSource = { protocol?: string; get(name: string): string | undefined }
 import { prisma } from '../../config/prisma.js'
 import { GOOGLE_CALLBACK_PATH, checkRedirectUri } from './config-health.js'
 
@@ -17,7 +20,7 @@ import { GOOGLE_CALLBACK_PATH, checkRedirectUri } from './config-health.js'
  */
 
 /** `https://host` for this request, upgraded to https for anything non-local. */
-export function requestOrigin(req: Request): string | null {
+export function requestOrigin(req: OriginSource): string | null {
   const proto = (req.protocol || 'https').split(',')[0].trim().toLowerCase()
   const host = String(req.get('x-forwarded-host') ?? req.get('host') ?? '').split(',')[0].trim()
   if (!host) return null
@@ -33,7 +36,7 @@ const repaired = new Set<string>()
  * The redirect URI Google will be given: this request's own origin, unless that
  * origin is not usable (then the stored value, if it is).
  */
-export function resolveGoogleRedirectUri(req: Request, stored: string | null | undefined): string {
+export function resolveGoogleRedirectUri(req: OriginSource, stored: string | null | undefined): string {
   const origin = requestOrigin(req)
   const fromOrigin = origin ? checkRedirectUri(`${origin}${GOOGLE_CALLBACK_PATH}`) : null
   const fromStore = checkRedirectUri(stored)
