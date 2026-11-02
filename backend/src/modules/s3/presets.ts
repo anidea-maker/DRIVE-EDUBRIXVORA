@@ -18,7 +18,7 @@ import { looksLikePlaceholder } from '../../utils/placeholder.js'
  * variables, not code.
  */
 
-export type StorageBackendId = 'b2' | 'idrive_e2' | 'tigris' | 'custom'
+export type StorageBackendId = 'b2' | 'idrive_e2' | 'dbrij' | 'custom'
 
 /**
  * State of one environment variable, without ever exposing its value.
@@ -76,8 +76,8 @@ function readEnv(name: string): string | null {
 /**
  * The first of several acceptable names.
  *
- * Dashboards and tutorials disagree about names (`TIGRIS_KEY_ID` vs
- * `TIGRIS_ACCESS_KEY`), and a value typed under the "wrong" name looked exactly
+ * Dashboards and tutorials disagree about names (`DBRIJ_STORAGE_ACCESS_KEY` vs
+ * `AWS_ACCESS_KEY_ID`), and a value typed under the "wrong" name looked exactly
  * like nothing configured. Both work; the canonical name is what diagnostics lists.
  */
 function readAny(...names: string[]): string | null {
@@ -249,35 +249,45 @@ function resolveIdriveE2(): Resolved {
 }
 
 /**
- * Tigris - a globally distributed S3-compatible store.
+ * Dbrij Storage.
  *
- * One endpoint (`https://t3.storage.dev`), region `auto`, path-style addressing.
- * On Fly.io the endpoint is `https://fly.storage.tigris.dev` instead, so it is
- * overridable. Credentials are an access key ID + secret access key pair created
- * in the Tigris console (`tigris.dev` -> Access keys).
+ * The panel publishes two blocks: its own (`DBRIJ_STORAGE_URL`,
+ * `DBRIJ_STORAGE_ACCESS_KEY`, `DBRIJ_STORAGE_SECRET_KEY`) and one for "S3 tools and
+ * SDKs" (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL_S3`,
+ * `AWS_REGION`). Both are read, because a deployment may hold either - the observed
+ * live values are endpoint `https://s3.dbrij.com` and region `fsn1`.
  *
- * Filebase used to live here and was removed: its object-storage buckets answered
- * `NotFound - UnknownError` on every connect attempt from this deployment, because
- * the bucket and the key belonged to the IPFS tier (`s3.filebase.com`, us-east-1),
- * and a preset that cannot connect is worse than no preset.
+ * The bucket is optional: an AWS-shaped block never contains one, so the connect
+ * route lists the account's buckets and uses the only one when it is unambiguous.
  */
-function resolveTigris(): Resolved {
-  const explicitEndpoint = readEndpointEnv('TIGRIS_ENDPOINT_URL')
-  const endpoint = normalizeEndpoint(explicitEndpoint) ?? 'https://t3.storage.dev'
-  const region = readEnv('TIGRIS_REGION') ?? 'auto'
-  const quota = megabytesToBytes('TIGRIS_STORAGE_MAX_MB')
-  const notes: string[] = [
-    'Tigris: endpoint https://t3.storage.dev, region auto, path-style. Set TIGRIS_ENDPOINT_URL=https://fly.storage.tigris.dev if the bucket was created inside Fly.io.',
-  ]
-  if (quota.note) notes.push(quota.note)
-  const normalised = endpointNote(explicitEndpoint, endpoint)
-  if (normalised) notes.push(normalised)
-  if (/filebase/i.test(endpoint)) {
-    notes.push('That endpoint belongs to a different provider - Tigris is https://t3.storage.dev.')
+function resolveDbrij(): Resolved {
+  const explicitEndpoint = readAnyEndpoint('DBRIJ_STORAGE_URL', 'DBRIJ_ENDPOINT_URL')
+  const awsEndpoint = explicitEndpoint ? null : readEndpointEnv('AWS_ENDPOINT_URL_S3')
+  const split = splitEndpointAndBucket(explicitEndpoint ?? awsEndpoint)
+  const endpoint = split.endpoint ?? 'https://s3.dbrij.com'
+  const region = readAny('DBRIJ_REGION', 'DBRIJ_STORAGE_REGION', 'AWS_REGION', 'AWS_DEFAULT_REGION') ?? 'fsn1'
+  const quota = megabytesToBytes('DBRIJ_STORAGE_MAX_MB')
+  const accessKeyId = readAny('DBRIJ_STORAGE_ACCESS_KEY', 'DBRIJ_STORAGE_ACCESS_KEY_ID', 'DBRIJ_ACCESS_KEY', 'DBRIJ_KEY_ID', 'AWS_ACCESS_KEY_ID')
+  const secretAccessKey = readAny('DBRIJ_STORAGE_SECRET_KEY', 'DBRIJ_SECRET_KEY', 'DBRIJ_SECRET_ACCESS_KEY', 'AWS_SECRET_ACCESS_KEY')
+  const bucket = readAny('DBRIJ_STORAGE_BUCKET', 'DBRIJ_BUCKET', 'AWS_S3_BUCKET') ?? split.bucket
+
+  const notes: string[] = ['Dbrij Storage: endpoint https://s3.dbrij.com, path-style. The panel publishes its own DBRIJ_STORAGE_* block and an AWS_* block for S3 tools - either is read.']
+  if (!explicitEndpoint && awsEndpoint) notes.push('Endpoint read from AWS_ENDPOINT_URL_S3.')
+  if (!readEnv('DBRIJ_STORAGE_ACCESS_KEY') && readEnv('AWS_ACCESS_KEY_ID')) {
+    notes.push('Credentials read from AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.')
   }
-  const accessKeyId = readAny('TIGRIS_KEY_ID', 'TIGRIS_ACCESS_KEY', 'TIGRIS_ACCESS_KEY_ID')
-  const secretAccessKey = readAny('TIGRIS_SECRET_KEY', 'TIGRIS_SECRET_ACCESS_KEY')
-  const bucket = readAny('TIGRIS_BUCKET', 'TIGRIS_BUCKET_NAME')
+  if (!readAny('DBRIJ_REGION', 'DBRIJ_STORAGE_REGION') && readEnv('AWS_REGION')) {
+    notes.push('Region read from AWS_REGION.')
+  }
+  if (split.bucket) notes.push(`Bucket "${split.bucket}" was read from the storage URL path; the endpoint was reduced to ${endpoint}.`)
+  if (quota.note) notes.push(quota.note)
+  // When the path was a bucket, the split note above already explains the change.
+  const normalised = split.bucket ? null : endpointNote(explicitEndpoint ?? awsEndpoint, endpoint)
+  if (normalised) notes.push(normalised)
+  if (/filebase|tigris|backblazeb2|idrivee2/i.test(endpoint)) {
+    notes.push('That endpoint belongs to a different provider - Dbrij Storage is https://s3.dbrij.com.')
+  }
+  if (!bucket) notes.push('No bucket named: the server lists the buckets these credentials can see and uses the only one. Set DBRIJ_STORAGE_BUCKET to pin it.')
 
   return {
     bucket,
@@ -288,9 +298,9 @@ function resolveTigris(): Resolved {
     quotaBytes: quota.value,
     notes,
     required: [
-      ['TIGRIS_KEY_ID', accessKeyId],
-      ['TIGRIS_SECRET_KEY', secretAccessKey],
-      ['TIGRIS_BUCKET', bucket],
+      ['DBRIJ_STORAGE_ACCESS_KEY', accessKeyId],
+      ['DBRIJ_STORAGE_SECRET_KEY', secretAccessKey],
+      ['DBRIJ_STORAGE_BUCKET', bucket],
     ],
   }
 }
@@ -320,6 +330,16 @@ const PROVIDER_HOSTS: Array<[RegExp, string]> = [
   [/amazonaws\.com$/i, 'Amazon S3'],
   [/storage\.googleapis\.com$/i, 'Google Cloud Storage'],
 ]
+
+/** Just the host of an endpoint, for comparing two backends. */
+export function endpointHost(endpoint: string | null): string | null {
+  if (!endpoint) return null
+  try {
+    return new URL(endpoint).host.toLowerCase()
+  } catch {
+    return null
+  }
+}
 
 export function inferProviderLabel(endpoint: string | null): string | null {
   if (!endpoint) return null
@@ -493,12 +513,15 @@ const DEFINITIONS: Definition[] = [
     resolve: resolveIdriveE2,
   },
   {
-    id: 'tigris',
-    label: 'Tigris',
-    name: 'Tigris',
+    id: 'dbrij',
+    label: 'Dbrij Storage',
+    name: 'Dbrij Storage',
     pathStyle: true,
-    credentialsHint: 'Tigris console -> Access keys: TIGRIS_KEY_ID + TIGRIS_SECRET_KEY, and TIGRIS_BUCKET. Endpoint is https://t3.storage.dev, region auto (override both for Fly.io).',
-    resolve: resolveTigris,
+    // The bucket can be resolved from the account, so its absence must not disable
+    // the chip: an AWS-shaped credential block never contains one.
+    optionalVars: ['DBRIJ_STORAGE_BUCKET'],
+    credentialsHint: 'Dbrij panel: DBRIJ_STORAGE_URL, DBRIJ_STORAGE_ACCESS_KEY, DBRIJ_STORAGE_SECRET_KEY (the AWS_* block it also publishes is read too). Endpoint https://s3.dbrij.com, region fsn1, path-style.',
+    resolve: resolveDbrij,
   },
   {
     id: 'custom',
@@ -518,7 +541,7 @@ const DEFINITIONS: Definition[] = [
 
 /** Every backend the environment describes, including incomplete ones. */
 export function listStoragePresets(): StoragePreset[] {
-  return DEFINITIONS.filter((definition) => !definition.hideWhenUnconfigured || isConfigured(definition)).map((definition) => {
+  const presets: StoragePreset[] = DEFINITIONS.filter((definition) => !definition.hideWhenUnconfigured || isConfigured(definition)).map((definition) => {
     const resolved = definition.resolve()
     const optional = new Set(definition.optionalVars ?? [])
     const missing = resolved.required.filter(([, value]) => !value).map(([name]) => name).filter((name) => !optional.has(name))
@@ -549,6 +572,16 @@ export function listStoragePresets(): StoragePreset[] {
       credentialsHint: definition.credentialsHint,
     }
   })
+
+  /**
+   * One chip per provider. A dedicated preset (Dbrij) and the generic one can read
+   * the same variables and resolve the same host - showing both means two chips
+   * with the same name, so the generic entry steps aside.
+   */
+  const dedicatedHosts = new Set(
+    presets.filter((preset) => preset.id !== 'custom').map((preset) => endpointHost(preset.endpoint)).filter(Boolean),
+  )
+  return presets.filter((preset) => preset.id !== 'custom' || !dedicatedHosts.has(endpointHost(preset.endpoint)))
 }
 
 export function getStoragePreset(id: string): StoragePreset | undefined {
@@ -574,8 +607,9 @@ const BACKEND_ALIASES: Record<string, StorageBackendId> = {
   idrive_e2: 'idrive_e2',
   'idrive-e2': 'idrive_e2',
   idrivee2: 'idrive_e2',
-  tigris: 'tigris',
-  tigris_storage: 'tigris',
+  dbrij: 'dbrij',
+  dbrij_storage: 'dbrij',
+  dbrijstorage: 'dbrij',
   custom: 'custom',
   generic: 'custom',
   s3_gen: 'custom',

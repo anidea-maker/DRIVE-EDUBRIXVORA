@@ -10,7 +10,7 @@ import { getStoredUser, getAccessToken, clearAuthSession } from '@/lib/auth'
 import { useNavigate } from 'react-router-dom'
 
 type S3Preset = {
-  /** Backend id from the server's preset registry (`b2`, `idrive_e2`, `tigris`, `custom`, …). */
+  /** Backend id from the server's preset registry (`b2`, `idrive_e2`, `dbrij`, `custom`, …). */
   id: string
   label: string
   name: string
@@ -33,14 +33,14 @@ type S3Preset = {
  * the environment is three fields instead of six. B2 and Wasabi derive their
  * endpoint from the region; R2 and MinIO need one typed.
  */
-type ManualTemplate = 'aws' | 'b2' | 'hetzner' | 'tigris' | 'r2' | 'wasabi' | 'custom'
+type ManualTemplate = 'aws' | 'b2' | 'dbrij' | 'hetzner' | 'r2' | 'wasabi' | 'custom'
 
 const MANUAL_TEMPLATES: Array<{ id: ManualTemplate; label: string; pathStyle: boolean; region?: string; endpointFor?: (region: string) => string; hint?: string }> = [
   { id: 'aws', label: 'Amazon S3', pathStyle: false },
   { id: 'b2', label: 'Backblaze B2', pathStyle: true, endpointFor: (region) => (region ? `https://s3.${region}.backblazeb2.com` : '') },
-  // Tigris has one global endpoint and the region is the literal string "auto", so
-  // it needs no environment variables at all to be entered by hand.
-  { id: 'tigris', label: 'Tigris', pathStyle: true, region: 'auto', endpointFor: () => 'https://t3.storage.dev', hint: 'Endpoint https://t3.storage.dev and region auto are filled in. Paste the access key ID / secret access key from the Tigris console. Buckets created inside Fly.io use https://fly.storage.tigris.dev instead.' },
+  // Dbrij has one endpoint and a location code for a region, so it can be entered by
+  // hand without any environment variable at all.
+  { id: 'dbrij', label: 'Dbrij Storage', pathStyle: true, region: 'fsn1', endpointFor: () => 'https://s3.dbrij.com', hint: 'Endpoint https://s3.dbrij.com and region fsn1 are filled in. Paste the access key / secret key from the Dbrij panel. Leave the bucket empty to use the only bucket on the account.' },
   // Hetzner derives the host from the location code: fsn1, nbg1 or hel1.
   { id: 'hetzner', label: 'Hetzner Object Storage', pathStyle: true, region: 'fsn1', endpointFor: (region) => (region ? `https://${region}.your-objectstorage.com` : ''), hint: 'Region is the location code: fsn1 (Falkenstein), nbg1 (Nuremberg) or hel1 (Helsinki). The endpoint becomes https://<location>.your-objectstorage.com.' },
   { id: 'wasabi', label: 'Wasabi', pathStyle: false, endpointFor: (region) => (region ? `https://s3.${region}.wasabisys.com` : '') },
@@ -120,7 +120,7 @@ export function SettingsPage() {
   const [connectingS3, setConnectingS3] = useState(false)
   const [s3Form, setS3Form] = useState({ provider: '', template: 'aws' as ManualTemplate, name: '', bucket: '', region: 'us-east-1', endpoint: '', accessKeyId: '', secretAccessKey: '', forcePathStyle: false, quotaBytes: '' })
   // Backends this deployment already holds credentials for (`B2_*`, `IDRIVE_E2_*`,
-  // `TIGRIS_*`, `S3_*`). Connecting one is a single click: the secrets never reach
+  // `DBRIJ_*`, `S3_*`). Connecting one is a single click: the secrets never reach
   // the browser.
   const [s3Presets, setS3Presets] = useState<S3Preset[]>([])
   const [presetsError, setPresetsError] = useState('')
