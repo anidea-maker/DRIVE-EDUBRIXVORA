@@ -10,17 +10,26 @@ import { createOAuthClient, syncGoogleQuota } from '../google/google.service.js'
 import { classifyGoogleError, describeGoogleError, type ConnectFailure } from '../google/google-error.js'
 import { repairStoredRedirectUri, requestOrigin, resolveGoogleRedirectUri } from '../google/redirect-uri.js'
 import { redirectToFrontend } from '../../utils/redirect.js'
-import { syncS3Quota, testS3Connection } from '../s3/s3.service.js'
+import { describeS3Error, syncS3Quota, testS3Connection } from '../s3/s3.service.js'
+import { getStoragePreset, listStoragePresets, resolveActivePreset, resolvePresetCredentials } from '../s3/presets.js'
+import { looksLikePlaceholder } from '../../utils/placeholder.js'
 
 export const connectedAccountRouter = Router()
 
+/**
+ * `provider` names a backend described by the environment (`B2_*`, `IDRIVE_E2_*`,
+ * `DBBYTE_*`). The other fields then become overrides: anything left blank is
+ * filled from the environment, so the browser never has to send a secret it does
+ * not know.
+ */
 const s3ConnectSchema = z.object({
-  name: z.string().trim().min(1).max(191),
-  bucket: z.string().trim().min(1).max(191),
-  region: z.string().trim().min(1).max(191),
+  provider: z.enum(['b2', 'idrive_e2', 'dbyte']).optional(),
+  name: z.string().trim().min(1).max(191).optional(),
+  bucket: z.string().trim().min(1).max(191).optional(),
+  region: z.string().trim().min(1).max(191).optional(),
   endpoint: z.string().url().optional().or(z.literal('')),
-  accessKeyId: z.string().min(1),
-  secretAccessKey: z.string().min(1),
+  accessKeyId: z.string().min(1).optional(),
+  secretAccessKey: z.string().min(1).optional(),
   forcePathStyle: z.boolean().optional(),
   quotaBytes: z.string().regex(/^\d+$/).optional().nullable(),
 })
@@ -117,29 +126,91 @@ async function createGoogleConnectUrl(req: AuthRequest): Promise<string | null> 
   })
 }
 
+/**
+ * Which storage backends this deployment can connect, from its environment.
+ *
+ * The Settings form uses this to offer "connect Backblaze B2" instead of six
+ * hand-typed fields. Secrets are reported as `hasSecretKey: true`, never as
+ * values - they stay on the server.
+ */
+connectedAccountRouter.get('/s3/presets', requireAuth, async (_req, res) => {
+  return res.json({
+    presets: listStoragePresets(),
+    active: resolveActivePreset()?.id ?? null,
+    selected: process.env.STORAGE_BACKEND?.trim() || null,
+  })
+})
+
 connectedAccountRouter.post('/s3', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const body = s3ConnectSchema.parse(req.body)
-    const providerConfig = await prisma.providerConfig.findFirst({
-      where: { provider: 'google_drive', status: 'active' },
-      orderBy: { createdAt: 'desc' },
-    })
-    if (!providerConfig) {
-      return res.status(404).json({
-        error: 'PROVIDER_CONFIG_NOT_FOUND',
-        message: 'No active provider configuration is available for this storage connection.',
+
+    /**
+     * Resolve the backend: `provider` names an environment-described one, and any
+     * field the form left blank comes from there. A manually typed value always
+     * wins, so a user can point a preset at a different bucket.
+     */
+    const preset = body.provider ? getStoragePreset(body.provider) : resolveActivePreset()
+    if (body.provider && !preset) {
+      return res.status(400).json({ code: 'STORAGE_BACKEND_UNKNOWN', message: `Unknown storage backend "${body.provider}".` })
+    }
+    if (preset && !preset.ready && !(body.bucket && body.accessKeyId && body.secretAccessKey)) {
+      return res.status(400).json({
+        code: 'STORAGE_BACKEND_INCOMPLETE',
+        message: `The ${preset.label} credentials in this deployment's environment are incomplete. Missing or placeholder: ${preset.missing.join(', ')}. Set them on the service and redeploy, or type the connection details here.`,
+        missing: preset.missing,
       })
     }
 
-    const providerAccountId = `${body.bucket}:${body.endpoint || body.region}`
+    const presetCredentials = preset && preset.ready ? resolvePresetCredentials(preset.id) : null
+
+    const bucket = body.bucket ?? preset?.bucket ?? ''
+    const region = body.region ?? preset?.region ?? ''
+    const endpoint = (body.endpoint || preset?.endpoint || '').trim()
+    const accessKeyId = body.accessKeyId ?? presetCredentials?.accessKeyId ?? ''
+    const secretAccessKey = body.secretAccessKey ?? presetCredentials?.secretAccessKey ?? ''
+    const name = body.name ?? preset?.name ?? `${bucket}`
+    const forcePathStyle = body.forcePathStyle ?? preset?.forcePathStyle ?? Boolean(endpoint)
+    const quotaBytes = body.quotaBytes ?? preset?.quotaBytes ?? null
+
+    const missingFields = [
+      !bucket ? 'bucket' : null,
+      !region ? 'region' : null,
+      !accessKeyId ? 'access key ID' : null,
+      !secretAccessKey ? 'secret access key' : null,
+    ].filter(Boolean)
+    if (missingFields.length > 0) {
+      return res.status(400).json({
+        code: 'S3_FIELDS_MISSING',
+        message: `Missing: ${missingFields.join(', ')}.${preset ? ` Set the ${preset.label} variables on the service, or fill the form.` : ''}`,
+      })
+    }
+    // The Google OAuth incident in one line: a placeholder is not a credential.
+    for (const [label, value] of [['bucket', bucket], ['region', region], ['access key ID', accessKeyId], ['secret access key', secretAccessKey]] as const) {
+      if (looksLikePlaceholder(value)) {
+        return res.status(400).json({
+          code: 'S3_PLACEHOLDER_VALUE',
+          message: `The ${label} looks like documentation text ("${value}"), not a real value. Copy it from your storage provider's console.`,
+        })
+      }
+    }
+
+    // S3 needs no Google Drive provider config. Requiring one used to make an
+    // S3-only deployment impossible to set up.
+    const googleConfig = await prisma.providerConfig.findFirst({
+      where: { provider: 'google_drive', status: 'active' },
+      orderBy: { createdAt: 'desc' },
+    })
+
+    const providerAccountId = `${bucket}:${endpoint || region}`
     const existingAccount = await prisma.connectedAccount.findUnique({ where: { userId_provider_providerAccountId: { userId: req.user!.id, provider: 's3', providerAccountId } } })
     const account = existingAccount
       ? await prisma.connectedAccount.update({
         where: { id: existingAccount.id },
         data: {
-          providerConfigId: providerConfig.id,
-          email: `${body.bucket} (S3)`,
-          displayName: body.name,
+          providerConfigId: googleConfig?.id ?? null,
+          email: `${bucket} (S3)`,
+          displayName: name,
           accessTokenEncrypted: encryptText('s3'),
           refreshTokenEncrypted: encryptText(randomToken()),
           tokenExpiresAt: new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
@@ -149,11 +220,11 @@ connectedAccountRouter.post('/s3', requireAuth, async (req: AuthRequest, res, ne
       })
       : await prisma.connectedAccount.create({ data: {
         userId: req.user!.id,
-        providerConfigId: providerConfig.id,
+        providerConfigId: googleConfig?.id ?? null,
         provider: 's3',
         providerAccountId,
-        email: `${body.bucket} (S3)`,
-        displayName: body.name,
+        email: `${bucket} (S3)`,
+        displayName: name,
         accessTokenEncrypted: encryptText('s3'),
         refreshTokenEncrypted: encryptText(randomToken()),
         tokenExpiresAt: new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
@@ -165,24 +236,24 @@ connectedAccountRouter.post('/s3', requireAuth, async (req: AuthRequest, res, ne
       create: {
         userId: req.user!.id,
         connectedAccountId: account.id,
-        name: body.name,
-        bucket: body.bucket,
-        region: body.region,
-        endpoint: body.endpoint || null,
-        accessKeyIdEncrypted: encryptText(body.accessKeyId),
-        secretAccessKeyEncrypted: encryptText(body.secretAccessKey),
-        forcePathStyle: body.forcePathStyle ?? Boolean(body.endpoint),
-        quotaBytes: body.quotaBytes ? BigInt(body.quotaBytes) : null,
+        name,
+        bucket,
+        region,
+        endpoint: endpoint || null,
+        accessKeyIdEncrypted: encryptText(accessKeyId),
+        secretAccessKeyEncrypted: encryptText(secretAccessKey),
+        forcePathStyle,
+        quotaBytes: quotaBytes ? BigInt(quotaBytes) : null,
       },
       update: {
-        name: body.name,
-        bucket: body.bucket,
-        region: body.region,
-        endpoint: body.endpoint || null,
-        accessKeyIdEncrypted: encryptText(body.accessKeyId),
-        secretAccessKeyEncrypted: encryptText(body.secretAccessKey),
-        forcePathStyle: body.forcePathStyle ?? Boolean(body.endpoint),
-        quotaBytes: body.quotaBytes ? BigInt(body.quotaBytes) : null,
+        name,
+        bucket,
+        region,
+        endpoint: endpoint || null,
+        accessKeyIdEncrypted: encryptText(accessKeyId),
+        secretAccessKeyEncrypted: encryptText(secretAccessKey),
+        forcePathStyle,
+        quotaBytes: quotaBytes ? BigInt(quotaBytes) : null,
         status: 'active',
       },
     })
@@ -196,8 +267,13 @@ connectedAccountRouter.post('/s3', requireAuth, async (req: AuthRequest, res, ne
         },
       })
     } catch (error) {
+      // A failed connection test must not leave a half-connected account behind.
       if (!existingAccount) await prisma.connectedAccount.delete({ where: { id: account.id } }).catch(() => undefined)
-      throw error
+      else await prisma.s3StorageConfig.update({ where: { connectedAccountId: account.id }, data: { status: 'error' } }).catch(() => undefined)
+
+      const described = describeS3Error(error, { bucket, endpoint: endpoint || null, region })
+      console.error(`[s3-connect] ${described.code}:`, error instanceof Error ? error.message : error)
+      return res.status(400).json(described)
     }
   } catch (error) {
     return next(error)

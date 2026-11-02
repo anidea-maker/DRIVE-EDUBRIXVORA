@@ -22,6 +22,7 @@ import { frontendUrl } from './utils/redirect.js'
 import { describeConfigProblem, looksLikePlaceholder } from './modules/google/config-health.js'
 import { decryptText } from './utils/crypto.js'
 import { resolveGoogleRedirectUri } from './modules/google/redirect-uri.js'
+import { describeStorageEnvironment, listStoragePresets } from './modules/s3/presets.js'
 
 export const app = express()
 app.set('trust proxy', true)
@@ -186,6 +187,10 @@ app.get(['/api/diagnostics', '/diagnostics'], async (req, res) => {
   if (hasControlChars) {
     hints.push('FRONTEND_URL contains control characters (usually a pasted newline). Remove them - the value is wrong even though redirects stay safe.')
   }
+  const partialPreset = listStoragePresets().find((preset) => !preset.ready && preset.missing.length < 6)
+  if (partialPreset) {
+    hints.push(`Storage backend ${partialPreset.label} is partly configured: missing ${partialPreset.missing.join(', ')}. Fill them on the service, then connect it from Settings -> S3 Compatible.`)
+  }
   if (spaEnabled) {
     hints.push('Single-service mode: OAuth callbacks redirect with a relative path, so FRONTEND_URL cannot send the browser to the wrong host.')
   } else if (env.FRONTEND_URL_SOURCE === 'default' && BUILD_ENVIRONMENT === 'production') {
@@ -209,6 +214,7 @@ app.get(['/api/diagnostics', '/diagnostics'], async (req, res) => {
     spa: { enabled: spaEnabled, directory: frontendDir || null },
     database,
     google,
+    storage: describeStorageEnvironment(),
     hints,
   })
 })
