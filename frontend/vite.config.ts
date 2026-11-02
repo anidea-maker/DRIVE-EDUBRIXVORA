@@ -61,7 +61,19 @@ export default defineConfig({
         ],
       },
       workbox: {
-        navigateFallbackDenylist: [/^\/(auth|connected-accounts|files|folders|invites|provider-configs|public|storage|uploads)(\/|$)/],
+        /**
+         * Navigation requests that must reach the server instead of the cached app
+         * shell. `/api/*`, `/health` and `/diagnostics` were missing here, so opening
+         * `/api/diagnostics` in a tab with the app installed answered with the SPA -
+         * the browser showed the app (and its login redirect) rather than the JSON.
+         */
+        navigateFallbackDenylist: [
+          /^\/(auth|connected-accounts|files|folders|invites|provider-configs|public|storage|uploads)(\/|$)/,
+          /^\/api(\/|$)/,
+          /^\/health$/,
+          /^\/ready$/,
+          /^\/diagnostics(\/|$)/,
+        ],
         globPatterns: ['**/*.{js,css,html,svg,ico,png,webp,woff2}'],
       },
     }),

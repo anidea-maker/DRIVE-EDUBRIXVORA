@@ -8,6 +8,7 @@ import { encryptText, hashToken, randomToken } from '../../utils/crypto.js'
 import { hashPassword } from '../../utils/password.js'
 import { createOAuthClient, syncGoogleQuota } from '../google/google.service.js'
 import { classifyGoogleError, describeGoogleError, type ConnectFailure } from '../google/google-error.js'
+import { repairStoredRedirectUri, requestOrigin, resolveGoogleRedirectUri } from '../google/redirect-uri.js'
 import { redirectToFrontend } from '../../utils/redirect.js'
 import { syncS3Quota, testS3Connection } from '../s3/s3.service.js'
 
@@ -102,13 +103,17 @@ async function createGoogleConnectUrl(req: AuthRequest): Promise<string | null> 
     },
   })
 
-  const client = createOAuthClient(config)
+  const redirectUri = resolveGoogleRedirectUri(req, config.redirectUri)
+  void repairStoredRedirectUri(config.id, config.redirectUri, redirectUri)
+
+  const client = createOAuthClient(config, redirectUri)
   return client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
     include_granted_scopes: true,
     scope: config.scopes as string[],
     state,
+    redirect_uri: redirectUri,
   })
 }
 
@@ -255,6 +260,7 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
         title: 'Connection failed',
         detail: `Google returned ${reason.toLowerCase().replace(/_/g, ' ')}. Close this tab and start the connection again.`,
       },
+      requestOrigin(req),
     )
   }
 
@@ -276,7 +282,9 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
       return fail('STATE_EXPIRED')
     }
 
-    const client = createOAuthClient(oauthState.providerConfig)
+    const redirectUri = resolveGoogleRedirectUri(req, oauthState.providerConfig.redirectUri)
+    void repairStoredRedirectUri(oauthState.providerConfig.id, oauthState.providerConfig.redirectUri, redirectUri)
+    const client = createOAuthClient(oauthState.providerConfig, redirectUri)
 
     let tokens: { access_token?: string | null; refresh_token?: string | null; expiry_date?: number | null }
     try {
@@ -318,7 +326,7 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
       const refreshTokenEncrypted = tokens.refresh_token ? encryptText(tokens.refresh_token) : existingAccount?.refreshTokenEncrypted
       if (!refreshTokenEncrypted) {
         console.error('Google login failed: no refresh token received and no existing account. Has refresh_token:', !!tokens.refresh_token)
-        return redirectToFrontend(res, '/google-auth', { status: 'error', reason: 'INVALID_GRANT' })
+        return redirectToFrontend(res, '/google-auth', { status: 'error', reason: 'INVALID_GRANT' }, undefined, requestOrigin(req))
       }
       const account = await prisma.connectedAccount.upsert({
         where: { userId_provider_providerAccountId: { userId: user.id, provider: 'google_drive', providerAccountId } },
@@ -352,7 +360,7 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
       await syncGoogleQuota(account.id).catch(() => undefined)
       const handoffToken = randomToken()
       await prisma.authHandoff.create({ data: { userId: user.id, tokenHash: hashToken(handoffToken), expiresAt: new Date(Date.now() + 5 * 60_000) } })
-      return redirectToFrontend(res, '/google-auth', { token: handoffToken })
+      return redirectToFrontend(res, '/google-auth', { token: handoffToken }, undefined, requestOrigin(req))
     }
 
     if (oauthState.flow !== 'connect' || !oauthState.userId) {
@@ -416,6 +424,7 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
         title: 'Drive connected',
         detail: 'The account was connected. Open Settings to see it.',
       },
+      requestOrigin(req),
     )
   } catch (error) {
     console.error('[google-callback] unexpected failure:', describeGoogleError(error), error)

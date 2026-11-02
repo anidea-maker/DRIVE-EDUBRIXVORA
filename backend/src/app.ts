@@ -19,6 +19,9 @@ import { publicApiRouter } from './modules/public-api/public-api.routes.js'
 import { auditLogRouter } from './modules/audit-logs/audit-log.routes.js'
 import { systemRouter } from './modules/system/system.routes.js'
 import { frontendUrl } from './utils/redirect.js'
+import { describeConfigProblem, looksLikePlaceholder } from './modules/google/config-health.js'
+import { decryptText } from './utils/crypto.js'
+import { resolveGoogleRedirectUri } from './modules/google/redirect-uri.js'
 
 export const app = express()
 app.set('trust proxy', true)
@@ -106,6 +109,21 @@ app.get(['/ready', '/api/ready'], async (_req, res) => {
   }
 })
 /**
+ * A client ID is not secret, but it is long and easy to confuse: report only
+ * whether it looks like one, and a masked preview so a typo is visible.
+ */
+function clientIdShape(encrypted: string): string {
+  try {
+    const value = decryptText(encrypted)
+    if (looksLikePlaceholder(value)) return `placeholder: ${value.slice(0, 40)}`
+    const head = value.slice(0, 24)
+    return `${head}...${value.slice(-28)}`
+  } catch {
+    return 'undecryptable'
+  }
+}
+
+/**
  * One request that answers "is this deployment wired correctly?".
  *
  * Added after a production Google connect failed with a blank HTTP 500 on both
@@ -135,15 +153,30 @@ app.get(['/api/diagnostics', '/diagnostics'], async (req, res) => {
     const config = await prisma.providerConfig.findFirst({
       where: { userId: null, provider: 'google_drive', status: 'active' },
       orderBy: { createdAt: 'desc' },
-      select: { redirectUri: true },
     })
-    const redirectUri = config?.redirectUri ?? null
-    const matchesThisHost = redirectUri === expectedRedirectUri
-    google = { configured: Boolean(config), redirectUri, expectedRedirectUri, redirectUriMatchesThisHost: matchesThisHost }
     if (!config) {
+      google = { configured: false, expectedRedirectUri }
       hints.push('Google OAuth is not configured: save the Client ID and Secret in Settings -> Google OAuth Credentials.')
-    } else if (!matchesThisHost) {
-      hints.push(`Google sends the browser to ${redirectUri}, which is not this host. In Google Cloud -> Credentials -> Authorized redirect URIs add exactly: ${expectedRedirectUri}`)
+    } else {
+      // Report the client ID's *shape* only. A placeholder here is what broke the
+      // live deployment: Google refused `client_id=<client id>` before consent.
+      const redirectUri = resolveGoogleRedirectUri(req, config.redirectUri)
+      const problem = describeConfigProblem({ ...config, redirectUri })
+      google = {
+        configured: problem === null,
+        problem,
+        redirectUri,
+        storedRedirectUri: config.redirectUri,
+        expectedRedirectUri,
+        redirectUriMatchesThisHost: redirectUri === expectedRedirectUri,
+        clientIdShape: clientIdShape(config.clientIdEncrypted),
+      }
+      if (problem) {
+        hints.push(`${problem} Save the Client ID and Secret again in Settings -> Google OAuth Credentials (the Redirect URI can stay empty).`)
+      }
+      if (redirectUri !== expectedRedirectUri) {
+        hints.push(`This Deployment will ask Google to return to ${redirectUri}. Add that exact URL to Google Cloud -> Credentials -> Authorized redirect URIs, or visit the site on ${expectedRedirectUri.split('/connected-accounts')[0]}.`)
+      }
     }
   } catch (error) {
     google = { error: error instanceof Error ? error.message : String(error) }

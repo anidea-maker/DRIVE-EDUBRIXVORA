@@ -54,6 +54,10 @@ export function SettingsPage() {
   // top of the page, where it is easy to miss while scrolled down to this card.
   const [googleSaveState, setGoogleSaveState] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
   const [hasSecret, setHasSecret] = useState(false)
+  // What the server will actually send Google. A stored placeholder (for example
+  // `https://<new-service>.onrender.com/...` from the docs) is what made "Connect
+  // Drive" impossible, so the card has to show it rather than hide it.
+  const [googleStatus, setGoogleStatus] = useState<{ configured: boolean; redirectUri: string | null; problem: string | null; hint: string | null } | null>(null)
   const [savingGoogleConfig, setSavingGoogleConfig] = useState(false)
   const [showGoogleHelp, setShowGoogleHelp] = useState(false)
 
@@ -290,6 +294,13 @@ export function SettingsPage() {
     } catch (e) {
       console.error('Failed to load global Google config', e)
     }
+
+    try {
+      const status = await apiFetch<{ configured: boolean; redirectUri: string | null; configProblem: string | null; hint: string | null }>('/auth/google/status', { skipAuth: true })
+      setGoogleStatus({ configured: status.configured, redirectUri: status.redirectUri, problem: status.configProblem, hint: status.hint })
+    } catch (e) {
+      console.error('Failed to load Google OAuth status', e)
+    }
   }
 
   useEffect(() => {
@@ -477,6 +488,17 @@ export function SettingsPage() {
               </Button>
             </div>
 
+            {googleStatus && (!googleStatus.configured || googleStatus.problem) ? (
+              <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-[13px] leading-relaxed text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200" role="status">
+                <p className="font-bold">Google Drive connection is not ready</p>
+                <p className="mt-1">{googleStatus.hint ?? googleStatus.problem ?? 'The saved Google OAuth client cannot be used.'}</p>
+                <p className="mt-2 text-[12px] text-amber-800/80 dark:text-amber-200/80">
+                  Redirect URI Google must be given:
+                  <span className="ml-1 font-mono select-all">{googleStatus.redirectUri ?? defaultRedirectUri}</span>
+                </p>
+              </div>
+            ) : null}
+
             {showGoogleHelp && (
               <div className="mb-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 p-3.5 text-[13px] leading-relaxed text-slate-600 border border-slate-100 dark:border-slate-800">
                 <p className="font-bold text-slate-800 dark:text-slate-200 mb-1.5">How to setup Google credentials:</p>
@@ -487,7 +509,7 @@ export function SettingsPage() {
                   <li>Set application type to <strong>Web application</strong>.</li>
                   <li>Add this exact URL under <strong>Authorized redirect URIs</strong>:
                     <div className="mt-1 flex items-center gap-1.5 font-mono text-[11px] bg-white dark:bg-slate-950 p-1.5 rounded border border-slate-200 dark:border-slate-800 select-all overflow-x-auto">
-                      {googleRedirectUri || defaultRedirectUri}
+                      {googleStatus?.redirectUri || googleRedirectUri || defaultRedirectUri}
                     </div>
                   </li>
                   <li>Copy the generated <strong>Client ID</strong> and <strong>Client Secret</strong> into the form below and save.</li>

@@ -6,8 +6,17 @@ import { decryptText, encryptText } from '../../utils/crypto.js'
 const googleDriveFolderMimeType = 'application/vnd.google-apps.folder'
 const appFolderName = '9drive'
 
-export function createOAuthClient(config: ProviderConfig) {
-  return new google.auth.OAuth2(decryptText(config.clientIdEncrypted), decryptText(config.clientSecretEncrypted), config.redirectUri)
+/**
+ * `redirectUri` overrides the stored value: the OAuth flow must send Google the
+ * host the browser is actually on (`redirect-uri.ts` resolves it per request), and
+ * the token exchange has to repeat the exact same URI. Drive API calls ignore it.
+ */
+export function createOAuthClient(config: ProviderConfig, redirectUri?: string) {
+  return new google.auth.OAuth2(
+    decryptText(config.clientIdEncrypted),
+    decryptText(config.clientSecretEncrypted),
+    redirectUri ?? config.redirectUri,
+  )
 }
 
 export async function getAuthedGoogleClient(account: ConnectedAccount) {

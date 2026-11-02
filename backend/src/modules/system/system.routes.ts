@@ -5,6 +5,8 @@ import fs from 'fs'
 import { requireAuth } from '../../middleware/auth.middleware.js'
 import { prisma } from '../../config/prisma.js'
 import { decryptText, encryptText } from '../../utils/crypto.js'
+import { describeConfigProblem } from '../google/config-health.js'
+import { repairStoredRedirectUri, resolveGoogleRedirectUri } from '../google/redirect-uri.js'
 import Busboy from 'busboy'
 
 export const systemRouter = Router()
@@ -107,7 +109,10 @@ systemRouter.get('/google-config', requireAuth, async (req, res, next) => {
       orderBy: { createdAt: 'desc' }
     })
 
-    const defaultRedirect = `${req.protocol}://${req.get('host')}/connected-accounts/google/callback`
+    // The Settings form must show the URL Google will actually be given, not a
+    // stored placeholder: pre-filling `https://<new-service>.onrender.com/...` made
+    // re-saving the form keep the broken value.
+    const defaultRedirect = resolveGoogleRedirectUri(req, null)
 
     if (!config) {
       return res.json({
@@ -123,10 +128,15 @@ systemRouter.get('/google-config', requireAuth, async (req, res, next) => {
       clientId = ''
     }
 
+    const redirectUri = resolveGoogleRedirectUri(req, config.redirectUri)
+    void repairStoredRedirectUri(config.id, config.redirectUri, redirectUri)
+
     return res.json({
       exists: true,
       clientId,
-      redirectUri: config.redirectUri,
+      redirectUri,
+      storedRedirectUri: config.redirectUri,
+      problem: describeConfigProblem({ ...config, redirectUri }),
       hasSecret: !!config.clientSecretEncrypted,
       defaultRedirectUri: defaultRedirect
     })
