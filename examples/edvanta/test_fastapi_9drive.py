@@ -48,7 +48,7 @@ class StorageStatusTests(unittest.TestCase):
         env = {"NINE_DRIVE_API_URL": "https://drive-edubrixvora-1.onrender.com/api", "NINE_DRIVE_API_KEY": "9d_live_test"}
         with patch.dict(os.environ, env, clear=True):
             status = asyncio.run(fastapi_9drive.get_storage_status(fetch=fetch))
-        self.assertEqual(captured["url"], "https://drive-edubrixvora-1.onrender.com/api/v1/resources/health")
+        self.assertEqual(captured["url"], "https://drive-edubrixvora-1.onrender.com/api/v1/storage-status")
         self.assertEqual(captured["api_key"], "9d_live_test")
         self.assertEqual(status["storage"]["status"], "connected")
         self.assertEqual(status["storage"]["endpoint"], "https://drive-edubrixvora-1.onrender.com/api/v1")

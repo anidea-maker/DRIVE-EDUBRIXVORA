@@ -343,9 +343,66 @@ The response now always includes `storage`, `storageStatus` and
 ```
 
 A degraded provider changes `storage.status` to `degraded`; it does **not**
-remove the field. This is what fixes an Edvanta admin panel that says
+remove the field. The response also carries the shared `provider`,
+`configured`, `persistence`, `capacity`, `accounts`, `appRecords` and `display`
+fields from `/api/v1/storage-status`, while keeping the detailed per-account
+health checks. This is what fixes an Edvanta admin panel that says
 “Storage status has not been reported by the API yet.” The client helpers also
 report `unavailable` if 9Drive is cold/offline, so the field is never absent.
+
+### Allow the API to report storage to the admin panel
+
+The panel reads **Edvanta's own** `/api/admin/overview`, not 9Drive directly.
+Therefore 9Drive now reports a safe `storage` object on every endpoint a backend
+might poll, so whichever one Edvanta uses already has the field:
+
+| Endpoint | Auth | What it adds |
+| --- | --- | --- |
+| `GET /api/v1` | public | `storage`, `storageStatus`, `reported` |
+| `GET /api/v1/storage-status` | public | Full redacted storage declaration (recommended) |
+| `GET /health`, `GET /ready` | public | `storage`, `storageStatus`, `reported` |
+| `GET /api/diagnostics` | public | `storageStatus`, `storageReported`, `reported` |
+| `GET /api/v1/me`, `/api/v1/usage` | `files:read` | `storage`, `storageStatus`, `reported` |
+| `GET /api/v1/resources/health` | `files:read` | Detailed provider health + `storage` |
+
+`GET /api/v1/storage-status` is the simplest drop-in. It is cached for 30s,
+never contacts Google Drive/S3, and returns `provider`, `configured`,
+`persistence`, `capacity`, `accounts`, `display` hints and `reported: true`.
+No credentials, account emails, bucket names or object keys are exposed.
+
+```bash
+curl https://drive-edubrixvora-1.onrender.com/api/v1/storage-status
+```
+
+Edvanta's backend then only has to pass the object through. For a Node/Express
+overview handler:
+
+```js
+const upstream = await fetch(`${process.env.NINE_DRIVE_API_URL}/storage-status`, {
+  signal: AbortSignal.timeout(3000),
+})
+const { storage, storageStatus, reported } = await upstream.json()
+return res.json({ ...overview, storage, storageStatus, reported })
+```
+
+For FastAPI:
+
+```python
+import httpx
+from fastapi_9drive import merge_storage_status
+
+async with httpx.AsyncClient(timeout=3) as client:
+    status = (await client.get(f"{NINE_DRIVE_API_URL}/storage-status")).json()
+return merge_storage_status(overview, status)
+```
+
+If Edvanta already mounts the kit, `mergeStorageStatus()` /
+`merge_storage_status()` does the same thing using
+`getStorageStatus()` / `get_storage_status()`. The important part is that
+`/api/admin/overview` must include `storage` with `reported: true`; otherwise
+the frontend keeps showing “Storage status has not been reported by the API
+yet.” The literal text itself lives in Edvanta's frontend and can only be
+removed there.
 
 ## 5. Storage abstraction
 
@@ -504,9 +561,12 @@ remain unchanged; the two applications do not share a database.
 `mountEdvantaResourceRoutes` now adds `GET /api/admin/storage-status`,
 `GET /api/admin/9drive/status` and a redacted public `GET /api/storage-status`.
 All of them always return `storage`, `storageStatus` and `reported: true`.
-If Edvanta already has its own `/api/admin/overview`, do **not** replace it:
-merge the report into its existing response so the “Storage status has not been
-reported by the API yet” text disappears.
+9Drive itself also exposes a public, redacted
+`GET ${NINE_DRIVE_API_URL}/storage-status` (see §4), so an Edvanta backend that
+does not use the kit can call that endpoint directly and pass its `storage`
+object through. If Edvanta already has its own `/api/admin/overview`, do **not**
+replace it: merge the report into its existing response so the “Storage status
+has not been reported by the API yet” text disappears.
 
 ```js
 import { mergeStorageStatus } from './express-routes.mjs'
@@ -543,7 +603,7 @@ timeouts on Edvanta's proxy (`STORAGE_TIMEOUT_MS`) for large uploads/ZIPs.
 Mocked/automated (no cloud credentials, no MySQL):
 
 ```bash
-cd backend && npm test                                 # 15/15 pass
+cd backend && npm test                                 # 19/19 pass (includes 4 storage-status tests)
 cd frontend && npm run build                            # typecheck + Vite + nginx template pass
 node --test examples/edvanta/*.test.mjs                 # 21/21 pass
 python3 -m unittest discover -s examples/edvanta -p 'test_*.py'  # 5/5 pass (FastAPI helper)
@@ -565,9 +625,9 @@ network access and produce the full engine.
 
 Manual acceptance checklist after deploying both services:
 
-1. `GET /health` and `GET /ready` on EduBrixVora; `GET /api/v1/resources/health`
-   with a read key returns database + provider status **and a `storage` object
-   with `reported: true`**.
+1. `GET /api/v1/storage-status`, `GET /api/v1`, `GET /health` and `GET /ready`
+   on EduBrixVora all return a `storage` object with `reported: true`;
+   `GET /api/v1/resources/health` with a read key adds provider status too.
 2. Register/log in as an admin; set `SUPER_ADMIN_EMAILS` or promote via
    `/api/admin/users/:id/role`; create an API key with read/write/delete scopes.
 3. Connect at least one Google Drive account and one S3-compatible bucket in
@@ -587,10 +647,12 @@ Manual acceptance checklist after deploying both services:
    `X-Counts-Cache: hit`. Stop/wake the service and confirm Edvanta's
    `/api/resources/counts` still returns HTTP 200 with `stale: true` instead of
    showing the minute-long loading banner.
-11. Call Edvanta's `/api/admin/storage-status` (or merge the report into
-   `/api/admin/overview`); confirm the admin panel shows `connected` / `degraded`
-   instead of “Storage status has not been reported by the API yet.” Stop 9Drive
-   and confirm the panel reports `unavailable`, still with `reported: true`.
+11. Confirm `GET https://drive-edubrixvora-1.onrender.com/api/v1/storage-status`
+   returns `storage.reported: true`; then call Edvanta's
+   `/api/admin/storage-status` (or merge the object into `/api/admin/overview`).
+   The admin panel should show `connected` / `degraded` instead of “Storage
+   status has not been reported by the API yet.” Stop 9Drive and confirm the
+   panel reports `unavailable`, still with `reported: true`.
 12. Confirm no Drive file has an `anyone` permission and no bucket is public.
 
 ## 9. Known limitations
@@ -608,10 +670,12 @@ Manual acceptance checklist after deploying both services:
 - Edvanta's repository was not writable from this session; the integration kit
   must be copied into it and its own frontend routes pointed at the new API.
 - Edvanta's existing `/api/admin/overview` handler was not edited here; it must
-  call `mergeStorageStatus()` (JS) or `merge_storage_status()` (Python) for the
-  admin panel to stop showing “Storage status has not been reported by the API
-  yet.” The standalone `/api/admin/storage-status` routes work as soon as the
-  kit is mounted.
+  call `mergeStorageStatus()` (JS), `merge_storage_status()` (Python), or simply
+  proxy `GET ${NINE_DRIVE_API_URL}/storage-status` for the admin panel to stop
+  showing “Storage status has not been reported by the API yet.” 9Drive now
+  reports `storage` on every status endpoint, but Edvanta's own API still has
+  to include it in its response. The standalone `/api/admin/storage-status`
+  routes work as soon as the kit is mounted.
 - The literal “Loading the live counts …” banner is rendered by Edvanta's own
   frontend. The cached `/resources/counts` API and `getLiveCounts()` fallback
   remove the slow wait, but deleting/replacing that exact text still requires

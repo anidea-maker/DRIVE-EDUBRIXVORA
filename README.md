@@ -623,7 +623,7 @@ Storage API   GET  /api/v1 · GET /api/v1/me · GET /api/v1/usage      (API key,
               POST /api/v1/uploads   (legacy alias for POST /api/v1/files)
               GET/POST/PATCH/DELETE /api/v1/resources  (educational registry)
               /api/v1/resources/:id/preview-url · /download-url · /content · /access
-              /api/v1/resources/counts (fast cached live counts) · /bulk-download · /sync · /health
+              /api/v1/resources/counts (fast cached live counts) · /api/v1/storage-status · /bulk-download · /sync · /health
 Admin roles    GET  /api/admin/users · PATCH /api/admin/users/:id/role
 ```
 

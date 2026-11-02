@@ -131,8 +131,8 @@ def _request_json(url: str, api_key: str, timeout: float) -> Dict[str, Any]:
         with urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8", "replace")
     except HTTPError as error:
-        # /resources/health returns 503 when a provider is degraded, but still
-        # carries a valid `storage` report. Keep that instead of failing.
+        # A degraded provider can still return a valid `storage` report with a
+        # non-2xx status. Keep that report instead of failing.
         raw = error.read().decode("utf-8", "replace")
         body: Dict[str, Any] = {}
         try:
@@ -162,7 +162,7 @@ async def get_storage_status(
     if not settings["endpoint"] or not settings["api_key"]:
         return _unavailable(settings["endpoint"], "NINE_DRIVE_NOT_CONFIGURED", checked_at)
 
-    url = settings["endpoint"] + "/resources/health"
+    url = settings["endpoint"] + "/storage-status"
     try:
         if fetch is None:
             body = await asyncio.to_thread(_request_json, url, settings["api_key"], settings["timeout"])

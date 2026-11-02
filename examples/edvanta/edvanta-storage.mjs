@@ -271,7 +271,7 @@ export function createStorage(options = {}) {
       const abortSignal = signal ?? timeoutSignal(timeoutMs)
       const checkedAt = new Date().toISOString()
       try {
-        const response = await rawRequest('/resources/health', { signal: abortSignal })
+        const response = await rawRequest('/storage-status', { signal: abortSignal })
         const text = await response.text().catch(() => '')
         let body = {}
         try {

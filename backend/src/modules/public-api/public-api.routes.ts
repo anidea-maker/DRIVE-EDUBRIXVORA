@@ -16,6 +16,7 @@ import { API_SCOPES } from './scopes.js'
 import { KIND_FILTERS, absoluteUrl, apiFile, apiFolder, publicBaseUrl } from './serialize.js'
 import { objectsRouter } from './objects.routes.js'
 import { resourceRouter } from '../resources/resource.routes.js'
+import { buildStorageReport, readStorageReport, storageStatusResponse } from '../storage/storage-status.js'
 
 export const publicApiRouter = Router()
 
@@ -60,9 +61,11 @@ function withApiFileShape(req: Request, res: Response, next: NextFunction) {
  * Someone wiring this into their own site should not need to read this repo to
  * find out which scopes exist or how big an upload may be.
  */
-publicApiRouter.get(['/v1', '/v1/'], (req, res) => {
+publicApiRouter.get(['/v1', '/v1/'], async (req, res) => {
   const base = publicBaseUrl(req)
+  const storage = await readStorageReport(prisma)
   res.json({
+    ...storageStatusResponse(storage),
     service: '9Drive Storage API',
     version: '1',
     baseUrl: `${base}/api/v1`,
@@ -119,6 +122,7 @@ publicApiRouter.get(['/v1', '/v1/'], (req, res) => {
       { method: 'POST', path: '/api/v1/resources/sync', scope: 'files:write', description: 'Admin on-demand reconciliation of registry availability against providers.' },
       { method: 'GET', path: '/api/v1/resources/health', scope: 'files:read', description: 'Database, provider and resource availability health; includes a `storage` status report (no credentials).' },
       { method: 'GET', path: '/api/v1/resources/counts', scope: 'files:read', description: 'Fast cached live counts for the Edvanta landing page; no provider calls, 30s cache.' },
+      { method: 'GET', path: '/api/v1/storage-status', scope: 'public', description: 'Redacted 9Drive storage status for admin panels; always includes `storage` and `reported: true`.' },
     ],
   })
 })
@@ -132,6 +136,15 @@ publicApiRouter.use('/v1/objects', objectsRouter)
 // Mounted before /v1's generic storage router so /v1/resources/... is owned by
 // the educational registry, not interpreted as a file id.
 publicApiRouter.use('/v1/resources', resourceRouter)
+
+/** Public, redacted storage declaration. Mounted before the generic /v1 router. */
+publicApiRouter.get(['/v1/storage-status', '/v1/storage-status/'], async (_req, res) => {
+  const storage = await readStorageReport(prisma)
+  res.setHeader('Cache-Control', 'public, max-age=30')
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  return res.json({ ...storageStatusResponse(storage), checkedAt: storage.checkedAt })
+})
+
 publicApiRouter.use('/v1', storageRouter)
 
 /** Legacy path from the first API version; kept so existing scripts keep working. */
@@ -148,14 +161,29 @@ storageRouter.get('/me', requireApiKey('files:read'), async (req: ApiKeyRequest,
     let usedBytes = 0n
     let totalBytes = 0n
     let unknownCapacity = false
+    let googleDriveAccounts = 0
+    let s3Accounts = 0
     for (const account of accounts) {
+      if (account.provider === 'google_drive') googleDriveAccounts += 1
+      if (account.provider === 's3') s3Accounts += 1
       usedBytes += account.storageAccount?.usedBytes ?? 0n
       if (account.storageAccount?.totalBytes === null || account.storageAccount?.totalBytes === undefined) unknownCapacity = true
       else totalBytes += account.storageAccount.totalBytes
     }
+    const storageReport = buildStorageReport({
+      connectedAccounts: accounts.length,
+      googleDriveAccounts,
+      s3Accounts,
+      usedBytes,
+      totalBytes: unknownCapacity ? null : totalBytes,
+      capacityReported: !unknownCapacity && accounts.length > 0,
+      degraded: accounts.length === 0,
+      note: accounts.length === 0 ? 'No storage account is connected for this API key owner.' : undefined,
+    })
 
     res.setHeader(SCOPE_HEADER, (req.apiKey?.scopes ?? []).join(','))
     return res.json({
+      ...storageStatusResponse(storageReport),
       user,
       key: { id: req.apiKey!.id, scopes: req.apiKey!.scopes },
       accounts: accounts.map((account) => ({
@@ -166,12 +194,13 @@ storageRouter.get('/me', requireApiKey('files:read'), async (req: ApiKeyRequest,
         totalBytes: account.storageAccount?.totalBytes != null ? account.storageAccount.totalBytes.toString() : null,
         lastSyncedAt: account.storageAccount?.lastSyncedAt?.toISOString() ?? null,
       })),
+      // Keep the original storage capacity fields for existing consumers while
+      // adding the full status report under the same key.
       storage: {
+        ...storageReport,
         usedBytes: usedBytes.toString(),
-        // null rather than 0: a provider that reports no quota must not look like
-        // a full disk, and it must not look like unlimited space either.
         totalBytes: unknownCapacity ? null : totalBytes.toString(),
-        note: unknownCapacity ? 'At least one connected account does not report a quota, so totalBytes is null.' : undefined,
+        note: unknownCapacity ? 'At least one connected account does not report a quota, so totalBytes is null.' : storageReport.note,
       },
     })
   } catch (error) {
@@ -188,12 +217,26 @@ storageRouter.get('/usage', requireApiKey('files:read'), async (req: ApiKeyReque
     let usedBytes = 0n
     let totalBytes = 0n
     let reported = true
+    let googleDriveAccounts = 0
+    let s3Accounts = 0
     for (const account of accounts) {
+      if (account.provider === 'google_drive') googleDriveAccounts += 1
+      if (account.provider === 's3') s3Accounts += 1
       usedBytes += account.storageAccount?.usedBytes ?? 0n
       if (account.storageAccount?.totalBytes === null || account.storageAccount?.totalBytes === undefined) reported = false
       else totalBytes += account.storageAccount.totalBytes
     }
+    const storageReport = buildStorageReport({
+      connectedAccounts: accounts.length,
+      googleDriveAccounts,
+      s3Accounts,
+      usedBytes,
+      totalBytes: reported ? totalBytes : null,
+      capacityReported: reported && accounts.length > 0,
+      degraded: accounts.length === 0,
+    })
     return res.json({
+      ...storageStatusResponse(storageReport),
       accounts: accounts.length,
       usedBytes: usedBytes.toString(),
       totalBytes: reported ? totalBytes.toString() : null,

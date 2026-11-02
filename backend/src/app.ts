@@ -24,6 +24,7 @@ import { describeConfigProblem, looksLikePlaceholder } from './modules/google/co
 import { decryptText } from './utils/crypto.js'
 import { resolveGoogleRedirectUri } from './modules/google/redirect-uri.js'
 import { describeStorageEnvironment, listStoragePresets } from './modules/s3/presets.js'
+import { readStorageReport, storageStatusResponse } from './modules/storage/storage-status.js'
 
 export const app = express()
 app.set('trust proxy', true)
@@ -119,7 +120,10 @@ const healthPayload = () => ({
   features: FEATURES,
 })
 
-app.get(['/health', '/api/health'], (_req, res) => res.json(healthPayload()))
+app.get(['/health', '/api/health'], async (_req, res) => {
+  const storage = await readStorageReport(prisma)
+  return res.json({ ...healthPayload(), ...storageStatusResponse(storage) })
+})
 
 /**
  * Readiness: can this instance actually serve requests? Runs one query, so a
@@ -127,11 +131,14 @@ app.get(['/health', '/api/health'], (_req, res) => res.json(healthPayload()))
  * browser request instead of a log dig.
  */
 app.get(['/ready', '/api/ready'], async (_req, res) => {
+  const storage = await readStorageReport(prisma)
+  const storageFields = storageStatusResponse(storage)
   try {
     await prisma.$queryRawUnsafe('SELECT 1')
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     return res.status(503).json({
+      ...storageFields,
       status: 'error',
       database: 'unreachable',
       message,
@@ -145,9 +152,10 @@ app.get(['/ready', '/api/ready'], async (_req, res) => {
     const rows = (await prisma.$queryRawUnsafe(
       'SELECT COUNT(*) AS n FROM `_prisma_migrations`',
     )) as Array<{ n: bigint | number }>
-    return res.json({ status: 'ok', database: 'ok', migrations: String(rows[0]?.n ?? 0) })
+    return res.json({ status: 'ok', database: 'ok', migrations: String(rows[0]?.n ?? 0), ...storageFields })
   } catch {
     return res.status(503).json({
+      ...storageFields,
       status: 'error',
       database: 'ok',
       migrations: 'missing',
@@ -179,6 +187,7 @@ function clientIdShape(encrypted: string): string {
  * names the build, the redirect mode, the database and the Google redirect URI.
  */
 app.get(['/api/diagnostics', '/diagnostics'], async (req, res) => {
+  const storageReport = await readStorageReport(prisma)
   const requestOrigin = `${req.protocol}://${req.get('host')}`
   const expectedRedirectUri = `${requestOrigin}/connected-accounts/google/callback`
   const hints: string[] = []
@@ -301,6 +310,9 @@ app.get(['/api/diagnostics', '/diagnostics'], async (req, res) => {
     database,
     google,
     storage: describeStorageEnvironment(),
+    storageStatus: storageReport.status,
+    storageReported: true,
+    reported: true,
     accounts: accountsSummary,
     hints,
   })

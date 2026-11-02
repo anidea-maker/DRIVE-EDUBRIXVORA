@@ -352,6 +352,7 @@ the API key: Edvanta's server authenticates its own student/admin session first.
 | `POST` | `/resources/sync` | `files:write` | admin/super_admin role | On-demand reconciliation with a checkpoint cursor |
 | `GET` | `/resources/counts` | `files:read` | — | Fast cached live counts for the landing page; 30s cache, no provider calls |
 | `GET` | `/resources/health` | `files:read` | — | Database, provider and availability health; always includes `storage` + `reported: true` (no credentials) |
+| `GET` | `/storage-status` | public | — | Redacted 9Drive storage declaration for admin panels; always includes `storage` + `reported: true` |
 
 ```bash
 BASE=https://drive.example.com/api/v1
@@ -398,6 +399,60 @@ curl -H "Authorization: Bearer $KEY" "$BASE/resources/health"
   "reported": true
 }
 ```
+
+### Storage status is reported on every status endpoint
+
+`GET /api/v1/storage-status` is public and redacted (no account emails, bucket
+names, keys or object keys). Use it for an admin panel that currently says
+“Storage status has not been reported by the API yet.”:
+
+```bash
+curl https://drive-edubrixvora-1.onrender.com/api/v1/storage-status
+```
+
+```json
+{
+  "storage": {
+    "status": "connected",
+    "provider": "9drive",
+    "configured": "9drive",
+    "reported": true,
+    "persistence": "Persistent",
+    "capacity": {
+      "reported": false,
+      "usedBytes": "0",
+      "totalBytes": null,
+      "availableBytes": null,
+      "fileCapRemaining": null,
+      "note": "At least one connected account does not report a quota, so capacity stays unknown rather than looking unlimited."
+    },
+    "accounts": { "connected": 7, "googleDrive": 4, "s3": 3 },
+    "appRecords": "Turso — accounts, document metadata & registry, not file bytes",
+    "display": {
+      "storageProvider": "9drive",
+      "storageProviderNote": "9drive is the only destination for new file bytes",
+      "configured": "9drive",
+      "fileCapRemaining": "Capacity not reported",
+      "persistence": "Persistent",
+      "appRecords": "Turso — accounts, document metadata & registry, not file bytes"
+    },
+    "checkedAt": "2026-11-02T12:00:00.000Z",
+    "note": "9Drive is configured and reporting storage status; provider capacity is not reported."
+  },
+  "storageStatus": "connected",
+  "storageReported": true,
+  "reported": true,
+  "checkedAt": "2026-11-02T12:00:00.000Z"
+}
+```
+
+The same `storage`, `storageStatus` and `reported: true` fields are also present
+on `GET /api/v1` (API index), `GET /health`, `GET /ready`,
+`GET /api/diagnostics` (`storageStatus` / `storageReported`), `GET /api/v1/me`
+and `GET /api/v1/usage`. A degraded provider or an unreachable registry changes
+`storage.status` to `degraded` / `unavailable`; it never removes `reported`.
+Edvanta's own `/api/admin/overview` must pass this object through — see
+[`docs/EDVANTA-INTEGRATION.md`](EDVANTA-INTEGRATION.md).
 
 Visibility: `private` is only visible with `audience=admin`; `students` and
 `public` are visible to students. A student listing returns only
