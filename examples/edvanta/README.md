@@ -74,6 +74,7 @@ successful.
 Edvanta's browser calls **relative URLs on its own origin**:
 
 ```text
+GET  /api/resources/counts               → fast cached live counts (stale: true while storage wakes)
 GET  /api/resources?q=biology&subject=Biology&limit=20
 GET  /api/resources/:id
 GET  /api/resources/:id/preview          → { url, expiresAt, previewMode }
@@ -94,11 +95,20 @@ hardcodes `audience=student` and the storage service filters visibility.
 `GET /api/resources/:id/download?url=1` are available for iframe/JSON use cases.
 `/api/admin/resources/health` is admin-only and hides all credentials.
 
+**Cold-start / “Loading the live counts” banner:** call
+`GET /api/resources/counts` instead of any slow count endpoint. It is public,
+hardcodes `audience=student`, uses a 3-second upstream timeout and returns
+`stale: true` with last-known or empty counts while Render wakes. Replace the
+minute-long notice in Edvanta's frontend with a small skeleton that renders
+`counts.total` and hides itself when `stale` is false; the literal banner text
+can only be removed inside the Edvanta repo. The storage-side endpoint is cached
+for 30 seconds and never calls Drive/S3.
+
 ## Tests (mocked, no cloud)
 
 ```bash
 node --test examples/edvanta/*.test.mjs
-# 13/13 passing in the current workspace
+# 16/16 passing in the current workspace
 ```
 
 These tests stub `fetch` and a fake Express app. They do **not** contact Google

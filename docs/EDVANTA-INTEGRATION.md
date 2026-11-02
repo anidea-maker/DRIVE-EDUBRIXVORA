@@ -266,6 +266,51 @@ collisions resolved (`notes.pdf`, `notes (2).pdf`). Limits:
 `RESOURCE_BULK_MAX_FILES` (25) and `RESOURCE_BULK_MAX_BYTES` (512 MiB). The ZIP is
 streamed with `archiver`; no whole archive is held in memory.
 
+### Fast live counts / cold-start banner
+
+```http
+GET /api/v1/resources/counts?audience=student&includeUnavailable=0
+```
+
+The Edvanta landing page previously showed “Loading the live counts — the first
+answer after the server wakes takes about a minute. Everything below works while
+you wait.” That happened because the widget waited on a cold Render instance.
+
+This endpoint fixes the *cause*: it runs only cheap MySQL `count` / `groupBy`
+queries, never a Drive/S3 HEAD request or a full listing, and caches the result
+in-process for 30 seconds per owner/audience. Responses carry
+`Cache-Control: private, max-age=30` and `X-Counts-Cache: hit|miss`.
+
+```json
+{
+  "counts": {
+    "total": 124,
+    "available": 121,
+    "missing": 2,
+    "inaccessible": 1,
+    "unknown": 0,
+    "byCategory": { "Science": 60 },
+    "bySubject": { "Biology": 30 },
+    "byProvider": { "google_drive": 40, "s3": 84 }
+  },
+  "audience": "student",
+  "includeUnavailable": false,
+  "generatedAt": "2026-11-02T12:00:00.000Z",
+  "ttlSeconds": 30,
+  "cached": false
+}
+```
+
+`examples/edvanta/edvanta-storage.mjs` adds `getLiveCounts()` with a 3-second
+timeout and a stale fallback: if the storage service is still waking up, it
+returns the last known counts (or an empty shape) with `stale: true` instead of
+throwing. `express-routes.mjs` exposes a public `GET /api/resources/counts`
+that hardcodes `audience=student` and returns HTTP 200 even when stale, so the
+page never needs a minute-long loading notice. The banner text itself is in
+Edvanta's frontend and can only be removed/reworded there; with this API it no
+longer has to wait. Render free-tier cold starts can additionally be reduced by
+a scheduled `/health` ping or a paid always-on instance.
+
 ### Health
 
 ```http
@@ -422,9 +467,9 @@ timeouts on Edvanta's proxy (`STORAGE_TIMEOUT_MS`) for large uploads/ZIPs.
 Mocked/automated (no cloud credentials, no MySQL):
 
 ```bash
-cd backend && npm test                                 # 13/13 pass
+cd backend && npm test                                 # 14/14 pass
 cd frontend && npm run build                            # typecheck + Vite + nginx template pass
-node --test examples/edvanta/*.test.mjs                 # 13/13 pass
+node --test examples/edvanta/*.test.mjs                 # 16/16 pass
 node --test examples/other-website/drive-storage.test.mjs  # 13/13 pass (existing kit)
 ```
 
@@ -460,7 +505,11 @@ Manual acceptance checklist after deploying both services:
    call `/sync`, and confirm the row becomes `missing` and is excluded.
 9. Confirm an unauthenticated browser and a key without `files:write` cannot
    upload/delete; confirm a `student`-role owner cannot manage resources.
-10. Confirm no Drive file has an `anyone` permission and no bucket is public.
+10. Call `GET /api/v1/resources/counts` twice; the second response should carry
+   `X-Counts-Cache: hit`. Stop/wake the service and confirm Edvanta's
+   `/api/resources/counts` still returns HTTP 200 with `stale: true` instead of
+   showing the minute-long loading banner.
+11. Confirm no Drive file has an `anyone` permission and no bucket is public.
 
 ## 9. Known limitations
 
@@ -476,3 +525,7 @@ Manual acceptance checklist after deploying both services:
   user-management UI.
 - Edvanta's repository was not writable from this session; the integration kit
   must be copied into it and its own frontend routes pointed at the new API.
+- The literal “Loading the live counts …” banner is rendered by Edvanta's own
+  frontend. The cached `/resources/counts` API and `getLiveCounts()` fallback
+  remove the slow wait, but deleting/replacing that exact text still requires
+  Edvanta repo access or a frontend patch.

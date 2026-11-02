@@ -132,6 +132,54 @@ test('upstream JSON errors keep status, code and hint; network errors map to 502
   )
 })
 
+test('getLiveCounts never blocks the page: fresh, then stale fallback', async () => {
+  let healthy = true
+  const calls = []
+  const storage = createStorage({
+    endpoint: ENDPOINT,
+    apiKey: API_KEY,
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init })
+      if (!healthy) throw new TypeError('fetch failed')
+      return jsonResponse({
+        counts: { total: 12, available: 11, missing: 1, inaccessible: 0, unknown: 0, byCategory: { Science: 12 }, bySubject: {}, byProvider: {} },
+        audience: 'student',
+        includeUnavailable: false,
+        generatedAt: '2026-11-02T12:00:00.000Z',
+        ttlSeconds: 30,
+        cached: false,
+      })
+    },
+  })
+  const fresh = await storage.getLiveCounts({ timeoutMs: 50 })
+  assert.equal(fresh.stale, false)
+  assert.equal(fresh.counts.total, 12)
+  assert.equal(new URL(calls[0].url).pathname, '/api/v1/resources/counts')
+  assert.equal(new URL(calls[0].url).searchParams.get('audience'), 'student')
+
+  healthy = false
+  const stale = await storage.getLiveCounts({ timeoutMs: 50 })
+  assert.equal(stale.stale, true)
+  assert.equal(stale.counts.total, 12)
+  assert.match(stale.note, /waking up/i)
+})
+
+test('getLiveCounts returns an empty stale shape when there is no cached answer', async () => {
+  const storage = createStorage({
+    endpoint: ENDPOINT,
+    apiKey: API_KEY,
+    fetchImpl: async () => {
+      throw new TypeError('fetch failed')
+    },
+  })
+  const result = await storage.getLiveCounts({ timeoutMs: 50, includeUnavailable: true })
+  assert.equal(result.stale, true)
+  assert.equal(result.generatedAt, null)
+  assert.equal(result.counts.total, 0)
+  assert.deepEqual(result.counts.byCategory, {})
+  assert.equal(result.error, 'STORAGE_UPSTREAM_UNAVAILABLE')
+})
+
 test('patch, delete, verify, sync and health use the documented verbs and paths', async () => {
   const { storage, calls } = storageWith(async () => jsonResponse({ status: 'ok' }))
   await storage.patchResource('r1', { title: 'Renamed' })

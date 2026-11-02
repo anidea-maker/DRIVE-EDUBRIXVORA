@@ -64,6 +64,23 @@ export function mountEdvantaResourceRoutes(app, { storage, requireStudent, requi
     throw new Error('mountEdvantaResourceRoutes needs Edvanta server-side requireStudent and requireAdmin middlewares.')
   }
 
+  /* ------------------------------ public counts ---------------------------- */
+
+  /**
+   * Landing-page counts are public metadata. Edvanta's server still holds the
+   * storage API key; `audience` is hardcoded so a browser cannot ask for admin
+   * counts. A stale response is still HTTP 200: the page must not show a
+   * minute-long "loading the live counts" notice while Render wakes up.
+   */
+  app.get('/api/resources/counts', wrap(async (req, res) => {
+    const counts = await storage.getLiveCounts({
+      audience: 'student',
+      includeUnavailable: req.query.includeUnavailable === '1',
+    })
+    res.setHeader('Cache-Control', counts.stale ? 'private, max-age=5' : 'private, max-age=30')
+    return res.json(counts)
+  }))
+
   /* ------------------------------ student side ----------------------------- */
 
   app.get('/api/resources', requireStudent, wrap(async (req, res) => {

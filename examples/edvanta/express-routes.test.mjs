@@ -51,6 +51,7 @@ function fakeRes() {
 test('registers student and admin routes with separate guards', () => {
   const { app, handlers } = fakeApp()
   mountEdvantaResourceRoutes(app, { storage: { listResources: async () => ({}) }, requireStudent: pass, requireAdmin: pass })
+  assert.ok(handlers.has('GET /api/resources/counts'))
   assert.ok(handlers.has('GET /api/resources'))
   assert.ok(handlers.has('GET /api/resources/:id/preview'))
   assert.ok(handlers.has('POST /api/resources/bulk-download'))
@@ -131,4 +132,31 @@ test('one failed file does not mark an admin batch successful', async () => {
   assert.equal(res.body.results[1].code, 'S3_ACCESS_DENIED')
   assert.equal(uploaded[0].resourceMeta.clientRequestId, 'batch-1-0')
   assert.equal(uploaded[1].resourceMeta.clientRequestId, 'batch-1-1')
+})
+
+test('public counts route hardcodes student audience and never blocks on a cold start', async () => {
+  let captured = null
+  const { app, handlers } = fakeApp()
+  mountEdvantaResourceRoutes(app, {
+    storage: {
+      getLiveCounts: async (options) => {
+        captured = options
+        return { counts: { total: 7 }, stale: true, note: 'Storage service is waking up; serving the last known counts.' }
+      },
+    },
+    requireStudent: pass,
+    requireAdmin: pass,
+  })
+  const res = fakeRes()
+  await handlers.get('GET /api/resources/counts')(
+    { params: {}, query: { audience: 'admin', includeUnavailable: '1' }, body: {} },
+    res,
+    () => {},
+  )
+  assert.equal(captured.audience, 'student', 'browser cannot escalate the counts query')
+  assert.equal(captured.includeUnavailable, true)
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.body.counts.total, 7)
+  assert.equal(res.body.stale, true)
+  assert.equal(res.headers['cache-control'], 'private, max-age=5')
 })

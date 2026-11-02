@@ -102,6 +102,9 @@ export function createStorage(options = {}) {
     return response.json()
   }
 
+  /** Last successful counts response, used when the storage service is waking up. */
+  let lastLiveCounts = null
+
   return {
     endpoint,
     /** Student/admin discovery. `audience=admin` is only for Edvanta's admin UI. */
@@ -168,6 +171,49 @@ export function createStorage(options = {}) {
     },
     syncResources({ limit = 50, cursor, order = 'newest' } = {}) {
       return jsonRequest('/resources/sync', { method: 'POST', json: { limit, cursor, order } })
+    },
+    /**
+     * Fast live counts for the landing page.
+     *
+     * A Render free-tier cold start can take ~1 minute. This call uses a short
+     * timeout and serves the last known counts (or an empty shape) instead of
+     * blocking the whole page. `stale: true` tells the UI to skip the
+     * "loading the live counts" notice; it must never be treated as an error.
+     */
+    async getLiveCounts({ audience = 'student', includeUnavailable = false, timeoutMs = 3000, signal } = {}) {
+      const abortSignal = signal ?? timeoutSignal(timeoutMs)
+      try {
+        const path = `/resources/counts${query({ audience, includeUnavailable: includeUnavailable ? 1 : 0 })}`
+        const response = await rawRequest(path, { signal: abortSignal })
+        if (!response.ok) throw await problem(response)
+        const body = await response.json()
+        lastLiveCounts = { ...body, stale: false }
+        return lastLiveCounts
+      } catch (error) {
+        if (lastLiveCounts) {
+          return { ...lastLiveCounts, stale: true, note: 'Storage service is waking up; serving the last known counts.' }
+        }
+        return {
+          counts: {
+            total: 0,
+            available: 0,
+            missing: 0,
+            inaccessible: 0,
+            unknown: 0,
+            byCategory: {},
+            bySubject: {},
+            byProvider: {},
+          },
+          audience,
+          includeUnavailable,
+          generatedAt: null,
+          ttlSeconds: 0,
+          cached: false,
+          stale: true,
+          note: 'Counts are unavailable while the storage service wakes; the page remains usable.',
+          error: error?.code ?? 'STORAGE_UPSTREAM_UNAVAILABLE',
+        }
+      }
     },
     health() {
       return jsonRequest('/resources/health')

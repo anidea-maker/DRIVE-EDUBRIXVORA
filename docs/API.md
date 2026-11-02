@@ -350,6 +350,7 @@ the API key: Edvanta's server authenticates its own student/admin session first.
 | `POST` | `/resources/bulk-download` | `files:read` | — | `{ "ids": [...] }` → streaming ZIP, per-file errors in headers and `_download-errors.txt` |
 | `POST` | `/resources/:id/verify` | `files:write` | admin/super_admin role | One provider HEAD/get; updates availability |
 | `POST` | `/resources/sync` | `files:write` | admin/super_admin role | On-demand reconciliation with a checkpoint cursor |
+| `GET` | `/resources/counts` | `files:read` | — | Fast cached live counts for the landing page; 30s cache, no provider calls |
 | `GET` | `/resources/health` | `files:read` | — | Database, provider and availability health (no credentials) |
 
 ```bash
@@ -363,6 +364,10 @@ curl -X POST "$BASE/resources" \
 
 curl -H "Authorization: Bearer $KEY" \
   "$BASE/resources?audience=student&subject=Biology&limit=20"
+
+# Fast landing-page counts (cached 30s; no Drive/S3 calls)
+curl -H "Authorization: Bearer $KEY" \
+  "$BASE/resources/counts?audience=student"
 
 curl -H "Authorization: Bearer $KEY" \
   "$BASE/resources/<id>/preview-url"
