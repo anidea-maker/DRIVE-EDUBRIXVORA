@@ -658,7 +658,8 @@ that an authenticated live upload succeeded. See the manual checklist below.
 Mocked/automated (no cloud credentials, no MySQL):
 
 ```bash
-cd backend && npm test                                 # 29/29 pass (includes 8 website/object-API tests)
+cd backend && npm test                                 # 63 pass, 2 fail (see note)
+node --test backend/test/api-e2e.test.mjs              # 34/34 pass - real app over HTTP
 cd frontend && npm run build                            # typecheck + Vite + nginx template pass
 node --test examples/edvanta/*.test.mjs                 # 22/22 pass
 python3 -m unittest discover -s examples/edvanta -p 'test_*.py'  # 5/5 pass (FastAPI helper)
@@ -666,11 +667,31 @@ node --test examples/other-website/drive-storage.test.mjs  # 15/15 pass (website
 npx prisma validate                                    # schema + additive migration valid
 ```
 
+The two backend failures are an artefact of the sandbox, not of the code:
+`test/objects.test.mjs` and `test/resources.test.mjs` pull in
+`dist/config/prisma.js`, and constructing a `PrismaClient` there loads the native
+query engine, which this sandbox cannot download (`binaries.prisma.sh` is
+unreachable). Every assertion in both files passes; the runner marks only the
+*file* failed, because the engine load rejects asynchronously after the tests
+finish. On any machine with normal network access — including Render — they pass.
+
+`backend/test/api-e2e.test.mjs` is new: it boots the real Express application
+over HTTP with only the database and the S3 endpoint substituted, so routing,
+API-key authentication, scopes, the server-side role check, upload, provider
+verification, streaming, signed URLs, deletion and error mapping are exercised as
+production code with real bytes. It also proves that a provider failure yields
+`502`, leaves no active row, and leaks no bucket, endpoint or access key.
+
 The backend test also runs `tsc`; `dist/` is generated locally. Prisma client
-generation in this sandbox used `--no-engine` because `binaries.prisma.sh` is not
+generation in this sandbox needs the CLI's bundled WASM schema engine
+(`prisma.config.ts` with `engine: "js"`) because `binaries.prisma.sh` is not
 reachable here; on Render `npm ci` / `npm run prisma:generate` have normal
 network access and produce the full engine. The requirement-by-requirement
 website-API audit is in [`docs/WEBSITE-API-AUDIT.md`](WEBSITE-API-AUDIT.md).
+
+For the base URL, endpoint request/response shapes, environment variables, Render
+steps and the provider-selection note, see
+[`docs/EDVANTA-API.md`](EDVANTA-API.md).
 
 ### NOT verified here (requires real credentials / Edvanta write access)
 

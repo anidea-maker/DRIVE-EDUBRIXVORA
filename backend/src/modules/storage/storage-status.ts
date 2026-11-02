@@ -67,7 +67,12 @@ export type StorageReportInput = {
   maxUploadBytes?: number | bigint
 }
 
-const APP_RECORDS = 'Turso — accounts, document metadata & registry, not file bytes'
+/**
+ * What the database actually holds. It is shown on another site's admin panel,
+ * so it must describe this deployment: file bytes live at Google Drive/S3, and
+ * MySQL only ever stores accounts, file metadata and the resource registry.
+ */
+const APP_RECORDS = 'MySQL — accounts, file metadata & registry, not file bytes'
 const PROVIDER_NOTE = '9drive is the only destination for new file bytes'
 
 export function buildStorageReport(input: StorageReportInput = {}): StorageReport {
