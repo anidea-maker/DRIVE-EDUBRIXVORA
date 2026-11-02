@@ -8,8 +8,16 @@ separate and was not modified).
 
 This document answers six questions: the base URL, the endpoints and their
 request/response shapes, the authentication method, the exact environment
-variables, how to deploy on Render, and what has actually been tested. Every
-response example below was captured from a running instance of this build.
+variables, how to deploy on Render, and what has actually been tested.
+
+**About the examples.** Every request/response example below is real output from
+this build, executed over HTTP by the end-to-end test. That test substitutes two
+things: the database (an in-memory stand-in) and the S3 endpoint (a local
+S3-compatible server). So the **shapes, field names, status codes and headers are
+exact**, but any *value that depends on the data* — account counts, byte totals,
+ids, checksums — reflects that test fixture, not the production deployment. In
+particular the `accounts` block in §3.1 is fixture output; do not read it as a
+statement about how many accounts your deployment has.
 
 The storage API **already existed** in this repository. Nothing was rebuilt, no
 endpoint was renamed, and no storage account was touched: the nine Google Drive
@@ -113,6 +121,9 @@ a **string**: uploads may be up to 5 GiB, which exceeds
 
 ```jsonc
 // GET /api/v1/storage-status  → 200
+// Real response shape. Byte totals and account counts below are from the
+// test fixture (9 simulated Drive accounts + 1 local S3 stand-in), not from
+// the production deployment - your numbers will differ.
 {
   "storage": {
     "status": "connected",              // connected | degraded | unavailable
@@ -509,9 +520,16 @@ service named `9drive` serving the API and the SPA from the same origin, with
    curl -s https://drive-edubrixvora-1.onrender.com/health | jq .status          # "ok"
    curl -s https://drive-edubrixvora-1.onrender.com/ready  | jq '{database,migrations}'
    curl -s https://drive-edubrixvora-1.onrender.com/api/v1/storage-status | jq .storage.accounts
-   # → { "connected": 10, "googleDrive": 9, "s3": 1 }
    curl -s https://drive-edubrixvora-1.onrender.com/api/diagnostics | jq .hints
    ```
+
+   The last call is the one that tells you storage is really connected. Compare
+   it with what you expect rather than with a number from this document —
+   `storage.accounts` should read `{ "connected": 10, "googleDrive": 9, "s3": 1 }`
+   **only if** nine Drive accounts and one bucket are in fact connected, and
+   `storage.status` should be `"connected"` rather than `"degraded"` (which means
+   zero connected accounts) or `"unavailable"` (the registry could not be read).
+   `/diagnostics` → `hints` names anything it finds wrong.
 
    `/ready` returning `503` names the cause directly (unreachable database, or
    `migrations: "missing"`).
