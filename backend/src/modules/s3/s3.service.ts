@@ -153,22 +153,32 @@ export async function deleteS3Object(file: FileWithAccount) {
  * the form. Matching on the endpoint's site (and the bucket when the preset names
  * one) lets a redeploy fix an existing account without disconnecting it.
  */
-async function adoptDeclaredQuota(config: S3Config) {
-  if (config.quotaBytes !== null) return config
+async function adoptDeclaredSettings(config: S3Config): Promise<S3Config> {
   const preset = listStoragePresets().find((entry) =>
     entry.ready
-    && entry.quotaBytes
     && endpointSite(entry.endpoint) === endpointSite(config.endpoint)
     && (!entry.bucket || entry.bucket === config.bucket))
-  if (!preset?.quotaBytes) return config
-  const quotaBytes = BigInt(preset.quotaBytes)
-  await prisma.s3StorageConfig.update({ where: { connectedAccountId: config.connectedAccountId }, data: { quotaBytes } })
-  return { ...config, quotaBytes }
+  if (!preset) return config
+  const quotaBytes = config.quotaBytes === null && preset.quotaBytes ? BigInt(preset.quotaBytes) : config.quotaBytes
+  // A rename only comes from an explicit `*_DISPLAY_NAME`; the generic backend's
+  // name is inferred from the host and must not overwrite a name the user typed.
+  const rename = preset.id !== 'custom' && Boolean(preset.name) && preset.name !== config.name ? preset.name! : null
+  if (quotaBytes === config.quotaBytes && !rename) return config
+  await prisma.s3StorageConfig.update({
+    where: { connectedAccountId: config.connectedAccountId },
+    data: { quotaBytes, ...(rename ? { name: rename } : {}) },
+  })
+  if (rename) {
+    await prisma.connectedAccount
+      .update({ where: { id: config.connectedAccountId }, data: { displayName: rename } })
+      .catch(() => undefined)
+  }
+  return { ...config, quotaBytes, name: rename ?? config.name }
 }
 
 export async function syncS3Quota(accountId: string) {
   const stored = await getS3ConfigForAccount(accountId)
-  const config = await adoptDeclaredQuota(stored)
+  const config = await adoptDeclaredSettings(stored)
   const client = createS3Client(config)
   let usedBytes = 0n
   let continuationToken: string | undefined

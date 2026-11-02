@@ -179,8 +179,10 @@ type Resolved = {
   secretAccessKey: string | null
   quotaBytes: string | null
   forcePathStyle?: boolean
-  /** Overrides the static label, e.g. `S3_LABEL=Hetzner`. */
+  /** The account's display name in the app, e.g. `DBRIJ_DISPLAY_NAME=dbrij-5gb`. */
   name?: string
+  /** Overrides the chip label, e.g. `S3_LABEL=Hetzner`. Defaults to `name`. */
+  label?: string
   notes: string[]
   required: Array<[string, string | null]>
 }
@@ -203,6 +205,7 @@ function resolveB2(): Resolved {
   const explicitEndpoint = readEndpointEnv('B2_ENDPOINT_URL')
   const endpoint = normalizeEndpoint(explicitEndpoint) ?? (region ? normalizeEndpoint(`s3.${region}.backblazeb2.com`) : null)
   const quota = megabytesToBytes('B2_STORAGE_MAX_MB', 'B2_STORAGE_MAX_GB')
+  const displayName = readAny('B2_DISPLAY_NAME', 'B2_NAME')
   const notes: string[] = ['Backblaze B2 needs path-style addressing; it is enabled for you.']
   if (quota.note) notes.push(quota.note)
   const normalised = endpointNote(explicitEndpoint, endpoint)
@@ -218,13 +221,17 @@ function resolveB2(): Resolved {
     notes.push(`B2_BUCKET "${bucket}" contains capitals. Backblaze bucket names are lowercase - use the exact name from the B2 console.`)
   }
 
+  const quotaFromName = quota.value ? null : quotaFromDisplayName(displayName)
+  if (quotaFromName) notes.push(`Quota ${displayName} (${bytesToLabel(quotaFromName)}) read from B2_DISPLAY_NAME.`)
+
   return {
     bucket,
     region,
     endpoint,
     accessKeyId: readEnv('B2_KEY_ID'),
     secretAccessKey: readEnv('B2_APPLICATION_KEY'),
-    quotaBytes: quota.value,
+    quotaBytes: quota.value ?? quotaFromName,
+    name: displayName ?? undefined,
     notes,
     required: [
       ['B2_KEY_ID', readEnv('B2_KEY_ID')],
@@ -244,13 +251,16 @@ function resolveIdriveE2(): Resolved {
   // IDrive E2 reports no quota, so an account without a declared cap reads
   // "Unlimited" forever - the plan size has to be stated.
   const quota = megabytesToBytes('IDRIVE_E2_STORAGE_MAX_MB', 'IDRIVE_E2_STORAGE_MAX_GB', 'IDRIVE_E2_QUOTA_MB')
+  const displayName = readAny('IDRIVE_E2_DISPLAY_NAME', 'IDRIVE_E2_NAME')
+  const quotaFromName = quota.value ? null : quotaFromDisplayName(displayName)
   const notes: string[] = []
+  if (quotaFromName) notes.push(`Quota ${displayName} (${bytesToLabel(quotaFromName)}) read from IDRIVE_E2_DISPLAY_NAME.`)
   if (!endpoint) {
     notes.push('Copy the endpoint from the IDrive E2 console into IDRIVE_E2_ENDPOINT_URL (it looks like https://abc12.va.idrivee2-18.com).')
   }
   if (quota.note) notes.push(quota.note)
-  if (!quota.value) {
-    notes.push('IDrive E2 does not report a quota: set IDRIVE_E2_STORAGE_MAX_GB=10 (or IDRIVE_E2_STORAGE_MAX_MB) so the account does not read "Unlimited".')
+  if (!quota.value && !quotaFromName) {
+    notes.push('IDrive E2 does not report a quota: set IDRIVE_E2_STORAGE_MAX_GB=10 (or IDRIVE_E2_STORAGE_MAX_MB) - or name the account after its plan (IDRIVE_E2_DISPLAY_NAME="IDrive E2-10gb") - so it does not read "Unlimited".')
   }
   return {
     bucket: readEnv('IDRIVE_E2_BUCKET'),
@@ -258,7 +268,8 @@ function resolveIdriveE2(): Resolved {
     endpoint,
     accessKeyId: readEnv('IDRIVE_E2_KEY_ID'),
     secretAccessKey: readEnv('IDRIVE_E2_SECRET_KEY'),
-    quotaBytes: quota.value,
+    quotaBytes: quota.value ?? quotaFromName,
+    name: displayName ?? undefined,
     notes,
     required: [
       ['IDRIVE_E2_KEY_ID', readEnv('IDRIVE_E2_KEY_ID')],
@@ -293,6 +304,8 @@ function resolveDbrij(): Resolved {
   const endpoint = split.endpoint ?? 'https://s3.dbrij.com'
   const region = readAny('DBRIJ_REGION', 'DBRIJ_STORAGE_REGION', 'AWS_REGION', 'AWS_DEFAULT_REGION') ?? 'fsn1'
   const quota = megabytesToBytes('DBRIJ_STORAGE_MAX_MB', 'DBRIJ_STORAGE_MAX_GB', 'DBRIJ_QUOTA_MB')
+  const displayName = readAny('DBRIJ_DISPLAY_NAME', 'DBRIJ_NAME', 'DBRIJ_STORAGE_NAME')
+  const quotaFromName = quota.value ? null : quotaFromDisplayName(displayName)
   const accessKeyId = readAny('DBRIJ_STORAGE_ACCESS_KEY', 'DBRIJ_STORAGE_ACCESS_KEY_ID', 'DBRIJ_ACCESS_KEY', 'DBRIJ_KEY_ID', 'AWS_ACCESS_KEY_ID')
   const secretAccessKey = readAny('DBRIJ_STORAGE_SECRET_KEY', 'DBRIJ_SECRET_KEY', 'DBRIJ_SECRET_ACCESS_KEY', 'AWS_SECRET_ACCESS_KEY')
   const bucket = readAny('DBRIJ_STORAGE_BUCKET', 'DBRIJ_BUCKET', 'AWS_S3_BUCKET') ?? split.bucket
@@ -317,6 +330,7 @@ function resolveDbrij(): Resolved {
     notes.push('That endpoint belongs to a different provider - Dbrij Storage is https://s3.dbrij.com.')
   }
   if (!bucket) notes.push('No bucket named: the server lists the buckets these credentials can see and uses the only one. Set DBRIJ_STORAGE_BUCKET to pin it.')
+  if (quotaFromName) notes.push(`Quota ${displayName} (${bytesToLabel(quotaFromName)}) read from DBRIJ_DISPLAY_NAME.`)
 
   return {
     bucket,
@@ -324,7 +338,8 @@ function resolveDbrij(): Resolved {
     endpoint,
     accessKeyId,
     secretAccessKey,
-    quotaBytes: quota.value,
+    quotaBytes: quota.value ?? quotaFromName,
+    name: displayName ?? undefined,
     notes,
     required: [
       ['DBRIJ_STORAGE_ACCESS_KEY', accessKeyId],
@@ -393,6 +408,40 @@ export function endpointSite(endpoint: string | null): string | null {
   if (!host) return null
   const labels = host.split('.')
   return labels.length <= 2 ? host : labels.slice(-2).join('.')
+}
+
+/**
+ * A size written into an account name.
+ *
+ * Plans are named after their size - `dbrij-5gb`, `IDrive E2-10gb` - so the name is
+ * often the only place the quota exists. Reading it here means one variable sets
+ * both the name shown in the app and the cap it reports; an explicit
+ * `*_STORAGE_MAX_GB`/`_MB` still wins.
+ */
+export function quotaFromDisplayName(name: string | null): string | null {
+  if (!name) return null
+  const match = /(\d+(?:\.\d+)?)\s*(tb|gb|mb)\b/i.exec(name)
+  if (!match) return null
+  const amount = Number(match[1])
+  if (!Number.isFinite(amount) || amount <= 0) return null
+  const unitFactor = { TB: 1024n * 1024n, GB: 1024n, MB: 1n }[match[2].toUpperCase() as 'TB' | 'GB' | 'MB']
+  // Keep it integral: 0.5 GB is 512 MB, not 0 MB.
+  const bytes = BigInt(Math.round(amount * 1000)) * unitFactor * MEGABYTE / 1000n
+  return bytes.toString()
+}
+
+/** `5368709120` -> `5 GB`, for notes the user reads. */
+export function bytesToLabel(bytes: string): string {
+  const value = Number(bytes)
+  if (!Number.isFinite(value) || value <= 0) return bytes
+  const units = ['MB', 'GB', 'TB'] as const
+  let amount = value / 1024 ** 2
+  let unit = 0
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024
+    unit += 1
+  }
+  return `${Number(amount.toFixed(amount < 10 ? 1 : 0))} ${units[unit]}`
 }
 
 /** Just the host of an endpoint, for comparing two backends. */
@@ -520,6 +569,7 @@ function resolveCustom(): Resolved {
     quotaBytes: quota.value,
     forcePathStyle: pathStyle.value,
     name: label ?? 'S3 compatible',
+    label: label ?? 'S3 compatible',
     notes,
     required: [
       ['S3_ENDPOINT_URL', endpoint],
@@ -618,7 +668,8 @@ export function listStoragePresets(): StoragePreset[] {
       // A generic backend is named after its provider (`S3_LABEL`, or inferred from
       // the endpoint host), so the chip reads "Hetzner Object Storage" rather than
       // a second identical "S3 compatible".
-      label: resolved.name ?? definition.label,
+      // The chip keeps the provider's name; `name` is the account's display name.
+      label: resolved.label ?? definition.label,
       name: resolved.name ?? definition.name,
       bucket: resolved.bucket,
       region: resolved.region,
