@@ -89,7 +89,7 @@ publicApiRouter.get(['/v1', '/v1/'], (req, res) => {
       { method: 'GET', path: '/api/v1/files/:id/content', scope: 'files:read', description: 'File bytes (supports Range). Add ?download=1 for an attachment.' },
       { method: 'PATCH', path: '/api/v1/files/:id', scope: 'files:write', description: 'Rename or move a file.' },
       { method: 'DELETE', path: '/api/v1/files/:id', scope: 'files:delete', description: 'Move to trash. Add ?permanent=1 to delete from the provider.' },
-      { method: 'POST', path: '/api/v1/files/:id/share', scope: 'files:write', description: 'Mint a public URL that needs no key (for <img src>).' },
+      { method: 'POST', path: '/api/v1/files/:id/share', scope: 'files:write', description: 'Mint a public URL that needs no key, for image and video tags.' },
       { method: 'DELETE', path: '/api/v1/files/:id/share', scope: 'files:write', description: 'Revoke every public URL for a file.' },
       { method: 'GET', path: '/api/v1/folders', scope: 'files:read', description: 'List folders. Query: parentId, all=1.' },
       { method: 'POST', path: '/api/v1/folders', scope: 'files:write', description: 'Create a folder. Body: name, parentId.' },
