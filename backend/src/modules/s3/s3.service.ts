@@ -5,6 +5,7 @@ import type { Response } from 'express'
 import type { Readable } from 'node:stream'
 import { prisma } from '../../config/prisma.js'
 import { decryptText } from '../../utils/crypto.js'
+import { endpointSite, listStoragePresets } from './presets.js'
 
 type S3Config = S3StorageConfig
 type FileWithAccount = File & { connectedAccount: ConnectedAccount }
@@ -143,8 +144,31 @@ export async function deleteS3Object(file: FileWithAccount) {
   await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: file.providerFileId }))
 }
 
+/**
+ * Adopt a quota cap that was declared in the environment after the account was
+ * connected.
+ *
+ * IDrive E2 and Dbrij report no quota, so an account connected before its cap
+ * existed keeps reading "Unlimited" - and the cap lives in the environment, not in
+ * the form. Matching on the endpoint's site (and the bucket when the preset names
+ * one) lets a redeploy fix an existing account without disconnecting it.
+ */
+async function adoptDeclaredQuota(config: S3Config) {
+  if (config.quotaBytes !== null) return config
+  const preset = listStoragePresets().find((entry) =>
+    entry.ready
+    && entry.quotaBytes
+    && endpointSite(entry.endpoint) === endpointSite(config.endpoint)
+    && (!entry.bucket || entry.bucket === config.bucket))
+  if (!preset?.quotaBytes) return config
+  const quotaBytes = BigInt(preset.quotaBytes)
+  await prisma.s3StorageConfig.update({ where: { connectedAccountId: config.connectedAccountId }, data: { quotaBytes } })
+  return { ...config, quotaBytes }
+}
+
 export async function syncS3Quota(accountId: string) {
-  const config = await getS3ConfigForAccount(accountId)
+  const stored = await getS3ConfigForAccount(accountId)
+  const config = await adoptDeclaredQuota(stored)
   const client = createS3Client(config)
   let usedBytes = 0n
   let continuationToken: string | undefined
