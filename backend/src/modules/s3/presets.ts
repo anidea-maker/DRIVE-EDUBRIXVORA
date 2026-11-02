@@ -5,17 +5,20 @@ import { looksLikePlaceholder } from '../../utils/placeholder.js'
  *
  * `POST /connected-accounts/s3` used to require the browser to send bucket, region,
  * endpoint, key ID and secret every time. A deployment that already holds those as
- * `B2_*` / `IDRIVE_E2_*` / `DBBYTE_*` had no way to use them: the variables were
- * read by nothing. Here each provider is described once, the server resolves the
- * credentials, and the browser only has to say *which* backend to connect - the
- * secrets never travel to the client.
+ * environment variables had no way to use them: they were read by nothing. Here each
+ * provider is described once, the server resolves the credentials, and the browser
+ * only has to say *which* backend to connect - the secrets never travel to the client.
  *
  * Rules carried over from the Google OAuth incident: a placeholder is not a
  * credential, and a half-configured backend reports exactly which variable is
  * missing instead of failing with an opaque SDK error at connect time.
+ *
+ * `custom` (`S3_*`) covers every other S3-compatible cloud - Storj, Hetzner, Tigris,
+ * DigitalOcean Spaces, Linode, Scaleway, MinIO, AWS itself - so a new provider needs
+ * variables, not code.
  */
 
-export type StorageBackendId = 'b2' | 'idrive_e2' | 'dbyte'
+export type StorageBackendId = 'b2' | 'idrive_e2' | 'filebase' | 'custom'
 
 /**
  * State of one environment variable, without ever exposing its value.
@@ -51,6 +54,8 @@ export type StoragePreset = {
   env: EnvVarReport[]
   ready: boolean
   notes: string[]
+  /** Where the credentials come from, shown in Settings. */
+  credentialsHint: string
 }
 
 function envState(name: string): EnvVarState {
@@ -118,22 +123,25 @@ type Resolved = {
   accessKeyId: string | null
   secretAccessKey: string | null
   quotaBytes: string | null
+  forcePathStyle?: boolean
+  /** Overrides the static label, e.g. `S3_LABEL=Hetzner`. */
+  name?: string
   notes: string[]
   required: Array<[string, string | null]>
+}
+
+/** Note when a typed endpoint had to be repaired, so the console value gets fixed. */
+function endpointNote(raw: string | null, normalized: string | null): string | null {
+  if (!raw) return null
+  if (!normalized) return `The endpoint "${raw}" is not a usable URL - use the provider's S3 API host, e.g. https://s3.us-east-1.amazonaws.com.`
+  if (raw.trim().replace(/\/+$/, '') !== normalized) return `Endpoint normalised to ${normalized} (from "${raw}").`
+  return null
 }
 
 /**
  * Backblaze B2. The S3-compatible endpoint is derivable from the region
  * (`s3.<region>.backblazeb2.com`), and `B2_ENDPOINT_URL` wins when set.
  */
-/** Note when a typed endpoint had to be repaired, so the console value gets fixed. */
-function exploratoryNote(raw: string | null, normalized: string | null): string | null {
-  if (!raw) return null
-  if (!normalized) return `The endpoint "${raw}" is not a usable URL - use something like s3.<region>.backblazeb2.com.`
-  if (raw.trim().replace(/\/+$/, '') !== normalized) return `Endpoint normalised to ${normalized} (from "${raw}").`
-  return null
-}
-
 function resolveB2(): Resolved {
   const bucket = readEnv('B2_BUCKET')
   const region = readEnv('B2_REGION')
@@ -142,7 +150,8 @@ function resolveB2(): Resolved {
   const quota = megabytesToBytes('B2_STORAGE_MAX_MB')
   const notes: string[] = ['Backblaze B2 needs path-style addressing; it is enabled for you.']
   if (quota.note) notes.push(quota.note)
-  if (exploratoryNote(explicitEndpoint, endpoint)) notes.push(exploratoryNote(explicitEndpoint, endpoint)!)
+  const normalised = endpointNote(explicitEndpoint, endpoint)
+  if (normalised) notes.push(normalised)
 
   // Backblaze signs requests with the bucket's region. A region that disagrees with
   // the endpoint produces SignatureDoesNotMatch on every upload.
@@ -199,45 +208,152 @@ function resolveIdriveE2(): Resolved {
 }
 
 /**
- * DBBYTE. Only an API key and a bucket are documented for it, so the key is used as
- * both halves of the S3 credential unless `DBBYTE_KEY_ID` / `DBBYTE_SECRET_KEY` are
- * supplied separately, and the endpoint must be provided (`DBBYTE_ENDPOINT_URL`).
+ * Filebase. One global endpoint (`https://s3.filebase.io`) and region `auto`; the
+ * console calls the pair "Access Key" and "Secret Key". IPFS-backed buckets live on
+ * a *different* host (`s3.filebase.com`) - set `FILEBASE_ENDPOINT_URL` for those.
  */
-function resolveDbyte(): Resolved {
-  const apiKey = readEnv('DBBYTE_API_KEY')
-  const endpoint = normalizeEndpoint(readEnv('DBBYTE_ENDPOINT_URL'))
-  const notes: string[] = []
-  if (!endpoint) {
-    notes.push('DBBYTE_ENDPOINT_URL is required: paste the S3 endpoint from the DBBYTE dashboard.')
-  }
-  if (apiKey && !readEnv('DBBYTE_SECRET_KEY')) {
-    notes.push('Using DBBYTE_API_KEY as both the access key and the secret. Set DBBYTE_KEY_ID / DBBYTE_SECRET_KEY if DBBYTE issues a pair.')
+function resolveFilebase(): Resolved {
+  const explicitEndpoint = readEnv('FILEBASE_ENDPOINT_URL')
+  const endpoint = normalizeEndpoint(explicitEndpoint) ?? 'https://s3.filebase.io'
+  const region = readEnv('FILEBASE_REGION') ?? 'auto'
+  const quota = megabytesToBytes('FILEBASE_STORAGE_MAX_MB')
+  const notes: string[] = [
+    'Filebase: FILEBASE_KEY_ID is the console\'s "Access Key", FILEBASE_SECRET_KEY is the "Secret Key". Region is "auto".',
+  ]
+  if (quota.note) notes.push(quota.note)
+  const normalised = endpointNote(explicitEndpoint, endpoint)
+  if (normalised) notes.push(normalised)
+  if (endpoint === 'https://s3.filebase.com') {
+    notes.push('Using the IPFS tier endpoint (s3.filebase.com). Region must be us-east-1 there - set FILEBASE_REGION=us-east-1.')
   }
   return {
-    bucket: readEnv('DBBYTE_BUCKET'),
-    region: readEnv('DBBYTE_REGION') ?? 'us-east-1',
+    bucket: readEnv('FILEBASE_BUCKET'),
+    region,
     endpoint,
-    accessKeyId: readEnv('DBBYTE_KEY_ID') ?? apiKey,
-    secretAccessKey: readEnv('DBBYTE_SECRET_KEY') ?? apiKey,
-    quotaBytes: null,
+    accessKeyId: readEnv('FILEBASE_KEY_ID'),
+    secretAccessKey: readEnv('FILEBASE_SECRET_KEY'),
+    quotaBytes: quota.value,
     notes,
     required: [
-      ['DBBYTE_API_KEY', apiKey],
-      ['DBBYTE_BUCKET', readEnv('DBBYTE_BUCKET')],
-      ['DBBYTE_ENDPOINT_URL', endpoint],
+      ['FILEBASE_KEY_ID', readEnv('FILEBASE_KEY_ID')],
+      ['FILEBASE_SECRET_KEY', readEnv('FILEBASE_SECRET_KEY')],
+      ['FILEBASE_BUCKET', readEnv('FILEBASE_BUCKET')],
     ],
   }
 }
 
-const DEFINITIONS: Array<{ id: StorageBackendId; label: string; name: string; pathStyle: boolean; resolve: () => Resolved }> = [
-  { id: 'b2', label: 'Backblaze B2', name: 'Backblaze B2', pathStyle: true, resolve: resolveB2 },
-  { id: 'idrive_e2', label: 'IDrive E2', name: 'IDrive E2', pathStyle: true, resolve: resolveIdriveE2 },
-  { id: 'dbyte', label: 'DBBYTE', name: 'DBBYTE', pathStyle: true, resolve: resolveDbyte },
+/** `"true"`/`"1"`/`"yes"` - anything else is a note, not a silent default. */
+function readBoolean(name: string, fallback: boolean): { value: boolean; note?: string } {
+  const raw = readEnv(name)
+  if (!raw) return { value: fallback }
+  if (/^(1|true|yes|on)$/i.test(raw)) return { value: true }
+  if (/^(0|false|no|off)$/i.test(raw)) return { value: false }
+  return { value: fallback, note: `${name} should be true or false (got "${raw}").` }
+}
+
+/**
+ * Any other S3-compatible provider, described by `S3_*`.
+ *
+ * Storj, Hetzner, Tigris, DigitalOcean Spaces, Linode, Scaleway, MinIO, AWS, and
+ * anything else: the endpoint, region and path-style behaviour are the only things
+ * that differ, and all three are variables here.
+ */
+function resolveCustom(): Resolved {
+  const endpoint = normalizeEndpoint(readEnv('S3_ENDPOINT_URL'))
+  const bucket = readEnv('S3_BUCKET')
+  const region = readEnv('S3_REGION') ?? 'us-east-1'
+  const pathStyle = readBoolean('S3_FORCE_PATH_STYLE', Boolean(endpoint))
+  const quota = megabytesToBytes('S3_STORAGE_MAX_MB')
+  const label = readEnv('S3_LABEL')
+
+  const notes: string[] = []
+  if (!endpoint) notes.push('S3_ENDPOINT_URL is required for a non-AWS provider (AWS itself needs no endpoint, but this preset expects one).')
+  if (pathStyle.note) notes.push(pathStyle.note)
+  if (quota.note) notes.push(quota.note)
+  if (!bucket) notes.push('Set S3_BUCKET to the bucket name exactly as the provider lists it.')
+
+  return {
+    bucket,
+    region,
+    endpoint,
+    accessKeyId: readEnv('S3_ACCESS_KEY_ID'),
+    secretAccessKey: readEnv('S3_SECRET_ACCESS_KEY'),
+    quotaBytes: quota.value,
+    forcePathStyle: pathStyle.value,
+    name: label ?? 'S3 compatible',
+    notes,
+    required: [
+      ['S3_ENDPOINT_URL', endpoint],
+      ['S3_BUCKET', bucket],
+      ['S3_ACCESS_KEY_ID', readEnv('S3_ACCESS_KEY_ID')],
+      ['S3_SECRET_ACCESS_KEY', readEnv('S3_SECRET_ACCESS_KEY')],
+    ],
+  }
+}
+
+type Definition = {
+  id: StorageBackendId
+  label: string
+  name: string
+  pathStyle: boolean
+  credentialsHint: string
+  /** Hidden until one of its variables is set: a permanently-empty row is noise. */
+  hideWhenUnconfigured?: boolean
+  /** Variables that count as "this backend was configured at all". */
+  presenceVars?: string[]
+  resolve: () => Resolved
+}
+
+function isConfigured(definition: Definition): boolean {
+  if (!definition.presenceVars?.length) return true
+  return definition.presenceVars.some((name) => envState(name) !== 'unset')
+}
+
+/**
+ * `dbyte` was removed: DBByte's API is REST + bearer token (base URL
+ * https://api.dbbyte.com), with no S3 endpoint and a 100 MB upload cap, so it can
+ * never work through this route. Its variables are simply ignored now.
+ */
+const DEFINITIONS: Definition[] = [
+  {
+    id: 'b2',
+    label: 'Backblaze B2',
+    name: 'Backblaze B2',
+    pathStyle: true,
+    credentialsHint: 'B2 console -> Application Keys: keyID goes in B2_KEY_ID, applicationKey in B2_APPLICATION_KEY. B2_REGION is the region in the bucket endpoint (s3.<region>.backblazeb2.com).',
+    resolve: resolveB2,
+  },
+  {
+    id: 'idrive_e2',
+    label: 'IDrive E2',
+    name: 'IDrive E2',
+    pathStyle: true,
+    credentialsHint: 'IDrive E2 console -> Access Keys: IDRIVE_E2_KEY_ID + IDRIVE_E2_SECRET_KEY, and copy the per-account endpoint into IDRIVE_E2_ENDPOINT_URL.',
+    resolve: resolveIdriveE2,
+  },
+  {
+    id: 'filebase',
+    label: 'Filebase',
+    name: 'Filebase',
+    pathStyle: true,
+    credentialsHint: 'Filebase console -> S3 API Access Keys: "Access Key" goes in FILEBASE_KEY_ID, "Secret Key" in FILEBASE_SECRET_KEY. Endpoint is https://s3.filebase.io, region auto.',
+    resolve: resolveFilebase,
+  },
+  {
+    id: 'custom',
+    label: 'S3 compatible',
+    name: 'S3 compatible',
+    pathStyle: true,
+    credentialsHint: 'Generic: S3_ENDPOINT_URL, S3_REGION, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY (+ S3_FORCE_PATH_STYLE, S3_LABEL, S3_STORAGE_MAX_MB). Use for Storj, Hetzner, Tigris, DigitalOcean, Linode, Scaleway, MinIO, AWS.',
+    hideWhenUnconfigured: true,
+    presenceVars: ['S3_ENDPOINT_URL', 'S3_BUCKET', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_LABEL'],
+    resolve: resolveCustom,
+  },
 ]
 
 /** Every backend the environment describes, including incomplete ones. */
 export function listStoragePresets(): StoragePreset[] {
-  return DEFINITIONS.map((definition) => {
+  return DEFINITIONS.filter((definition) => !definition.hideWhenUnconfigured || isConfigured(definition)).map((definition) => {
     const resolved = definition.resolve()
     const missing = resolved.required.filter(([, value]) => !value).map(([name]) => name)
     const env = resolved.required.map(([name]) => ({ name, state: envState(name) }))
@@ -246,11 +362,11 @@ export function listStoragePresets(): StoragePreset[] {
     return {
       id: definition.id,
       label: definition.label,
-      name: definition.name,
+      name: resolved.name ?? definition.name,
       bucket: resolved.bucket,
       region: resolved.region,
       endpoint: resolved.endpoint,
-      forcePathStyle: definition.pathStyle,
+      forcePathStyle: resolved.forcePathStyle ?? definition.pathStyle,
       hasAccessKey: Boolean(resolved.accessKeyId),
       hasSecretKey: Boolean(resolved.secretAccessKey),
       quotaBytes: resolved.quotaBytes,
@@ -260,12 +376,18 @@ export function listStoragePresets(): StoragePreset[] {
       env,
       ready: missing.length === 0,
       notes: resolved.notes,
+      credentialsHint: definition.credentialsHint,
     }
   })
 }
 
 export function getStoragePreset(id: string): StoragePreset | undefined {
   return listStoragePresets().find((preset) => preset.id === id)
+}
+
+/** The ids a caller may name, for error messages and validation. */
+export function storageBackendIds(): StorageBackendId[] {
+  return DEFINITIONS.map((definition) => definition.id)
 }
 
 /**
@@ -282,9 +404,12 @@ const BACKEND_ALIASES: Record<string, StorageBackendId> = {
   idrive_e2: 'idrive_e2',
   'idrive-e2': 'idrive_e2',
   idrivee2: 'idrive_e2',
-  dbyte: 'dbyte',
-  dbbyte: 'dbyte',
-  dbytes: 'dbyte',
+  filebase: 'filebase',
+  fb: 'filebase',
+  custom: 'custom',
+  generic: 'custom',
+  s3_gen: 'custom',
+  s3_generic: 'custom',
 }
 
 /**
@@ -299,6 +424,8 @@ export function resolveActivePreset(): StoragePreset | null {
   if (requested) {
     const wanted = requested.split(',').map((entry) => entry.trim()).filter(Boolean)
     for (const name of wanted) {
+      // "s3" is a family, not a backend - treat it as "whatever is ready".
+      if (name === 's3' || name === 'auto' || name === 's3_compatible') continue
       const id = BACKEND_ALIASES[name]
       const named = id ? presets.find((preset) => preset.id === id) : undefined
       if (named && named.ready) return named
@@ -306,10 +433,7 @@ export function resolveActivePreset(): StoragePreset | null {
         console.warn(`[storage] STORAGE_BACKEND names ${named.label}, but it is incomplete: ${named.missing.join(', ')}.`)
         continue
       }
-      // "s3" is a family, not a backend - treat it as "whatever is ready".
-      if (name !== 's3' && name !== 'auto' && name !== 's3_compatible') {
-        console.warn(`[storage] STORAGE_BACKEND="${name}" is not a known backend. Use one of: ${presets.map((p) => p.id).join(', ')}, or a comma-separated preference list.`)
-      }
+      console.warn(`[storage] STORAGE_BACKEND="${name}" is not a known backend. Use one of: ${presets.map((p) => p.id).join(', ')}, or a comma-separated preference list.`)
     }
   }
 
@@ -342,6 +466,7 @@ export function describeStorageEnvironment() {
       env: preset.env,
       bucket: preset.bucket,
       endpoint: preset.endpoint,
+      region: preset.region,
       // Normalisation and region/bucket warnings travel with the report, so a
       // pasted /api/diagnostics explains the problem on its own.
       notes: preset.notes,

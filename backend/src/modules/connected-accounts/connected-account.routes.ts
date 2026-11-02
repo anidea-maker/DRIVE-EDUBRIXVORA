@@ -11,19 +11,21 @@ import { classifyGoogleError, describeGoogleError, type ConnectFailure } from '.
 import { repairStoredRedirectUri, requestOrigin, resolveGoogleRedirectUri } from '../google/redirect-uri.js'
 import { redirectToFrontend } from '../../utils/redirect.js'
 import { describeS3Error, syncS3Quota, testS3Connection } from '../s3/s3.service.js'
-import { getStoragePreset, listStoragePresets, normalizeEndpoint, resolveActivePreset, resolvePresetCredentials } from '../s3/presets.js'
+import { getStoragePreset, listStoragePresets, normalizeEndpoint, resolveActivePreset, resolvePresetCredentials, storageBackendIds } from '../s3/presets.js'
 import { looksLikePlaceholder } from '../../utils/placeholder.js'
 
 export const connectedAccountRouter = Router()
 
 /**
  * `provider` names a backend described by the environment (`B2_*`, `IDRIVE_E2_*`,
- * `DBBYTE_*`). The other fields then become overrides: anything left blank is
+ * `FILEBASE_*`). The other fields then become overrides: anything left blank is
  * filled from the environment, so the browser never has to send a secret it does
  * not know.
  */
 const s3ConnectSchema = z.object({
-  provider: z.enum(['b2', 'idrive_e2', 'dbyte']).optional(),
+  // Validated against the preset registry below, so adding a backend is a one-line
+  // change there instead of an edit to this schema as well.
+  provider: z.string().trim().min(1).max(40).optional(),
   name: z.string().trim().min(1).max(191).optional(),
   bucket: z.string().trim().min(1).max(191).optional(),
   region: z.string().trim().min(1).max(191).optional(),
@@ -162,7 +164,10 @@ connectedAccountRouter.post('/s3', requireAuth, async (req: AuthRequest, res, ne
     const wantsEnvironment = Boolean(body.provider) || (!body.bucket && !body.accessKeyId && !body.endpoint)
     const preset = body.provider ? getStoragePreset(body.provider) : wantsEnvironment ? resolveActivePreset() : null
     if (body.provider && !preset) {
-      return res.status(400).json({ code: 'STORAGE_BACKEND_UNKNOWN', message: `Unknown storage backend "${body.provider}".` })
+      return res.status(400).json({
+        code: 'STORAGE_BACKEND_UNKNOWN',
+        message: `Unknown storage backend "${body.provider}". Use one of: ${storageBackendIds().join(', ')}.`,
+      })
     }
     if (preset && !preset.ready && !(body.bucket && body.accessKeyId && body.secretAccessKey)) {
       return res.status(400).json({
