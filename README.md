@@ -89,7 +89,8 @@ Try the live preview at **[9drive.zenhosta.com](https://9drive.zenhosta.com)**.
 - Activity log.
 
 **For developers**
-- A storage API at `/api/v1` so another website can use 9Drive as its file store: upload, list, download, rename, delete, and mint public URLs. Keys are scoped (`files:read`, `files:write`, `files:delete`), shown once, stored hashed, and revocable.
+- A storage API at `/api/v1` so another website can use 9Drive as its file store: upload, list, download, rename, delete, and mint public URLs.
+- S3-style objects - `PUT/GET/HEAD/DELETE /api/v1/objects/<any/key.png>`, list by `prefix` + `delimiter`, quoted `ETag`s, and expiring signed URLs for browsers. Keys are scoped (`files:read`, `files:write`, `files:delete`), shown once, stored hashed, and revocable.
 - Any origin may call it with a key. Full reference in [docs/API.md](docs/API.md), plus copy-paste examples in **API Management**.
 
 **Accounts and admin**
@@ -588,6 +589,9 @@ Storage API   GET  /api/v1 · GET /api/v1/me · GET /api/v1/usage      (API key,
               GET  /api/v1/files/:id · /content · /download · PATCH / DELETE
               POST /api/v1/files/:id/share · DELETE /api/v1/files/:id/share
               GET  /api/v1/folders · POST /api/v1/folders
+              PUT/GET/HEAD/DELETE /api/v1/objects/:key · GET /api/v1/objects?prefix=&delimiter=
+              POST /api/v1/objects/sign  (expiring URL for GET/HEAD/PUT)
+              GET  /api/public/objects/:key  (signed, no API key)
               POST /api/v1/uploads   (legacy alias for POST /api/v1/files)
 ```
 

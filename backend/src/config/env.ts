@@ -72,6 +72,12 @@ const envSchema = z.object({
   /** Request budget per API key, per minute. 0 disables the limit. */
   API_RATE_LIMIT_PER_MINUTE: z.coerce.number().default(600),
   /**
+   * Signs expiring object URLs (`POST /api/v1/objects/sign`). Optional: without it
+   * a key is derived from TOKEN_ENCRYPTION_KEY, so signed links work on an
+   * existing deployment with no new configuration.
+   */
+  OBJECT_URL_SIGNING_SECRET: z.string().min(16).optional(),
+  /**
    * Directory holding the built SPA. Set by the single-service Dockerfile, and the
    * signal that this process is also the web server - so browser redirects can be
    * relative and do not depend on FRONTEND_URL at all.

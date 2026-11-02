@@ -28,6 +28,7 @@ type FileRecord = {
   provider: string
   folderId: string | null
   status: string
+  objectKey?: string | null
   createdAt: Date
   updatedAt: Date
   deletedAt?: Date | null
@@ -52,6 +53,9 @@ export function apiFile(req: Request, file: FileRecord) {
     mimeType: file.mimeType,
     sizeBytes: file.sizeBytes.toString(),
     provider: file.provider,
+    // Set when the file was written through the object API (`PUT /objects/<key>`).
+    // Dashboard uploads have no key and are addressed by id.
+    key: file.objectKey ?? null,
     folderId: file.folderId,
     folder: file.folder ? { id: file.folder.id, name: file.folder.name } : null,
     accountId: file.connectedAccountId ?? file.connectedAccount?.id ?? null,

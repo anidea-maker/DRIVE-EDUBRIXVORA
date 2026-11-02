@@ -2,8 +2,12 @@ import { Router } from 'express'
 import { prisma } from '../../config/prisma.js'
 import { hashToken } from '../../utils/crypto.js'
 import { streamProviderFile } from '../files/stream-file.js'
+import { objectLinkRouter } from './object-link.routes.js'
 
 export const publicRouter = Router()
+
+// `/api/public/objects/<key>?...` - signed, no API key. See object-link.routes.ts.
+publicRouter.use('/objects', objectLinkRouter)
 
 async function findSharedFile(token: string) {
   const share = await prisma.fileShare.findFirst({

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
-import { AlertTriangle, Check, Code2, Copy, Globe, Image as ImageIcon, KeyRound, Plus, Server, Trash2 } from 'lucide-react'
+import { AlertTriangle, Check, Code2, Copy, Globe, Image as ImageIcon, KeyRound, Layers, Plus, Server, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { DummyModal } from '@/components/drive/DummyModal'
@@ -219,6 +219,57 @@ await db.save({ storageKey: fileId, publicUrl: share.url })
 // <video src={publicUrl} controls />
 // <a href={downloadUrl}>Download</a>`
 
+  const objectVerbs = [
+    { verb: 'PUT', path: '/objects/<key>', behaviour: 'Write the body. 201 created, 200 overwritten.' },
+    { verb: 'GET', path: '/objects/<key>', behaviour: 'Bytes, with Range and If-None-Match (304).' },
+    { verb: 'HEAD', path: '/objects/<key>', behaviour: 'Content-Type, Content-Length, ETag, Last-Modified only.' },
+    { verb: 'DELETE', path: '/objects/<key>', behaviour: 'Delete for good. Always 204.' },
+    { verb: 'GET', path: '/objects?prefix=&delimiter=', behaviour: 'List; delimiter=/ collapses the rest into folders.' },
+    { verb: 'POST', path: '/objects/sign', behaviour: 'Expiring URL for GET or PUT, for browsers.' },
+  ] as const
+
+  const objectExample = `// The body is the object - no multipart, no second copy
+await fetch('${base.absolute}/objects/branding/logo.png', {
+  method: 'PUT',
+  headers: {
+    Authorization: \`Bearer \${process.env.DRIVE_API_KEY}\`,
+    'Content-Type': 'image/png',
+  },
+  body: pngBuffer,          // Buffer, Blob or a read stream
+})
+
+const res = await fetch('${base.absolute}/objects/branding/logo.png', {
+  headers: { Authorization: \`Bearer \${process.env.DRIVE_API_KEY}\` },
+})
+const bytes = Buffer.from(await res.arrayBuffer())
+// res.headers.get('etag')           -> "9b2cf5..."
+// res.headers.get('last-modified')`
+
+  const objectListExample = `# Write straight from a file
+curl -X PUT "${base.absolute}/objects/branding/logo.png" \\
+  -H "Authorization: Bearer $DRIVE_API_KEY" \\
+  -H "Content-Type: image/png" \\
+  --upload-file ./logo.png
+
+# List one "folder" - delimiter collapses the rest
+curl "${base.absolute}/objects?prefix=branding/&delimiter=/" \\
+  -H "Authorization: Bearer $DRIVE_API_KEY"`
+
+  const objectUrlExample = `// The browser never sees the key: sign a short-lived link.
+const { url } = await fetch('${base.absolute}/objects/sign', {
+  method: 'POST',
+  headers: {
+    Authorization: \`Bearer \${process.env.DRIVE_API_KEY}\`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({ key: 'branding/logo.png', method: 'GET', expiresInSeconds: 3600 }),
+}).then((r) => r.json())
+
+// <img src={url} />
+
+// ...and a PUT link so a browser uploads directly to storage:
+// { key: 'uploads/user-' + id + '.png', method: 'PUT', expiresInSeconds: 600 }`
+
   const endpoints = [
     { method: 'GET', path: '/files', scope: 'files:read', text: 'List files. Query: limit, cursor, folderId, root=1, q, kind, order.' },
     { method: 'POST', path: '/files', scope: 'files:write', text: 'Multipart upload. Returns the stored file with URLs.' },
@@ -344,6 +395,53 @@ await db.save({ storageKey: fileId, publicUrl: share.url })
           </div>
         </Card>
       </div>
+
+      <Card className="mt-6 min-w-0 p-4 sm:p-5">
+        <div className="flex items-center gap-2">
+          <Layers className="h-4 w-4 text-[var(--accent)]" />
+          <h2 className="text-[17px] font-extrabold">Objects (S3-style)</h2>
+        </div>
+        <p className="mt-1 text-[13px] leading-relaxed text-slate-500">
+          The same storage addressed by path instead of id. <code className="rounded bg-[var(--surface-inset)] px-1 py-0.5 text-[12px]">PUT</code> to a key writes that object, and the same key again replaces it - there is never a second copy. It is a normal <code className="rounded bg-[var(--surface-inset)] px-1 py-0.5 text-[12px]">fetch</code>, so keep putting files in.
+        </p>
+
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full min-w-[520px] border-collapse text-left text-[13px]">
+            <thead>
+              <tr className="text-[11px] uppercase tracking-wide text-slate-400">
+                <th className="pb-2 pr-3 font-bold">Verb</th>
+                <th className="pb-2 pr-3 font-bold">Path</th>
+                <th className="pb-2 font-bold">Behaviour</th>
+              </tr>
+            </thead>
+            <tbody>
+              {objectVerbs.map((row) => (
+                <tr key={`${row.verb} ${row.path}`} className="border-t border-[var(--border)] align-top">
+                  <td className="py-2.5 pr-3"><span className="rounded-md bg-[var(--surface-inset)] px-1.5 py-0.5 font-mono text-[11px] font-bold text-slate-600">{row.verb}</span></td>
+                  <td className="py-2.5 pr-3 font-mono text-[12px] font-semibold">{row.path}</td>
+                  <td className="py-2.5 text-slate-500">{row.behaviour}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mt-5 grid gap-5 xl:grid-cols-2">
+          <CodeBlock label="Write and read an object (Node)" code={objectExample} />
+          <CodeBlock label="curl: upload a file, list by prefix" code={objectListExample} />
+          <CodeBlock label="Signed URLs for the browser" code={objectUrlExample} />
+          <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-inset)] p-4">
+            <p className="text-[13px] font-bold">Object rules</p>
+            <ul className="mt-2 grid gap-1.5 text-[13px] leading-relaxed text-slate-500">
+              <li>Keys are paths: <code className="rounded bg-[var(--surface)] px-1 py-0.5 text-[12px]">branding/logo.png</code>. No leading or trailing slash, no <code className="rounded bg-[var(--surface)] px-1 py-0.5 text-[12px]">..</code>, up to 700 characters.</li>
+              <li>Every write returns an <code className="rounded bg-[var(--surface)] px-1 py-0.5 text-[12px]">ETag</code> (MD5), so conditional <code className="rounded bg-[var(--surface)] px-1 py-0.5 text-[12px]">If-None-Match</code> works.</li>
+              <li><code className="rounded bg-[var(--surface)] px-1 py-0.5 text-[12px]">DELETE</code> always answers <code className="rounded bg-[var(--surface)] px-1 py-0.5 text-[12px]">204</code> - deleting a key that is gone is success.</li>
+              <li>Missing key on <code className="rounded bg-[var(--surface)] px-1 py-0.5 text-[12px]">GET</code>/<code className="rounded bg-[var(--surface)] px-1 py-0.5 text-[12px]">HEAD</code> is <code className="rounded bg-[var(--surface)] px-1 py-0.5 text-[12px]">404 NO_SUCH_KEY</code>.</li>
+              <li>Objects appear in the dashboard with their key, and dashboard uploads appear in listings.</li>
+            </ul>
+          </div>
+        </div>
+      </Card>
 
       <Card className="mt-6 min-w-0 p-4 sm:p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
