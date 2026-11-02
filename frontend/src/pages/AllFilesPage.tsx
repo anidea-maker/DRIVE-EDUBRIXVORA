@@ -717,11 +717,11 @@ export function AllFilesPage() {
       </div>
       {cutFolder ? <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-700"><ClipboardPaste className="mr-2 inline h-4 w-4" />Cut folder: {cutFolder.name}. Press Ctrl+V or right-click empty area to paste here.</p> : null}
       {files.length === 0 ? (
-        <Card className="mt-3 p-5 bg-white/10 backdrop-blur-sm border border-white/20 dark:bg-transparent dark:border-0 dark:p-0 dark:shadow-none">
+        <Card className="mt-3 p-5">
           <p className="text-sm text-slate-500">{searchQuery ? `No files found for "${searchQuery}".` : activeFolder ? 'No files in this folder yet.' : 'No uploaded files yet. Connect Google Drive in Settings, then upload a file.'}</p>
         </Card>
       ) : (
-        <Card className="mt-3 p-4 sm:p-5 bg-white/10 backdrop-blur-sm border border-white/20 dark:bg-transparent dark:border-0 dark:p-0 dark:shadow-none">
+        <Card className="mt-3 p-4 sm:p-5">
           {fileViewMode === 'grid' ? (
             <FileGrid files={files} selectedFileIds={selectedFileIds} sizeScale={folderSizeScale} onToggleFile={toggleFileSelection} onFileContextMenu={openContext} />
           ) : (

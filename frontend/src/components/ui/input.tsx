@@ -4,7 +4,12 @@ import { cn } from '@/lib/utils'
 export function Input({ className, ...props }: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
-      className={cn('h-11 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100', className)}
+      className={cn(
+        'h-11 w-full rounded-[var(--radius-control)] border border-[var(--border)] bg-[var(--surface)] px-4 text-sm text-[var(--text-primary)] outline-none transition placeholder:text-[var(--text-muted)]',
+        'hover:border-[var(--border-strong)] focus:border-[var(--accent)] focus:ring-[3px] focus:ring-[var(--accent-soft)]',
+        'disabled:cursor-not-allowed disabled:opacity-60',
+        className,
+      )}
       {...props}
     />
   )

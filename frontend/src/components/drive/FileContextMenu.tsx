@@ -85,7 +85,7 @@ export function FileContextMenu({ x, y, file, onClose, onView, onDownload, onRen
         onClick={onClose}
       />
       <div
-        className="fixed z-50 w-56 overflow-hidden rounded-2xl border border-slate-200/70 bg-white/95 shadow-2xl shadow-slate-950/15 backdrop-blur-2xl dark:border-slate-800/70 dark:bg-slate-900/95"
+        className="fixed z-50 w-56 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-raised)]"
         style={
           window.innerWidth >= 640
             ? { left: safeX, top: safeY }
