@@ -351,7 +351,7 @@ the API key: Edvanta's server authenticates its own student/admin session first.
 | `POST` | `/resources/:id/verify` | `files:write` | admin/super_admin role | One provider HEAD/get; updates availability |
 | `POST` | `/resources/sync` | `files:write` | admin/super_admin role | On-demand reconciliation with a checkpoint cursor |
 | `GET` | `/resources/counts` | `files:read` | — | Fast cached live counts for the landing page; 30s cache, no provider calls |
-| `GET` | `/resources/health` | `files:read` | — | Database, provider and availability health (no credentials) |
+| `GET` | `/resources/health` | `files:read` | — | Database, provider and availability health; always includes `storage` + `reported: true` (no credentials) |
 
 ```bash
 BASE=https://drive.example.com/api/v1
@@ -375,6 +375,28 @@ curl -H "Authorization: Bearer $KEY" \
 curl -X POST -H "Authorization: Bearer $KEY" \
   -H 'Content-Type: application/json' \
   -d '{"ids":["<id1>","<id2>"]}' "$BASE/resources/bulk-download" -o resources.zip
+
+# Admin status panel: `storage.reported` is true even when status is degraded.
+curl -H "Authorization: Bearer $KEY" "$BASE/resources/health"
+```
+
+`GET /resources/health` response shape:
+
+```json
+{
+  "status": "ok",
+  "storage": {
+    "status": "connected",
+    "provider": "9Drive",
+    "database": { "ok": true },
+    "accounts": [{ "ok": true, "provider": "s3" }],
+    "resources": { "available": 10, "missing": 0, "inaccessible": 0, "unknown": 0 },
+    "checkedAt": "2026-11-02T12:00:00.000Z",
+    "reported": true
+  },
+  "storageStatus": "connected",
+  "reported": true
+}
 ```
 
 Visibility: `private` is only visible with `audience=admin`; `students` and

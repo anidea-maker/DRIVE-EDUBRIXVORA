@@ -18,10 +18,53 @@ export class StorageError extends Error {
   }
 }
 
+/* Edvanta deployments have used both STORAGE_* and NINE_DRIVE_* names. Accept
+ * both so an existing Render environment does not need renaming. */
+const ENDPOINT_ENV_KEYS = ['STORAGE_ENDPOINT', 'NINE_DRIVE_API_URL', 'NINE_DRIVE_URL', 'NINE_DRIVE_BASE_URL']
+const API_KEY_ENV_KEYS = ['STORAGE_API_KEY', 'NINE_DRIVE_API_KEY']
+const TIMEOUT_ENV_KEYS = ['STORAGE_TIMEOUT_MS', 'NINE_DRIVE_TIMEOUT_MS']
+
+function firstEnv(keys) {
+  for (const key of keys) {
+    const value = process.env[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return ''
+}
+
+/**
+ * The deployed API is `/api/v1`. Accept a bare origin, `/api`, `/api/v1`, a
+ * stray `/v1`, or a bare hostname and normalise without ever echoing a key.
+ * Query strings/credentials are dropped so a pasted secret cannot leak.
+ */
+export function normalizeStorageEndpoint(value) {
+  let raw = (value ?? '').trim().replace(/\/+$/, '')
+  if (!raw) return ''
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw)) raw = `https://${raw}`
+  let url
+  try {
+    url = new URL(raw)
+  } catch {
+    throw new StorageError('The 9Drive URL is not a valid HTTP(S) URL.', { code: 'STORAGE_CONFIG_MISSING' })
+  }
+  url.username = ''
+  url.password = ''
+  url.search = ''
+  url.hash = ''
+  let path = url.pathname.replace(/\/+$/, '')
+  if (!path || path === '/') path = '/api/v1'
+  else if (path === '/api' || path.endsWith('/api')) path = `${path}/v1`
+  else if (path.endsWith('/v1') && !path.includes('/api/v1')) path = path.replace(/\/v1$/, '/api/v1')
+  else if (!path.includes('/api/v1')) path = `${path}/api/v1`
+  url.pathname = path
+  return url.toString().replace(/\/+$/, '')
+}
+
 function fromEnvironment() {
-  const endpoint = (process.env.STORAGE_ENDPOINT ?? '').trim().replace(/\/+$/, '')
-  const apiKey = (process.env.STORAGE_API_KEY ?? '').trim()
-  const timeoutMs = Number(process.env.STORAGE_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS)
+  const endpoint = normalizeStorageEndpoint(firstEnv(ENDPOINT_ENV_KEYS))
+  const apiKey = firstEnv(API_KEY_ENV_KEYS)
+  const rawTimeout = firstEnv(TIMEOUT_ENV_KEYS)
+  const timeoutMs = rawTimeout ? Number(rawTimeout) : DEFAULT_TIMEOUT_MS
   return { endpoint, apiKey, timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS }
 }
 
@@ -46,13 +89,13 @@ function query(params = {}) {
 
 export function createStorage(options = {}) {
   const env = fromEnvironment()
-  const endpoint = (options.endpoint ?? env.endpoint).replace(/\/+$/, '')
+  const endpoint = normalizeStorageEndpoint(options.endpoint ?? env.endpoint)
   const apiKey = options.apiKey ?? env.apiKey
   const timeoutMs = options.timeoutMs ?? env.timeoutMs
   const fetchImpl = options.fetchImpl ?? globalThis.fetch
 
-  if (!endpoint) throw new StorageError('STORAGE_ENDPOINT is not configured on the Edvanta server.', { code: 'STORAGE_CONFIG_MISSING' })
-  if (!apiKey) throw new StorageError('STORAGE_API_KEY is not configured on the Edvanta server.', { code: 'STORAGE_CONFIG_MISSING' })
+  if (!endpoint) throw new StorageError('Set STORAGE_ENDPOINT or NINE_DRIVE_API_URL on the Edvanta server.', { code: 'STORAGE_CONFIG_MISSING' })
+  if (!apiKey) throw new StorageError('Set STORAGE_API_KEY or NINE_DRIVE_API_KEY on the Edvanta server.', { code: 'STORAGE_CONFIG_MISSING' })
   if (typeof fetchImpl !== 'function') throw new StorageError('This runtime has no fetch implementation.', { code: 'STORAGE_CONFIG_MISSING' })
 
   async function rawRequest(path, init = {}) {
@@ -217,6 +260,61 @@ export function createStorage(options = {}) {
     },
     health() {
       return jsonRequest('/resources/health')
+    },
+    /**
+     * Always returns a `storage` object. A consumer admin panel showing
+     * "Storage status has not been reported by the API yet" only needs to read
+     * this: even an unreachable 9Drive is reported as `unavailable`, never as
+     * a missing field. The endpoint is safe to expose to Edvanta admins only.
+     */
+    async getStorageStatus({ timeoutMs = 3000, signal } = {}) {
+      const abortSignal = signal ?? timeoutSignal(timeoutMs)
+      const checkedAt = new Date().toISOString()
+      try {
+        const response = await rawRequest('/resources/health', { signal: abortSignal })
+        const text = await response.text().catch(() => '')
+        let body = {}
+        try {
+          body = text ? JSON.parse(text) : {}
+        } catch {
+          body = {}
+        }
+        if (!response.ok && !body.storage) {
+          throw new StorageError(`9Drive health returned HTTP ${response.status}.`, {
+            code: 'STORAGE_UPSTREAM_UNAVAILABLE',
+            status: response.status,
+          })
+        }
+        const storage = {
+          status: body.storage?.status ?? (response.ok ? 'connected' : 'degraded'),
+          provider: '9Drive',
+          endpoint,
+          database: body.storage?.database ?? body.database ?? { ok: false },
+          accounts: body.storage?.accounts ?? body.accounts ?? [],
+          resources: body.storage?.resources ?? body.resources ?? { available: 0, missing: 0, inaccessible: 0, unknown: 0 },
+          checkedAt: body.storage?.checkedAt ?? body.checkedAt ?? checkedAt,
+          reported: true,
+        }
+        return { storage, storageStatus: body.storageStatus ?? storage.status, reported: true }
+      } catch (error) {
+        const storage = {
+          status: 'unavailable',
+          provider: '9Drive',
+          endpoint,
+          database: { ok: false },
+          accounts: [],
+          resources: { available: 0, missing: 0, inaccessible: 0, unknown: 0 },
+          checkedAt,
+          reported: true,
+          error: error?.code ?? 'STORAGE_UPSTREAM_UNAVAILABLE',
+        }
+        return {
+          storage,
+          storageStatus: 'unavailable',
+          reported: true,
+          note: '9Drive did not answer. The API has reported an unavailable storage status instead of leaving it unreported.',
+        }
+      }
     },
   }
 }

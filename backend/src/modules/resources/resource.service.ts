@@ -454,3 +454,38 @@ export function normalizeCountGroups(
   }
   return result
 }
+
+/* --------------------------- storage status report ------------------------ */
+
+export type StorageStatusReport = {
+  status: 'connected' | 'degraded' | 'unavailable'
+  provider: '9Drive'
+  database: { ok: boolean }
+  accounts: Array<Record<string, unknown>>
+  resources: { available: number; missing: number; inaccessible: number; unknown: number }
+  checkedAt: string
+  reported: true
+}
+
+/**
+ * A consumer admin panel shows "Storage status has not been reported by the API
+ * yet" when this object is absent. `/resources/health` now always includes it,
+ * even when a provider is degraded - `status` changes, `reported` stays true.
+ */
+export function buildStorageStatus(input: {
+  databaseOk: boolean
+  accounts: Array<Record<string, unknown>>
+  resources: { available: number; missing: number; inaccessible: number; unknown: number }
+  checkedAt: string
+}): StorageStatusReport {
+  const healthy = input.databaseOk && input.accounts.every((account) => account.ok !== false)
+  return {
+    status: healthy ? 'connected' : 'degraded',
+    provider: '9Drive',
+    database: { ok: input.databaseOk },
+    accounts: input.accounts,
+    resources: input.resources,
+    checkedAt: input.checkedAt,
+    reported: true,
+  }
+}

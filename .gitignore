@@ -13,6 +13,10 @@ backend/.env.*.local
 *.db
 *.db-journal
 
+# Python helper bytecode
+__pycache__/
+*.py[cod]
+
 # Local env is non-secret by default, keep example in repo instead.
 frontend/.env.local
 frontend/.env.*.local

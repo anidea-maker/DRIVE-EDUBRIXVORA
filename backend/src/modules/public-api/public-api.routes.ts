@@ -117,7 +117,7 @@ publicApiRouter.get(['/v1', '/v1/'], (req, res) => {
       { method: 'GET', path: '/api/v1/resources/:id/content', scope: 'files:read', description: 'Authenticated byte stream with Range support for a server-side proxy.' },
       { method: 'POST', path: '/api/v1/resources/bulk-download', scope: 'files:read', description: 'Streaming ZIP of selected resources with per-file errors and limits.' },
       { method: 'POST', path: '/api/v1/resources/sync', scope: 'files:write', description: 'Admin on-demand reconciliation of registry availability against providers.' },
-      { method: 'GET', path: '/api/v1/resources/health', scope: 'files:read', description: 'Database, provider and resource availability health; no credentials.' },
+      { method: 'GET', path: '/api/v1/resources/health', scope: 'files:read', description: 'Database, provider and resource availability health; includes a `storage` status report (no credentials).' },
       { method: 'GET', path: '/api/v1/resources/counts', scope: 'files:read', description: 'Fast cached live counts for the Edvanta landing page; no provider calls, 30s cache.' },
     ],
   })

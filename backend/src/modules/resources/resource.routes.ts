@@ -16,6 +16,7 @@ import { getStorageAdapter } from '../storage/adapters.js'
 import { ProviderOperationError } from '../storage/provider-operations.js'
 import { mintResourceUrl } from './resource-urls.js'
 import {
+  buildStorageStatus,
   checkBulkLimits,
   createResourceRecord,
   decodeResourceCursor,
@@ -324,19 +325,26 @@ resourceRouter.get(
     } catch {
       databaseOk = false
     }
+    const healthy = databaseOk && health.every((entry) => entry.ok)
+    const resources = {
+      available: counts[0],
+      missing: counts[1],
+      inaccessible: counts[2],
+      unknown: counts[3],
+    }
+    const checkedAt = new Date().toISOString()
+    const storage = buildStorageStatus({ databaseOk, accounts: health, resources, checkedAt })
     noStore(res)
-    return res.status(databaseOk && health.every((entry) => entry.ok) ? 200 : 503).json({
-      status: databaseOk && health.every((entry) => entry.ok) ? 'ok' : 'degraded',
+    return res.status(healthy ? 200 : 503).json({
+      status: healthy ? 'ok' : 'degraded',
+      storage,
+      storageStatus: storage.status,
+      reported: true,
       database: { ok: databaseOk },
       accounts: health,
-      resources: {
-        available: counts[0],
-        missing: counts[1],
-        inaccessible: counts[2],
-        unknown: counts[3],
-      },
-      checkedAt: new Date().toISOString(),
-      note: 'Provider credentials are never returned. A degraded provider does not make metadata records available to students.',
+      resources,
+      checkedAt,
+      note: 'Provider credentials are never returned. A degraded provider does not make metadata records available to students. `storage.reported` is always true so consumers never show "not reported yet".',
     })
   }),
 )
