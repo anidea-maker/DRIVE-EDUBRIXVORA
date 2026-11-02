@@ -77,11 +77,13 @@ mountEdvantaResourceRoutes(app, { storage, requireStudent, requireAdmin })
 ```
 
 For admin uploads, keep Edvanta's existing multipart middleware (multer or
-equivalent). Populate `req.file` or `req.files` with buffers and send a
-`resourceMeta` field containing at least `title` and `sizeBytes`. The kit uploads
-each file separately, adds a per-file `clientRequestId`, and returns one
-`success`/`failed` result per file - a single failure never marks the batch
-successful.
+equivalent). Populate `req.file` or `req.files` with buffers. The kit accepts a
+JSON `resourceMeta`/`metadata`/`meta` field or plain fields including `title`
+and `sizeBytes`/`size`. It registers the same admin-guarded handler at
+`POST /api/admin/resources`, `/api/admin/resources/upload`,
+`/api/resources/upload` and `/api/admin/documents/upload`, uploads each file
+separately with a per-file `clientRequestId`, and returns one `success`/`failed`
+result per file - a single failure never marks the batch successful.
 
 ## Frontend contract
 
@@ -89,8 +91,9 @@ Edvanta's browser calls **relative URLs on its own origin**:
 
 ```text
 GET  /api/resources/counts               → fast cached live counts (stale: true while storage wakes)
-GET  /api/storage-status                 → { storageStatus, storage: { status, reported } } (redacted)
+GET  /api/storage-status                 → { storageStatus, storage: { status, reported, uploadAvailable } } (redacted)
 GET  /api/admin/storage-status           → full 9Drive status; always has `storage` + `reported: true`
+POST /api/resources/upload               → admin-guarded batch upload (aliases: /api/admin/resources, /api/admin/resources/upload, /api/admin/documents/upload)
 GET  /api/resources?q=biology&subject=Biology&limit=20
 GET  /api/resources/:id
 GET  /api/resources/:id/preview          → { url, expiresAt, previewMode }
@@ -164,14 +167,17 @@ install_9drive_routes(app, require_admin)  # adds both admin status routes
 
 An unreachable or unconfigured 9Drive is reported as `unavailable` with
 `reported: true`, so the admin panel never falls back to the misleading
-“not reported yet” message. The public route omits the upstream URL and account
-details.
+“not reported yet” message. The status also carries `storage.upload.available`;
+the Python helper is status-only, so an existing FastAPI upload handler should
+proxy its multipart body (server-side, with the bearer key) to
+`POST ${NINE_DRIVE_API_URL}/resources` or one of its `/upload` aliases. The
+public route omits the upstream URL and account details.
 
 ## Tests (mocked, no cloud)
 
 ```bash
 node --test examples/edvanta/*.test.mjs
-# 21/21 passing in the current workspace
+# 22/22 passing in the current workspace
 python3 -m unittest discover -s examples/edvanta -p 'test_*.py'
 # 5/5 passing in the current workspace
 ```

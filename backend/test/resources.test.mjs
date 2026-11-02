@@ -22,6 +22,7 @@ const service = require('../dist/modules/resources/resource.service.js')
 const signing = require('../dist/modules/public-api/object-signing.js')
 const roles = require('../dist/modules/auth/roles.js')
 const urls = require('../dist/modules/resources/resource-urls.js')
+const s3 = require('../dist/modules/s3/s3.service.js')
 
 function fakeRow(overrides = {}) {
   const now = new Date('2026-11-02T10:00:00.000Z')
@@ -73,6 +74,65 @@ test('upload metadata validation: required title, bigint size, strict fields', (
   assert.throws(() => service.resourceUploadSchema.parse({ title: 'x', sizeBytes: 10, provider: 'dropbox' }))
   // A role must not be patchable from a browser request either.
   assert.throws(() => service.resourcePatchSchema.parse({ role: 'admin' }))
+})
+
+test('tolerant upload metadata accepts JSON wrappers, plain fields and 9Drive aliases', () => {
+  const json = service.parseResourceUploadMeta({
+    resourceMeta: JSON.stringify({
+      title: 'Cell Structure',
+      subject: 'Biology',
+      sizeBytes: '2048',
+      visibility: 'learner',
+      provider: '9drive',
+      clientRequestId: 'request-12345678',
+      role: 'super_admin',
+    }),
+    fileName: 'biology.pdf',
+    mimeType: 'application/pdf',
+  })
+  assert.equal(json.title, 'Cell Structure')
+  assert.equal(json.subject, 'Biology')
+  assert.equal(json.sizeBytes, 2048n)
+  assert.equal(json.visibility, 'students')
+  assert.equal(json.provider, undefined, '9drive means automatic 9Drive routing')
+  assert.equal(json.clientRequestId, 'request-12345678')
+  assert.equal(json.role, undefined, 'frontend-supplied roles are never accepted')
+
+  const plain = service.parseResourceUploadMeta({
+    title: 'Motion',
+    size: '4096',
+    name: 'motion.pdf',
+    type: 'application/pdf',
+    audience: 'everyone',
+    storageProvider: 'auto',
+    requestId: 'short',
+    category: 'Physics',
+  }, { filename: 'ignored.pdf', mimeType: 'text/plain' })
+  assert.equal(plain.title, 'Motion')
+  assert.equal(plain.sizeBytes, 4096n)
+  assert.equal(plain.fileName, 'motion.pdf')
+  assert.equal(plain.mimeType, 'application/pdf')
+  assert.equal(plain.visibility, 'public')
+  assert.equal(plain.provider, undefined)
+  assert.equal(plain.clientRequestId, 'upload-short')
+
+  const blob = service.parseResourceUploadMeta({
+    title: 'Extra fields',
+    sizeBytes: '10',
+    metadata: JSON.stringify({ year: 2026, unit: 'Chapter 3' }),
+  })
+  assert.deepEqual(blob.metadata, { year: 2026, unit: 'Chapter 3' })
+  assert.equal(blob.title, 'Extra fields')
+  assert.throws(() => service.parseResourceUploadMeta({ resourceMeta: '{not-json', sizeBytes: '10' }))
+  assert.throws(() => service.parseResourceUploadMeta({ title: 'No size' }))
+})
+
+test('B2 bucket names are normalized on read without touching other providers', () => {
+  const b2 = { bucket: 'EDUBRIXVORA', endpoint: 'https://s3.us-east-005.backblazeb2.com' }
+  assert.equal(s3.normalizeS3Config(b2).bucket, 'edubrixvora')
+  assert.equal(b2.bucket, 'EDUBRIXVORA', 'the stored row is not rewritten')
+  const aws = { bucket: 'MyBucket', endpoint: 'https://s3.amazonaws.com' }
+  assert.equal(s3.normalizeS3Config(aws).bucket, 'MyBucket')
 })
 
 test('filename normalization removes path traversal and control characters', () => {

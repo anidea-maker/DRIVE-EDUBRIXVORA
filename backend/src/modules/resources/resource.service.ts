@@ -70,6 +70,112 @@ export function safeClientRequestId(value: string): string {
   return value.replace(/[^A-Za-z0-9._:-]/g, '-').slice(0, 80) || randomUUID()
 }
 
+/* --------------------- tolerant upload-metadata parsing ------------------- */
+
+export type UploadFieldMap = Record<string, string | undefined>
+export type UploadFileInfo = { filename?: string; mimeType?: string }
+
+const META_WRAPPER_FIELDS = ['resourceMeta', 'metadata', 'meta', 'resource', 'resource_meta', 'resourceMetadata'] as const
+const METADATA_BLOB_FIELDS = ['metadata', 'meta', 'resourceMetadata', 'resource_meta'] as const
+
+/**
+ * Edvanta deployments have sent `resourceMeta` as JSON, a `metadata` JSON
+ * field, and plain form fields. Accept all three (plus common aliases) without
+ * ever inventing a size: quota routing still needs the declared byte count.
+ *
+ * Only known upload keys are lifted out of a JSON wrapper; unknown keys are
+ * retained as the resource's opaque `metadata` blob instead of being trusted as
+ * roles or provider configuration. `provider: 9drive`/`auto` means "let 9Drive
+ * choose the account", not an invalid provider name.
+ */
+export function parseResourceUploadMeta(fields: UploadFieldMap, fileInfo: UploadFileInfo = {}): ResourceUploadMeta {
+  let fromJson: Record<string, unknown> = {}
+  let jsonMetadata: Record<string, unknown> | undefined
+  for (const key of META_WRAPPER_FIELDS) {
+    const raw = fields[key]
+    if (!raw) continue
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      throw new Error(`${key} must be valid JSON.`)
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`${key} must be a JSON object.`)
+    }
+    const record = parsed as Record<string, unknown>
+    if ((METADATA_BLOB_FIELDS as readonly string[]).includes(key) && !jsonMetadata) {
+      jsonMetadata = record
+    }
+    fromJson = { ...fromJson, ...record }
+  }
+
+  const pick = (canonical: string, aliases: string[]): unknown => {
+    for (const key of [canonical, ...aliases]) {
+      const fromMerged = fromJson[key]
+      if (fromMerged !== undefined && fromMerged !== null && fromMerged !== '') return fromMerged
+      const fromField = fields[key]
+      if (fromField !== undefined && fromField !== null && fromField !== '') return fromField
+    }
+    return undefined
+  }
+
+  const rawFileName = pick('fileName', ['filename', 'name', 'originalName', 'originalname'])
+  const fileName = safeResourceFileName(String(rawFileName ?? fileInfo.filename ?? 'resource.bin'))
+  const title = String(pick('title', ['displayName', 'label', 'documentTitle']) ?? fileName)
+  const mimeType = String(pick('mimeType', ['type', 'contentType', 'mime']) ?? fileInfo.mimeType ?? 'application/octet-stream')
+  const sizeBytes = pick('sizeBytes', ['size', 'fileSize', 'bytes', 'contentLength', 'length'])
+
+  let visibility = pick('visibility', ['audience', 'access'])
+  if (typeof visibility === 'string') {
+    const value = visibility.toLowerCase()
+    if (value === 'student' || value === 'students' || value === 'learner') visibility = 'students'
+    else if (value === 'everyone' || value === 'public') visibility = 'public'
+    else if (value === 'admin' || value === 'private') visibility = 'private'
+  }
+
+  let provider = pick('provider', ['storageProvider', 'storage'])
+  if (typeof provider === 'string') {
+    const value = provider.toLowerCase()
+    if (value === '9drive' || value === 'auto' || value === 'any' || value === '') provider = undefined
+    else if (['google', 'google_drive', 'gdrive', 'drive'].includes(value)) provider = 'google_drive'
+    else if (['s3', 's3_compatible', 'object'].includes(value)) provider = 's3'
+  }
+
+  const rawId = pick('clientRequestId', ['client_request_id', 'requestId', 'idempotencyKey', 'uploadId'])
+  let clientRequestId: string | undefined
+  if (rawId !== undefined && String(rawId).trim()) {
+    const safe = safeClientRequestId(String(rawId))
+    clientRequestId = safe.length < 8 ? `upload-${safe}` : safe
+  }
+
+  const rawMetadata = jsonMetadata ?? fromJson.metadata ?? fromJson.resourceMetadata ?? fromJson.resource_metadata
+  let metadata: Record<string, unknown> | undefined
+  if (rawMetadata && typeof rawMetadata === 'object' && !Array.isArray(rawMetadata)) {
+    metadata = rawMetadata as Record<string, unknown>
+  }
+
+  const candidate: Record<string, unknown> = {
+    title,
+    description: pick('description', ['notes', 'summary']),
+    category: pick('category', ['categories']),
+    subject: pick('subject', ['subjects']),
+    academicLevel: pick('academicLevel', ['academic_level', 'level', 'class']),
+    examType: pick('examType', ['exam_type', 'exam']),
+    visibility,
+    provider,
+    clientRequestId,
+    fileName,
+    mimeType,
+    sizeBytes,
+    metadata,
+  }
+  for (const [key, value] of Object.entries(candidate)) {
+    if (value === undefined) delete candidate[key]
+  }
+  return resourceUploadSchema.parse(candidate)
+}
+
 /**
  * The object key is a stable, provider-independent locator derived from the
  * retry token. Retrying the same upload PUTs to the same key and replaces the

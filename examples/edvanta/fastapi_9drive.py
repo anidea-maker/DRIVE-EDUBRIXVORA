@@ -13,7 +13,8 @@ drop this file next to its app and use either:
 It reads the SAME environment variables already configured on Render:
 ``NINE_DRIVE_API_URL`` / ``NINE_DRIVE_API_KEY`` (or the ``STORAGE_*`` aliases).
 Only the standard library is used; the API key never leaves the server and is
-never placed in a URL, log, or browser response.
+never placed in a URL, log, or browser response. The report also exposes
+``storage.upload.available``; this helper proxies status only, not file bytes.
 """
 
 from __future__ import annotations
@@ -109,6 +110,12 @@ def _unavailable(endpoint: str, code: str, checked_at: str) -> Dict[str, Any]:
         "database": {"ok": False},
         "accounts": [],
         "resources": dict(_EMPTY_RESOURCES),
+        "upload": {
+            "available": False,
+            "endpoint": "/api/v1/resources",
+            "requiredScope": "files:write",
+            "reason": "9Drive did not answer, so an upload cannot be routed yet.",
+        },
         "checkedAt": checked_at,
         "reported": True,
         "error": code,

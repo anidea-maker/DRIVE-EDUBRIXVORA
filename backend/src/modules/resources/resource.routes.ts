@@ -24,6 +24,7 @@ import {
   emptyResourceCounts,
   encodeResourceCursor,
   normalizeCountGroups,
+  parseResourceUploadMeta,
   previewFor,
   resourceCountsCacheKey,
   resourceCountsWhere,
@@ -101,9 +102,13 @@ async function toResourceRow(file: PrismaFile): Promise<ResourceRow> {
   if (file.provider === 's3') {
     const config = await prisma.s3StorageConfig.findFirst({
       where: { connectedAccountId: file.connectedAccountId, status: 'active' },
-      select: { bucket: true },
+      select: { bucket: true, endpoint: true },
     })
-    bucketName = config?.bucket ?? null
+    if (config) {
+      bucketName = config.endpoint?.toLowerCase().includes('backblazeb2.com')
+        ? config.bucket.toLowerCase()
+        : config.bucket
+    }
   }
   return {
     ...file,
@@ -513,11 +518,11 @@ function parseAndUpload(req: ApiKeyRequest): Promise<UploadOutcome> {
   return new Promise((resolve, reject) => {
     const contentType = req.headers['content-type']
     if (!contentType?.includes('multipart/form-data')) {
-      return reject(new ResourceHttpError(400, 'RESOURCE_CONTENT_TYPE', 'multipart/form-data with a resourceMeta field and a file part is required.'))
+      return reject(new ResourceHttpError(400, 'RESOURCE_CONTENT_TYPE', 'multipart/form-data with metadata fields (sizeBytes or size) before a file/files/upload/document part is required.'))
     }
 
     const busboy = Busboy({ headers: req.headers, limits: { files: 1, fileSize: env.MAX_UPLOAD_BYTES } })
-    let metaRaw: string | null = null
+    const fields: Record<string, string> = {}
     let fileSeen = false
     let settled = false
     let truncated = false
@@ -537,24 +542,24 @@ function parseAndUpload(req: ApiKeyRequest): Promise<UploadOutcome> {
     }
 
     busboy.on('field', (name, value) => {
-      if (name === 'resourceMeta') metaRaw = value
+      fields[name] = value
     })
 
     busboy.on('file', (name, fileStream, info) => {
-      if (name !== 'file') {
+      if (!['file', 'files', 'upload', 'document'].includes(name)) {
         fileStream.resume()
         return
       }
       fileSeen = true
       let meta: ResourceUploadMeta
       try {
-        meta = resourceUploadSchema.parse(JSON.parse(metaRaw ?? '{}'))
+        meta = parseResourceUploadMeta(fields, { filename: info.filename, mimeType: info.mimeType })
       } catch (error) {
         fileStream.resume()
         const message = error instanceof z.ZodError
-          ? error.issues.map((issue) => `${issue.path.join('.') || 'resourceMeta'}: ${issue.message}`).join('; ')
-          : 'resourceMeta must be valid JSON.'
-        return stop(new ResourceHttpError(400, 'RESOURCE_META_INVALID', `Invalid resourceMeta: ${message}`))
+          ? error.issues.map((issue) => `${issue.path.join('.') || 'metadata'}: ${issue.message}`).join('; ')
+          : error instanceof Error ? error.message : 'Upload metadata is invalid.'
+        return stop(new ResourceHttpError(400, 'RESOURCE_META_INVALID', `Invalid upload metadata: ${message}. Include sizeBytes (or size/fileSize) so the file can be routed to a connected account.`))
       }
       if (meta.sizeBytes > BigInt(env.MAX_UPLOAD_BYTES)) {
         fileStream.resume()
@@ -617,7 +622,7 @@ function parseAndUpload(req: ApiKeyRequest): Promise<UploadOutcome> {
     busboy.on('finish', () => {
       if (settled) return
       if (!fileSeen || !uploadPromise) {
-        return stop(new ResourceHttpError(400, 'RESOURCE_FILE_REQUIRED', 'A file part named "file" and a resourceMeta field are required.'))
+        return stop(new ResourceHttpError(400, 'RESOURCE_FILE_REQUIRED', 'A file part named file/files/upload/document and metadata fields (including sizeBytes or size) must precede it.'))
       }
       uploadPromise.then(finish).catch((error) => {
         if (error instanceof ResourceHttpError) return stop(error)
@@ -629,27 +634,26 @@ function parseAndUpload(req: ApiKeyRequest): Promise<UploadOutcome> {
   })
 }
 
-resourceRouter.post(
-  '/',
-  requireApiKey('files:write'),
-  requireRole('manage_resources'),
-  route(async (req, res) => {
-    const result = await parseAndUpload(req)
-    if (!result.ok) throw new ResourceHttpError(uploadStatus(result.code), result.code, result.message)
-    await createAuditLog(req.user!.id, 'CREATE_EDVANTA_RESOURCE', 'file', result.resource.id, {
-      objectKey: result.objectKey,
-      provider: result.resource.provider,
-      visibility: result.resource.visibility,
-    })
-    noStore(res)
-    return res.status(201).json({
-      resource: serializeResource(result.resource, baseUrl(req)),
-      objectKey: result.objectKey,
-      idempotent: true,
-      note: 'Retrying with the same clientRequestId replaces this object instead of creating a duplicate.',
-    })
-  }),
-)
+/** Shared handler so `/resources`, `/resources/upload` and `/upload` behave identically. */
+export const uploadResourceHandler = route(async (req: ApiKeyRequest, res) => {
+  const result = await parseAndUpload(req)
+  if (!result.ok) throw new ResourceHttpError(uploadStatus(result.code), result.code, result.message)
+  await createAuditLog(req.user!.id, 'CREATE_EDVANTA_RESOURCE', 'file', result.resource.id, {
+    objectKey: result.objectKey,
+    provider: result.resource.provider,
+    visibility: result.resource.visibility,
+  })
+  noStore(res)
+  return res.status(201).json({
+    resource: serializeResource(result.resource, baseUrl(req)),
+    objectKey: result.objectKey,
+    idempotent: true,
+    note: 'Retrying with the same clientRequestId replaces this object instead of creating a duplicate.',
+  })
+})
+
+resourceRouter.post('/', requireApiKey('files:write'), requireRole('manage_resources'), uploadResourceHandler)
+resourceRouter.post('/upload', requireApiKey('files:write'), requireRole('manage_resources'), uploadResourceHandler)
 
 /* ------------------------------- bulk download ---------------------------- */
 
