@@ -148,13 +148,27 @@ function b2RegionFromEndpoint(endpoint: string | null): string | null {
 
 const MEGABYTE = 1024n * 1024n
 
-function megabytesToBytes(name: string): { value: string | null; note?: string } {
-  const raw = readEnv(name)
-  if (!raw) return { value: null }
-  if (!/^\d+$/.test(raw)) {
-    return { value: null, note: `${name} must be a whole number of megabytes (got "${raw}").` }
+/**
+ * A quota cap, in megabytes, from the first of several accepted names.
+ *
+ * A provider that does not report a quota (IDrive E2, Dbrij) shows every account as
+ * "Unlimited" until a cap is declared, and the plan's size - "5 GB", "10 GB" - is
+ * the only place it exists. `STORAGE_MAX_MB` accepts a plain number of megabytes;
+ * `*_STORAGE_MAX_GB` accepts a size in gigabytes for the common round plans.
+ */
+const GIGABYTE_IN_MB = 1024n
+
+function megabytesToBytes(...names: string[]): { value: string | null; note?: string } {
+  for (const name of names) {
+    const raw = readEnv(name)
+    if (!raw) continue
+    if (!/^\d+$/.test(raw)) {
+      return { value: null, note: `${name} must be a whole number (got "${raw}").` }
+    }
+    const multiplier = /_GB$/i.test(name) ? GIGABYTE_IN_MB : 1n
+    return { value: (BigInt(raw) * multiplier * MEGABYTE).toString() }
   }
-  return { value: (BigInt(raw) * MEGABYTE).toString() }
+  return { value: null }
 }
 
 type Resolved = {
@@ -188,7 +202,7 @@ function resolveB2(): Resolved {
   const region = readEnv('B2_REGION')
   const explicitEndpoint = readEndpointEnv('B2_ENDPOINT_URL')
   const endpoint = normalizeEndpoint(explicitEndpoint) ?? (region ? normalizeEndpoint(`s3.${region}.backblazeb2.com`) : null)
-  const quota = megabytesToBytes('B2_STORAGE_MAX_MB')
+  const quota = megabytesToBytes('B2_STORAGE_MAX_MB', 'B2_STORAGE_MAX_GB')
   const notes: string[] = ['Backblaze B2 needs path-style addressing; it is enabled for you.']
   if (quota.note) notes.push(quota.note)
   const normalised = endpointNote(explicitEndpoint, endpoint)
@@ -227,9 +241,16 @@ function resolveB2(): Resolved {
  */
 function resolveIdriveE2(): Resolved {
   const endpoint = normalizeEndpoint(readEndpointEnv('IDRIVE_E2_ENDPOINT_URL'))
+  // IDrive E2 reports no quota, so an account without a declared cap reads
+  // "Unlimited" forever - the plan size has to be stated.
+  const quota = megabytesToBytes('IDRIVE_E2_STORAGE_MAX_MB', 'IDRIVE_E2_STORAGE_MAX_GB', 'IDRIVE_E2_QUOTA_MB')
   const notes: string[] = []
   if (!endpoint) {
     notes.push('Copy the endpoint from the IDrive E2 console into IDRIVE_E2_ENDPOINT_URL (it looks like https://abc12.va.idrivee2-18.com).')
+  }
+  if (quota.note) notes.push(quota.note)
+  if (!quota.value) {
+    notes.push('IDrive E2 does not report a quota: set IDRIVE_E2_STORAGE_MAX_GB=10 (or IDRIVE_E2_STORAGE_MAX_MB) so the account does not read "Unlimited".')
   }
   return {
     bucket: readEnv('IDRIVE_E2_BUCKET'),
@@ -237,7 +258,7 @@ function resolveIdriveE2(): Resolved {
     endpoint,
     accessKeyId: readEnv('IDRIVE_E2_KEY_ID'),
     secretAccessKey: readEnv('IDRIVE_E2_SECRET_KEY'),
-    quotaBytes: null,
+    quotaBytes: quota.value,
     notes,
     required: [
       ['IDRIVE_E2_KEY_ID', readEnv('IDRIVE_E2_KEY_ID')],
@@ -271,7 +292,7 @@ function resolveDbrij(): Resolved {
   const split = splitEndpointAndBucket(usable ?? null)
   const endpoint = split.endpoint ?? 'https://s3.dbrij.com'
   const region = readAny('DBRIJ_REGION', 'DBRIJ_STORAGE_REGION', 'AWS_REGION', 'AWS_DEFAULT_REGION') ?? 'fsn1'
-  const quota = megabytesToBytes('DBRIJ_STORAGE_MAX_MB')
+  const quota = megabytesToBytes('DBRIJ_STORAGE_MAX_MB', 'DBRIJ_STORAGE_MAX_GB', 'DBRIJ_QUOTA_MB')
   const accessKeyId = readAny('DBRIJ_STORAGE_ACCESS_KEY', 'DBRIJ_STORAGE_ACCESS_KEY_ID', 'DBRIJ_ACCESS_KEY', 'DBRIJ_KEY_ID', 'AWS_ACCESS_KEY_ID')
   const secretAccessKey = readAny('DBRIJ_STORAGE_SECRET_KEY', 'DBRIJ_SECRET_KEY', 'DBRIJ_SECRET_ACCESS_KEY', 'AWS_SECRET_ACCESS_KEY')
   const bucket = readAny('DBRIJ_STORAGE_BUCKET', 'DBRIJ_BUCKET', 'AWS_S3_BUCKET') ?? split.bucket
@@ -466,7 +487,7 @@ function resolveCustom(): Resolved {
   const accessKeyId = readAny('S3_ACCESS_KEY_ID', 'AWS_ACCESS_KEY_ID', 'DBRIJ_STORAGE_ACCESS_KEY', 'DBRIJ_STORAGE_ACCESS_KEY_ID')
   const secretAccessKey = readAny('S3_SECRET_ACCESS_KEY', 'AWS_SECRET_ACCESS_KEY', 'DBRIJ_STORAGE_SECRET_KEY')
   const pathStyle = readBoolean('S3_FORCE_PATH_STYLE', Boolean(endpoint))
-  const quota = megabytesToBytes('S3_STORAGE_MAX_MB')
+  const quota = megabytesToBytes('S3_STORAGE_MAX_MB', 'S3_STORAGE_MAX_GB', 'STORAGE_MAX_MB', 'STORAGE_MAX_GB')
   const label = readAny('S3_LABEL', 'STORAGE_LABEL') ?? inferProviderLabel(endpoint)
   const usingAwsNames = !readEnv('S3_ACCESS_KEY_ID') && Boolean(readEnv('AWS_ACCESS_KEY_ID'))
   const usingDbrijNames = !readEnv('S3_ACCESS_KEY_ID') && !readEnv('AWS_ACCESS_KEY_ID') && Boolean(readEnv('DBRIJ_STORAGE_ACCESS_KEY'))
