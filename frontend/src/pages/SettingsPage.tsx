@@ -54,6 +54,44 @@ type ConnectedAccount = { id: string; provider: string; email: string; displayNa
  * Fill the S3 form from a backend described by the environment. Bucket/region are
  * editable, the key fields stay empty and are resolved server-side.
  */
+type QuotaUnit = 'GB' | 'MB' | 'TB'
+
+const UNIT_BYTES: Record<QuotaUnit, number> = { MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4 }
+
+/** The API stores bytes; people think in plans ("5 GB"). Convert once, at the edge. */
+function quotaToBytes(amount: string, unit: QuotaUnit): string | null {
+  const value = Number(amount)
+  if (!Number.isFinite(value) || value <= 0) return null
+  return String(Math.round(value * UNIT_BYTES[unit]))
+}
+
+/**
+ * Bytes -> the largest unit that keeps the number readable ("5368709120" -> 5 GB).
+ * The keys are the form's own field names, so the result can be spread into it -
+ * returning `{amount, unit}` silently left the quota field empty.
+ */
+function bytesToQuota(bytes: string | null | undefined): Pick<S3FormState, 'quotaAmount' | 'quotaUnit'> {
+  const value = Number(bytes ?? 0)
+  if (!Number.isFinite(value) || value <= 0) return { quotaAmount: '', quotaUnit: 'GB' }
+  const units: QuotaUnit[] = ['TB', 'GB', 'MB']
+  for (const unit of units) {
+    const converted = value / UNIT_BYTES[unit]
+    if (converted >= 1) return { quotaAmount: String(Number(converted.toFixed(2))), quotaUnit: unit }
+  }
+  return { quotaAmount: String(Number((value / UNIT_BYTES.MB).toFixed(2))), quotaUnit: 'MB' }
+}
+
+/**
+ * A size a person would write: `5 GB`, not `5.00 GB`.
+ *
+ * `formatBytes` always keeps two decimals, which is right for "used" values but
+ * wrong for a plan ("10.00 GB" reads like a measurement of something).
+ */
+function formatSize(bytes: string | number | null | undefined) {
+  const raw = formatBytes(bytes)
+  return raw.replace(/(\.\d*?)0+\s/, '$1 ').replace(/\.\s/, ' ')
+}
+
 type S3FormState = {
   provider: string
   template: ManualTemplate
@@ -64,7 +102,9 @@ type S3FormState = {
   accessKeyId: string
   secretAccessKey: string
   forcePathStyle: boolean
-  quotaBytes: string
+  /** The plan size, as typed, plus the unit it was typed in. */
+  quotaAmount: string
+  quotaUnit: QuotaUnit
 }
 
 const emptyS3Form: S3FormState = {
@@ -77,7 +117,8 @@ const emptyS3Form: S3FormState = {
   accessKeyId: '',
   secretAccessKey: '',
   forcePathStyle: false,
-  quotaBytes: '',
+  quotaAmount: '',
+  quotaUnit: 'GB',
 }
 
 function presetForm(preset: S3Preset, form: S3FormState): S3FormState {
@@ -91,7 +132,7 @@ function presetForm(preset: S3Preset, form: S3FormState): S3FormState {
     accessKeyId: '',
     secretAccessKey: '',
     forcePathStyle: preset.forcePathStyle,
-    quotaBytes: preset.quotaBytes ?? '',
+    ...bytesToQuota(preset.quotaBytes),
   }
 }
 
@@ -102,12 +143,21 @@ function providerLabel(provider: string) {
 
 function storageLimitLabel(account: ConnectedAccount) {
   if (account.provider === 's3' && account.storageAccount?.totalBytes === null) return 'Unlimited'
-  return formatBytes(account.storageAccount?.totalBytes)
+  if (!account.storageAccount?.totalBytes) return 'Not synced'
+  return formatSize(account.storageAccount.totalBytes)
+}
+
+/** Used share of the plan, for the bar under each account. */
+function usedPercent(account: ConnectedAccount): number | null {
+  const total = Number(account.storageAccount?.totalBytes ?? 0)
+  if (!Number.isFinite(total) || total <= 0) return null
+  const used = Number(account.storageAccount?.usedBytes ?? 0)
+  return Math.min(100, Math.max(0, Math.round((used / total) * 100)))
 }
 
 function availableLabel(account: ConnectedAccount) {
   if (account.provider === 's3' && account.storageAccount?.availableBytes === null) return 'Unlimited'
-  return formatBytes(account.storageAccount?.availableBytes)
+  return formatSize(account.storageAccount?.availableBytes)
 }
 
 export function SettingsPage() {
@@ -118,7 +168,7 @@ export function SettingsPage() {
   const [connecting, setConnecting] = useState(false)
   const [s3Open, setS3Open] = useState(false)
   const [connectingS3, setConnectingS3] = useState(false)
-  const [s3Form, setS3Form] = useState({ provider: '', template: 'aws' as ManualTemplate, name: '', bucket: '', region: 'us-east-1', endpoint: '', accessKeyId: '', secretAccessKey: '', forcePathStyle: false, quotaBytes: '' })
+  const [s3Form, setS3Form] = useState<S3FormState>(emptyS3Form)
   // Backends this deployment already holds credentials for (`B2_*`, `IDRIVE_E2_*`,
   // `DBRIJ_*`, `S3_*`). Connecting one is a single click: the secrets never reach
   // the browser.
@@ -137,7 +187,6 @@ export function SettingsPage() {
   const [accountToDisconnect, setAccountToDisconnect] = useState<ConnectedAccount | null>(null)
   const [profileImageUrl, setProfileImageUrl] = useState('')
   const [avatarError, setAvatarError] = useState(false)
-  const [selectedAccountId, setSelectedAccountId] = useState('')
   const [updatingSystem, setUpdatingSystem] = useState(false)
   const [updateModalOpen, setUpdateModalOpen] = useState(false)
   const [updateModalTitle, setUpdateModalTitle] = useState('')
@@ -374,7 +423,6 @@ export function SettingsPage() {
     void fetch(`${API_URL}/auth/logout`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }).catch(() => undefined)
   }
 
-  const selectedAccount = accounts.find((account) => account.id === selectedAccountId) ?? accounts[0] ?? null
 
   /**
    * The backends this deployment can connect, read from the server each time.
@@ -469,14 +517,6 @@ export function SettingsPage() {
   }, [user?.email])
 
   useEffect(() => {
-    if (accounts.length === 0) {
-      setSelectedAccountId('')
-      return
-    }
-    if (!accounts.some((account) => account.id === selectedAccountId)) setSelectedAccountId(accounts[0].id)
-  }, [accounts, selectedAccountId])
-
-  useEffect(() => {
     function onMessage(event: MessageEvent) {
       if (event.origin !== window.location.origin || event.data?.type !== 'GOOGLE_CONNECTED') return
       const { status, reason, quota } = event.data as { status?: string; reason?: string; quota?: string }
@@ -563,7 +603,7 @@ export function SettingsPage() {
           accessKeyId: s3Form.accessKeyId || undefined,
           secretAccessKey: s3Form.secretAccessKey || undefined,
           endpoint: s3Form.endpoint || undefined,
-          quotaBytes: s3Form.quotaBytes || null,
+          quotaBytes: quotaToBytes(s3Form.quotaAmount, s3Form.quotaUnit),
         }),
       })
       setS3Open(false)
@@ -624,7 +664,7 @@ export function SettingsPage() {
                 <p className="mt-1 text-[13px] text-slate-500">Connect AWS S3, Cloudflare R2, MinIO, Wasabi, Backblaze B2, or custom endpoint storage.</p>
                 {s3Presets.filter((preset) => preset.ready).length > 0 ? (
                   <p className="mt-1 text-[12px] font-semibold text-emerald-600">
-                    Ready from this deployment's environment: {s3Presets.filter((preset) => preset.ready).map((preset) => preset.label).join(', ')}
+                    Ready from this deployment's environment: {s3Presets.filter((preset) => preset.ready).map((preset) => `${preset.label}${preset.quotaBytes ? ` (${preset.name}, ${formatSize(preset.quotaBytes)})` : ''}`).join(', ')}
                   </p>
                 ) : null}
               </div>
@@ -635,20 +675,51 @@ export function SettingsPage() {
           <Card className="p-4">
             <h2 className="text-[16px] font-bold">Connected Storage Accounts</h2>
             <div className="mt-3.5 grid gap-3">
-              {accounts.length === 0 ? <p className="text-xs text-slate-500">No connected storage account yet.</p> : <>
-                <label className="grid gap-1.5 text-xs font-semibold text-slate-500">Choose Account<select className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm focus:outline-none" value={selectedAccount?.id ?? ''} onChange={(event) => setSelectedAccountId(event.target.value)}>{accounts.map((account) => <option key={account.id} value={account.id}>{providerLabel(account.provider)} - {account.displayName || account.email} ({account.status})</option>)}</select></label>
-                {selectedAccount ? <div className="rounded-xl bg-slate-50 p-3 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-800">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="min-w-0"><p className="break-all font-semibold text-sm">{selectedAccount.displayName || selectedAccount.email}</p><p className="text-xs text-slate-500 mt-0.5">{providerLabel(selectedAccount.provider)} · {selectedAccount.status}</p></div>
-                    <div className="grid grid-cols-2 gap-2 sm:flex"><Button className="w-full" size="sm" variant="outline" onClick={() => sync(selectedAccount.id)} disabled={syncingAccountId === selectedAccount.id}><RefreshCw className={syncingAccountId === selectedAccount.id ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} />{syncingAccountId === selectedAccount.id ? 'Syncing...' : 'Sync'}</Button><Button className="w-full" size="sm" variant="danger" onClick={() => setAccountToDisconnect(selectedAccount)}><Trash2 className="h-4 w-4" />Disconnect</Button></div>
-                  </div>
-                  <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
-                    <div className="rounded-xl bg-white dark:bg-slate-950 p-2 border border-slate-100 dark:border-slate-800"><p className="font-extrabold text-slate-950">{formatBytes(selectedAccount.storageAccount?.usedBytes)}</p><p className="mt-0.5 text-[10px] text-slate-500">Used</p></div>
-                    <div className="rounded-xl bg-white dark:bg-slate-950 p-2 border border-slate-100 dark:border-slate-800"><p className="font-extrabold text-slate-950">{storageLimitLabel(selectedAccount)}</p><p className="mt-0.5 text-[10px] text-slate-500">Total</p></div>
-                    <div className="rounded-xl bg-white dark:bg-slate-950 p-2 border border-slate-100 dark:border-slate-800"><p className="font-extrabold text-slate-950">{availableLabel(selectedAccount)}</p><p className="mt-0.5 text-[10px] text-slate-500">Free</p></div>
-                  </div>
-                </div> : null}
-              </>}
+              {accounts.length === 0 ? <p className="text-xs text-slate-500">No connected storage account yet.</p> : (
+                <div className="grid gap-3">
+                  {accounts.map((account) => {
+                    const percent = usedPercent(account)
+                    const syncing = syncingAccountId === account.id
+                    return (
+                      <div key={account.id} className="rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900/60">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-bold text-slate-950 dark:text-slate-100">{account.displayName || account.email}</p>
+                            <p className="mt-0.5 text-xs text-slate-500">
+                              {providerLabel(account.provider)} · <span className={account.status === 'connected' ? 'text-emerald-600' : 'text-amber-600'}>{account.status}</span>
+                            </p>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 sm:flex">
+                            <Button className="w-full" size="sm" variant="outline" onClick={() => sync(account.id)} disabled={syncing}>
+                              <RefreshCw className={syncing ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} />{syncing ? 'Syncing...' : 'Sync'}
+                            </Button>
+                            <Button className="w-full" size="sm" variant="danger" onClick={() => setAccountToDisconnect(account)}>
+                              <Trash2 className="h-4 w-4" />Disconnect
+                            </Button>
+                          </div>
+                        </div>
+                        <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
+                          <div className="rounded-xl border border-slate-100 bg-white p-2 dark:border-slate-800 dark:bg-slate-950"><p className="font-extrabold text-slate-950 dark:text-slate-100">{formatSize(account.storageAccount?.usedBytes)}</p><p className="mt-0.5 text-[10px] text-slate-500">Used</p></div>
+                          <div className="rounded-xl border border-slate-100 bg-white p-2 dark:border-slate-800 dark:bg-slate-950"><p className="font-extrabold text-slate-950 dark:text-slate-100">{storageLimitLabel(account)}</p><p className="mt-0.5 text-[10px] text-slate-500">Total</p></div>
+                          <div className="rounded-xl border border-slate-100 bg-white p-2 dark:border-slate-800 dark:bg-slate-950"><p className="font-extrabold text-slate-950 dark:text-slate-100">{availableLabel(account)}</p><p className="mt-0.5 text-[10px] text-slate-500">Free</p></div>
+                        </div>
+                        {percent === null ? (
+                          <p className="mt-2 text-[11px] text-amber-600">
+                            No plan size for this account, so usage has no ceiling to show. Set it with the provider's <span className="font-mono">*_STORAGE_MAX_GB</span> variable (e.g. <span className="font-mono">IDRIVE_E2_STORAGE_MAX_GB=10</span>) or a <span className="font-mono">*_DISPLAY_NAME</span> that includes the size.
+                          </p>
+                        ) : (
+                          <div className="mt-2.5">
+                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+                              <div className={percent >= 90 ? 'h-full rounded-full bg-red-500' : percent >= 70 ? 'h-full rounded-full bg-amber-500' : 'h-full rounded-full bg-blue-600'} style={{ width: `${Math.max(percent, 1)}%` }} />
+                            </div>
+                            <p className="mt-1 text-[10px] text-slate-500">{percent}% of {storageLimitLabel(account)} used</p>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           </Card>
 
@@ -915,6 +986,7 @@ export function SettingsPage() {
                   }
                 >
                   {preset.label}
+                  {preset.quotaBytes ? <span className="ml-1.5 font-normal text-slate-400">· {formatSize(preset.quotaBytes)}</span> : null}
                 </button>
               ))}
             </div>
@@ -925,9 +997,17 @@ export function SettingsPage() {
               </p>
             ) : null}
             {s3Form.provider ? (
-              <p className="text-[11px] leading-relaxed text-slate-500">
-                {s3Presets.find((preset) => preset.id === s3Form.provider)?.notes.join(' ') || null}
-              </p>
+              <div className="grid gap-1">
+                <p className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                  Account name: <span className="font-mono">{s3Form.name || s3Form.bucket || 'from the environment'}</span>
+                  {quotaToBytes(s3Form.quotaAmount, s3Form.quotaUnit)
+                    ? <span className="font-normal text-slate-500"> · total {formatSize(quotaToBytes(s3Form.quotaAmount, s3Form.quotaUnit))}</span>
+                    : <span className="font-normal text-amber-600"> · no total - the account will read "Unlimited"</span>}
+                </p>
+                <p className="text-[11px] leading-relaxed text-slate-500">
+                  {s3Presets.find((preset) => preset.id === s3Form.provider)?.notes.join(' ') || null}
+                </p>
+              </div>
             ) : null}
             {presetsError ? (
               <p className="text-[11px] leading-relaxed text-amber-700">The server did not list the backends: {presetsError}</p>
@@ -1002,7 +1082,26 @@ export function SettingsPage() {
           <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder="Endpoint URL (optional)" value={s3Form.endpoint} onChange={(event) => setS3Form({ ...s3Form, endpoint: event.target.value })} />
           <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder={s3Form.provider ? 'Access key ID (from environment - leave empty)' : 'Access key ID'} value={s3Form.accessKeyId} onChange={(event) => setS3Form({ ...s3Form, accessKeyId: event.target.value })} required={!s3Form.provider} />
           <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder={s3Form.provider ? 'Secret access key (from environment - leave empty)' : 'Secret access key'} type="password" value={s3Form.secretAccessKey} onChange={(event) => setS3Form({ ...s3Form, secretAccessKey: event.target.value })} required={!s3Form.provider} />
-          <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder="Quota bytes (optional)" inputMode="numeric" value={s3Form.quotaBytes} onChange={(event) => setS3Form({ ...s3Form, quotaBytes: event.target.value })} />
+          {/* People know their plan as "5 GB", not as 5368709120 bytes. */}
+          <div className="grid grid-cols-[1fr_96px] gap-2">
+            <input
+              className="h-11 rounded-xl border border-slate-200 px-3 text-sm"
+              placeholder={s3Form.provider ? 'Total quota (from environment)' : 'Total quota (optional)'}
+              inputMode="decimal"
+              value={s3Form.quotaAmount}
+              onChange={(event) => setS3Form({ ...s3Form, quotaAmount: event.target.value })}
+            />
+            <select
+              className="h-11 rounded-xl border border-slate-200 bg-white px-2 text-sm dark:border-slate-800 dark:bg-slate-950"
+              value={s3Form.quotaUnit}
+              onChange={(event) => setS3Form({ ...s3Form, quotaUnit: event.target.value as QuotaUnit })}
+              aria-label="Quota unit"
+            >
+              <option value="GB">GB</option>
+              <option value="MB">MB</option>
+              <option value="TB">TB</option>
+            </select>
+          </div>
           <label className="flex items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={s3Form.forcePathStyle} onChange={(event) => setS3Form({ ...s3Form, forcePathStyle: event.target.checked })} />Force path style</label>
           <div className="grid gap-3 sm:flex sm:justify-end"><Button variant="outline" type="button" onClick={() => setS3Open(false)} disabled={connectingS3}>Cancel</Button><Button type="submit" disabled={connectingS3}>{connectingS3 ? 'Connecting...' : 'Connect S3'}</Button></div>
         </form>
