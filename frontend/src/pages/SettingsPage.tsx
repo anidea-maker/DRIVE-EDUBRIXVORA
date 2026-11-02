@@ -33,14 +33,17 @@ type S3Preset = {
  * the environment is three fields instead of six. B2 and Wasabi derive their
  * endpoint from the region; R2 and MinIO need one typed.
  */
-type ManualTemplate = 'aws' | 'b2' | 'r2' | 'wasabi' | 'custom'
+type ManualTemplate = 'aws' | 'b2' | 'filebase' | 'r2' | 'wasabi' | 'custom'
 
-const MANUAL_TEMPLATES: Array<{ id: ManualTemplate; label: string; pathStyle: boolean; endpointFor?: (region: string) => string; hint?: string }> = [
+const MANUAL_TEMPLATES: Array<{ id: ManualTemplate; label: string; pathStyle: boolean; region?: string; endpointFor?: (region: string) => string; hint?: string }> = [
   { id: 'aws', label: 'Amazon S3', pathStyle: false },
   { id: 'b2', label: 'Backblaze B2', pathStyle: true, endpointFor: (region) => (region ? `https://s3.${region}.backblazeb2.com` : '') },
+  // Filebase has one global endpoint and the region is the literal string "auto",
+  // so it needs no environment variables at all to be entered by hand.
+  { id: 'filebase', label: 'Filebase', pathStyle: true, region: 'auto', endpointFor: () => 'https://s3.filebase.io', hint: 'Endpoint https://s3.filebase.io and region auto are filled in. Paste the Access Key / Secret Key from the Filebase console. IPFS-backed buckets live on https://s3.filebase.com with region us-east-1.' },
   { id: 'wasabi', label: 'Wasabi', pathStyle: false, endpointFor: (region) => (region ? `https://s3.${region}.wasabisys.com` : '') },
   { id: 'r2', label: 'Cloudflare R2', pathStyle: true, hint: 'Endpoint looks like https://<account-id>.r2.cloudflarestorage.com' },
-  { id: 'custom', label: 'Other (MinIO, IDrive…)', pathStyle: true },
+  { id: 'custom', label: 'Other (Storj, Hetzner, Tigris, MinIO, IDrive…)', pathStyle: true },
 ]
 
 type ConnectedAccount = { id: string; provider: string; email: string; displayName?: string | null; status: string; storageAccount?: { totalBytes: string | null; usedBytes: string; availableBytes: string | null; lastSyncedAt: string | null } | null }
@@ -115,8 +118,18 @@ export function SettingsPage() {
   const [connectingS3, setConnectingS3] = useState(false)
   const [s3Form, setS3Form] = useState({ provider: '', template: 'aws' as ManualTemplate, name: '', bucket: '', region: 'us-east-1', endpoint: '', accessKeyId: '', secretAccessKey: '', forcePathStyle: false, quotaBytes: '' })
   // Backends this deployment already holds credentials for (`B2_*`, `IDRIVE_E2_*`,
-  // `DBBYTE_*`). Connecting one is a single click: the secrets never reach the browser.
+  // `FILEBASE_*`, `S3_*`). Connecting one is a single click: the secrets never reach
+  // the browser.
   const [s3Presets, setS3Presets] = useState<S3Preset[]>([])
+  const [presetsError, setPresetsError] = useState('')
+  /**
+   * Result of a connect attempt, shown *inside* the dialog.
+   *
+   * A failure used to set the page-level message, which the open dialog covered:
+   * clicking "Connect S3" appeared to do nothing at all.
+   */
+  const [s3Message, setS3Message] = useState('')
+  const [presetsReadAt, setPresetsReadAt] = useState('')
   const [syncingAccountId, setSyncingAccountId] = useState<string | null>(null)
   const [disconnectingAccountId, setDisconnectingAccountId] = useState<string | null>(null)
   const [accountToDisconnect, setAccountToDisconnect] = useState<ConnectedAccount | null>(null)
@@ -361,8 +374,41 @@ export function SettingsPage() {
 
   const selectedAccount = accounts.find((account) => account.id === selectedAccountId) ?? accounts[0] ?? null
 
+  /**
+   * The backends this deployment can connect, read from the server each time.
+   *
+   * This used to happen once, when the page mounted. A backend whose variables
+   * were added (or corrected) in Render afterwards stayed invisible until the whole
+   * app was reloaded, and a failed request rendered as "no backends" - which looks
+   * exactly like a deployment that has none. Both read as "it was not updated".
+   */
+  async function refreshPresets(): Promise<{ presets: S3Preset[]; active: string | null }> {
+    try {
+      const presetData = await apiFetch<{ presets: S3Preset[]; active: string | null; readAt?: string }>(
+        '/connected-accounts/s3/presets',
+        { cache: 'no-store' },
+      )
+      const presets = presetData.presets ?? []
+      setS3Presets(presets)
+      setPresetsError('')
+      setPresetsReadAt(presetData.readAt ?? new Date().toISOString())
+      return { presets, active: presetData.active ?? null }
+    } catch (error) {
+      setPresetsError(error instanceof Error ? error.message : 'The server did not list the storage backends')
+      throw error
+    }
+  }
+
+  /** Fill the form from the deployment's backend when nothing has been chosen yet. */
+  function preselect(presets: S3Preset[], active: string | null) {
+    const ready = presets.filter((preset) => preset.ready)
+    const chosen = ready.find((preset) => preset.id === active) ?? (ready.length === 1 ? ready[0] : null)
+    if (!chosen) return
+    setS3Form((form) => (form.bucket || form.provider ? form : presetForm(chosen, form)))
+  }
+
   async function load() {
-    const data = await apiFetch<{ accounts: ConnectedAccount[] }>('/connected-accounts')
+    const data = await apiFetch<{ accounts: ConnectedAccount[] }>('/connected-accounts', { cache: 'no-store' })
     setAccounts(data.accounts)
 
     try {
@@ -381,13 +427,10 @@ export function SettingsPage() {
     }
 
     try {
-      const presetData = await apiFetch<{ presets: S3Preset[]; active: string | null }>('/connected-accounts/s3/presets')
-      setS3Presets(presetData.presets ?? [])
       // Pre-select the deployment's backend so the form is filled in before the
       // user opens the modal.
-      const ready = (presetData.presets ?? []).filter((preset) => preset.ready)
-      const chosen = ready.find((preset) => preset.id === presetData.active) ?? (ready.length === 1 ? ready[0] : null)
-      if (chosen) setS3Form((form) => (form.bucket || form.provider ? form : presetForm(chosen, form)))
+      const { presets, active } = await refreshPresets()
+      preselect(presets, active)
     } catch (e) {
       console.error('Failed to load storage backends', e)
     }
@@ -403,6 +446,20 @@ export function SettingsPage() {
   useEffect(() => {
     load().catch((error) => setMessage(error instanceof Error ? error.message : 'Failed to load settings'))
   }, [])
+
+  // Opening the dialog re-reads the backends, so a variable added in Render is
+  // picked up by closing and reopening it rather than by reloading the app.
+  useEffect(() => {
+    if (!s3Open) return
+    setS3Message('')
+    let cancelled = false
+    refreshPresets()
+      .then(({ presets, active }) => { if (!cancelled) preselect(presets, active) })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+    // `preselect`/`refreshPresets` close over state setters only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s3Open])
 
   useEffect(() => {
     setAvatarError(false)
@@ -490,6 +547,8 @@ export function SettingsPage() {
     event.preventDefault()
     setConnectingS3(true)
     setMessage('')
+    setS3Message('')
+    const requested = s3Form.provider ? s3Presets.find((preset) => preset.id === s3Form.provider)?.label : undefined
     try {
       await apiFetch('/connected-accounts/s3', {
         method: 'POST',
@@ -505,11 +564,16 @@ export function SettingsPage() {
       })
       setS3Open(false)
       setS3Form(emptyS3Form)
-      setMessage('S3 storage connected.')
+      const connected = requested ? `${requested} connected.` : 'S3 storage connected.'
+      setMessage(connected)
+      setS3Message('')
       await load()
       window.dispatchEvent(new Event('9drive:storage-changed'))
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to connect S3 storage')
+      const detail = error instanceof Error ? error.message : 'Failed to connect S3 storage'
+      // Shown in the dialog and on the page: the dialog is in front of the page.
+      setS3Message(detail)
+      setMessage(detail)
     } finally {
       setConnectingS3(false)
     }
@@ -808,9 +872,21 @@ export function SettingsPage() {
         </div>
       </div>
       <DummyModal open={s3Open} title="Connect S3 Storage" description="Use any S3-compatible provider with custom endpoint support." onClose={() => setS3Open(false)}>
+        {s3Message ? (
+          <p className="mb-4 rounded-xl bg-red-50 p-3 text-xs font-semibold leading-relaxed text-red-700">{s3Message}</p>
+        ) : null}
         {s3Presets.length > 0 ? (
           <div className="mb-4 grid gap-2 rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900/60">
-            <p className="text-[12px] font-bold text-slate-500">Configured on this deployment</p>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[12px] font-bold text-slate-500">Configured on this deployment</p>
+              <button
+                type="button"
+                onClick={() => { void refreshPresets().then(({ presets, active }) => preselect(presets, active)).catch(() => undefined) }}
+                className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-700 hover:underline"
+              >
+                <RefreshCw className="h-3 w-3" /> Refresh
+              </button>
+            </div>
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
@@ -838,10 +914,22 @@ export function SettingsPage() {
                 </button>
               ))}
             </div>
+            {/* Disabled chips say what is missing instead of only in a tooltip. */}
+            {s3Presets.some((preset) => !preset.ready) ? (
+              <p className="text-[11px] leading-relaxed text-slate-500">
+                Needs variables: {s3Presets.filter((preset) => !preset.ready).map((preset) => `${preset.label} (${preset.missing.join(', ')})`).join(' · ')}
+              </p>
+            ) : null}
             {s3Form.provider ? (
               <p className="text-[11px] leading-relaxed text-slate-500">
                 {s3Presets.find((preset) => preset.id === s3Form.provider)?.notes.join(' ') || null}
               </p>
+            ) : null}
+            {presetsError ? (
+              <p className="text-[11px] leading-relaxed text-amber-700">The server did not list the backends: {presetsError}</p>
+            ) : null}
+            {presetsReadAt ? (
+              <p className="text-[10px] text-slate-400">Read from the server at {new Date(presetsReadAt).toLocaleTimeString()}</p>
             ) : null}
             {s3Presets
               .filter((preset) => !preset.ready)
@@ -864,12 +952,16 @@ export function SettingsPage() {
               onChange={(event) => {
                 const template = MANUAL_TEMPLATES.find((entry) => entry.id === event.target.value)
                 if (!template) return
-                setS3Form((form) => ({
-                  ...form,
-                  template: template.id,
-                  forcePathStyle: template.pathStyle,
-                  endpoint: template.endpointFor ? template.endpointFor(form.region) : '',
-                }))
+                setS3Form((form) => {
+                  const region = template.region ?? form.region
+                  return {
+                    ...form,
+                    template: template.id,
+                    forcePathStyle: template.pathStyle,
+                    region,
+                    endpoint: template.endpointFor ? template.endpointFor(region) : '',
+                  }
+                })
               }}
             >
               {s3Form.provider ? <option value="preset">{s3Presets.find((preset) => preset.id === s3Form.provider)?.label ?? 'From environment'} (environment)</option> : null}
