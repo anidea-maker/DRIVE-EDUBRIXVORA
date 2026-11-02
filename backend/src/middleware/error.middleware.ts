@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from 'express'
+import { ZodError } from 'zod'
 import { BUILD_COMMIT } from '../config/build.js'
 
 /**
@@ -10,7 +11,30 @@ import { BUILD_COMMIT } from '../config/build.js'
  */
 const OAUTH_PATHS = ['/google/callback', '/google/connect', '/connected-accounts/google/callback']
 
+/**
+ * A request that does not match a route's schema is the client's mistake, so it is
+ * a 400 with the offending fields - not the 500 (and a raw JSON dump of the issues)
+ * that `next(zodError)` used to produce.
+ */
+function validationResponse(error: ZodError) {
+  const issues = error.issues.map((issue) => ({
+    field: issue.path.join('.') || '(body)',
+    message: issue.message,
+  }))
+  return {
+    code: 'VALIDATION_FAILED',
+    message: `Invalid request: ${issues.map((issue) => `${issue.field} - ${issue.message}`).join('; ')}`,
+    issues,
+  }
+}
+
 export function errorMiddleware(error: unknown, req: Request, res: Response, _next: NextFunction) {
+  if (error instanceof ZodError) {
+    console.warn(`[error] ${req.method} ${req.originalUrl} -> 400 validation:`, error.issues.map((issue) => issue.path.join('.')).join(', '))
+    if (res.headersSent) return
+    return res.status(400).json({ ...validationResponse(error), path: req.originalUrl, commit: BUILD_COMMIT })
+  }
+
   const message = error instanceof Error ? error.message : 'Internal server error'
   const name = error instanceof Error ? error.name : 'Error'
   const isOauth = OAUTH_PATHS.some((path) => req.path.endsWith(path))

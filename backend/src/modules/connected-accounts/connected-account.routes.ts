@@ -11,7 +11,7 @@ import { classifyGoogleError, describeGoogleError, type ConnectFailure } from '.
 import { repairStoredRedirectUri, requestOrigin, resolveGoogleRedirectUri } from '../google/redirect-uri.js'
 import { redirectToFrontend } from '../../utils/redirect.js'
 import { describeS3Error, syncS3Quota, testS3Connection } from '../s3/s3.service.js'
-import { getStoragePreset, listStoragePresets, resolveActivePreset, resolvePresetCredentials } from '../s3/presets.js'
+import { getStoragePreset, listStoragePresets, normalizeEndpoint, resolveActivePreset, resolvePresetCredentials } from '../s3/presets.js'
 import { looksLikePlaceholder } from '../../utils/placeholder.js'
 
 export const connectedAccountRouter = Router()
@@ -27,7 +27,10 @@ const s3ConnectSchema = z.object({
   name: z.string().trim().min(1).max(191).optional(),
   bucket: z.string().trim().min(1).max(191).optional(),
   region: z.string().trim().min(1).max(191).optional(),
-  endpoint: z.string().url().optional().or(z.literal('')),
+  // Not `z.string().url()`: a bare host (`s3.<region>.backblazeb2.com`) is a
+  // perfectly usable endpoint and was rejected here before normalisation could add
+  // the scheme. Normalisation + validation happen together below.
+  endpoint: z.string().trim().max(500).optional().or(z.literal('')),
   accessKeyId: z.string().min(1).optional(),
   secretAccessKey: z.string().min(1).optional(),
   forcePathStyle: z.boolean().optional(),
@@ -173,7 +176,17 @@ connectedAccountRouter.post('/s3', requireAuth, async (req: AuthRequest, res, ne
 
     const bucket = body.bucket ?? preset?.bucket ?? ''
     const region = body.region ?? preset?.region ?? ''
-    const endpoint = (body.endpoint || preset?.endpoint || '').trim()
+    // A typed endpoint is normalised the same way the environment's is: a bare host
+    // (`s3.ca-east-006.backblazeb2.com`) becomes https://… instead of failing in the
+    // SDK with "Invalid URL".
+    const rawEndpoint = (body.endpoint || preset?.endpoint || '').trim()
+    const endpoint = normalizeEndpoint(rawEndpoint) ?? ''
+    if (rawEndpoint && !endpoint) {
+      return res.status(400).json({
+        code: 'S3_ENDPOINT_INVALID',
+        message: `"${rawEndpoint}" is not a usable endpoint URL. Use the S3 API host only, for example https://s3.us-west-004.backblazeb2.com (no bucket name, no path).`,
+      })
+    }
     const accessKeyId = body.accessKeyId ?? presetCredentials?.accessKeyId ?? ''
     const secretAccessKey = body.secretAccessKey ?? presetCredentials?.secretAccessKey ?? ''
     const name = body.name ?? preset?.name ?? `${bucket}`
