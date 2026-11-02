@@ -189,20 +189,28 @@ app.get(['/api/diagnostics', '/diagnostics'], async (req, res) => {
    */
   let accountsSummary: Record<string, unknown>
   try {
-    const rows = (await prisma.connectedAccount.groupBy({
-      by: ['provider', 'status'],
-      _count: { _all: true },
-    })) as Array<{ provider: string; status: string; _count: { _all: number } }>
-    const byProvider: Record<string, number> = {}
-    for (const row of rows) {
-      const key = `${row.provider}:${row.status}`
-      byProvider[key] = row._count._all
+    // Plain `count` calls rather than `groupBy`: the generated client's groupBy
+    // input type is strict enough that a single-field `_count` object failed to
+    // assign on the deploy host (TS2345), and the count of connected storage is
+    // all this endpoint needs.
+    const [googleDrive, s3, googleDriveAll, s3All] = await Promise.all([
+      prisma.connectedAccount.count({ where: { provider: 'google_drive', status: 'connected' } }),
+      prisma.connectedAccount.count({ where: { provider: 's3', status: 'connected' } }),
+      prisma.connectedAccount.count({ where: { provider: 'google_drive' } }),
+      prisma.connectedAccount.count({ where: { provider: 's3' } }),
+    ])
+    accountsSummary = {
+      googleDrive,
+      s3,
+      byProvider: {
+        'google_drive:connected': googleDrive,
+        's3:connected': s3,
+        'google_drive:total': googleDriveAll,
+        's3:total': s3All,
+      },
     }
-    const connectedDrives = byProvider['google_drive:connected'] ?? 0
-    const connectedS3 = byProvider['s3:connected'] ?? 0
-    accountsSummary = { byProvider, googleDrive: connectedDrives, s3: connectedS3 }
-    if (connectedDrives === 0) hints.push('No Google Drive account is connected yet: open Settings -> Connect Drive and approve access.')
-    if (connectedS3 === 0) hints.push('No S3 bucket is connected yet: open Settings -> Connect S3.')
+    if (googleDrive === 0) hints.push('No Google Drive account is connected yet: open Settings -> Connect Drive and approve access.')
+    if (s3 === 0) hints.push('No S3 bucket is connected yet: open Settings -> Connect S3.')
   } catch (error) {
     accountsSummary = { error: error instanceof Error ? error.message : String(error) }
   }
