@@ -2,9 +2,11 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { prisma } from '../../config/prisma.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
+import { requireRole } from '../../middleware/role.middleware.js'
 
 export const inviteRouter = Router()
 inviteRouter.use(requireAuth)
+inviteRouter.use(requireRole('manage_resources'))
 
 const inviteSchema = z.object({ email: z.string().email(), role: z.enum(['viewer', 'editor']).default('viewer'), targetType: z.enum(['file', 'folder']), targetId: z.string().min(1) })
 

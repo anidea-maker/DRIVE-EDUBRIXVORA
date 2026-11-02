@@ -514,7 +514,7 @@ export function AllFilesPage() {
       const data = await apiFetch<{ url: string | null }>(`/files/${activeFile.id}/view-url`)
       if (data.url) {
         await navigator.clipboard.writeText(data.url)
-        setMessage('Google Drive link copied to clipboard!')
+        setMessage('Secure short-lived preview link copied to clipboard!')
         setTimeout(() => setMessage(''), 2500)
       } else {
         const shareData = await apiFetch<{ url: string }>(`/files/${activeFile.id}/share`, { method: 'POST' })
@@ -772,7 +772,7 @@ export function AllFilesPage() {
       </DummyModal>
       <DummyModal open={renameOpen} title="Rename File" description={activeFile?.name ?? ''} onClose={() => setRenameOpen(false)}><form onSubmit={renameFile} className="grid gap-4"><Input value={renameValue} onChange={(event) => setRenameValue(event.target.value)} required /><div className="flex justify-end gap-3"><Button type="button" variant="outline" onClick={() => setRenameOpen(false)}>Cancel</Button><Button>Rename</Button></div></form></DummyModal>
       <DummyModal open={moveOpen} title="Move to Folder" description={selectedFileIds.size > 0 ? `Move ${selectedFileIds.size} files` : activeFile?.name ?? ''} onClose={() => setMoveOpen(false)}><form onSubmit={moveFile} className="grid gap-4"><select className="h-11 rounded-xl border border-slate-200 px-3 text-sm" value={selectedFolderId} onChange={(event) => setSelectedFolderId(event.target.value)}><option value="">No folder</option>{allFolders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select><div className="flex justify-end gap-3"><Button type="button" variant="outline" onClick={() => setMoveOpen(false)}>Cancel</Button><Button>Move</Button></div></form></DummyModal>
-      <DummyModal open={deleteOpen} title={selectedFileIds.size > 0 ? 'Delete Files' : 'Delete File'} description={selectedFileIds.size > 0 ? `Delete ${selectedFileIds.size} files from Google Drive?` : `Delete ${activeFile?.name ?? 'file'} from Google Drive?`} onClose={() => setDeleteOpen(false)}><div className="flex justify-end gap-3"><Button variant="outline" onClick={() => setDeleteOpen(false)}>Cancel</Button><Button variant="danger" onClick={deleteFile}>Delete</Button></div></DummyModal>
+      <DummyModal open={deleteOpen} title={selectedFileIds.size > 0 ? 'Delete Files' : 'Delete File'} description={selectedFileIds.size > 0 ? `Delete ${selectedFileIds.size} files from connected storage?` : `Delete ${activeFile?.name ?? 'file'} from connected storage?`} onClose={() => setDeleteOpen(false)}><div className="flex justify-end gap-3"><Button variant="outline" onClick={() => setDeleteOpen(false)}>Cancel</Button><Button variant="danger" onClick={deleteFile}>Delete</Button></div></DummyModal>
       <DummyModal open={shareOpen} title="Share Link" description={activeFile?.name ?? ''} onClose={() => setShareOpen(false)}>
         <div className="grid gap-4">
           <div>
@@ -788,13 +788,13 @@ export function AllFilesPage() {
           {activeFile?.accountProvider === 'google_drive' && (
             <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-800 grid gap-3">
               <div>
-                <label className="text-xs font-bold text-slate-500 block mb-1">Google Drive Direct Link (Public Access)</label>
-                <p className="text-xs text-slate-500 mb-2">Configure this file to be publicly accessible on Google Drive so external tools can edit/download it.</p>
+                <label className="text-xs font-bold text-slate-500 block mb-1">Short-lived Preview Link</label>
+                <p className="text-xs text-slate-500 mb-2">Creates an access-controlled link that expires. The Google Drive file itself stays private.</p>
               </div>
               {gdrivePublicUrl ? (
                 <div className="grid gap-2">
                   <Input value={gdrivePublicUrl} readOnly />
-                  <p className="rounded-xl bg-emerald-50 p-3 text-sm font-semibold text-emerald-700">Google Drive public link generated and copied to clipboard!</p>
+                  <p className="rounded-xl bg-emerald-50 p-3 text-sm font-semibold text-emerald-700">Secure preview link generated and copied to clipboard!</p>
                 </div>
               ) : (
                 <Button
@@ -808,14 +808,14 @@ export function AllFilesPage() {
                       setGdrivePublicUrl(res.url)
                       await navigator.clipboard.writeText(res.url)
                     } catch (err: any) {
-                      alert('Failed to update Google Drive permission: ' + (err.message || err))
+                      alert('Failed to create a secure preview link: ' + (err.message || err))
                     } finally {
                       setMakingPublic(false)
                     }
                   }}
                   className="w-full text-blue-700 bg-blue-50 border-blue-200 hover:bg-blue-100 dark:text-blue-400 dark:bg-blue-950/30 dark:border-blue-900/50"
                 >
-                  {makingPublic ? 'Making Public...' : 'Make Public & Copy GDrive Link'}
+                  {makingPublic ? 'Creating link...' : 'Create Secure Preview Link'}
                 </Button>
               )}
             </div>

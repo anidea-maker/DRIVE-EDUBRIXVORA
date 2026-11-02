@@ -1,9 +1,11 @@
 import { google } from 'googleapis'
+import { randomUUID } from 'node:crypto'
 import type { File } from '@prisma/client'
 import { prisma } from '../../config/prisma.js'
 import { createAuditLog } from '../../utils/audit.js'
 import { ensureGoogleAppFolder, getAuthedGoogleClient } from '../google/google.service.js'
-import { buildS3ObjectKey, deleteS3Object, getS3ConfigForAccount, syncS3Quota, uploadS3Object } from '../s3/s3.service.js'
+import { buildS3ObjectKey, getS3ConfigForAccount, syncS3Quota, uploadS3Object } from '../s3/s3.service.js'
+import { deleteProviderFile, verifyProviderFile, type ProviderFileRef, type ProviderMetadata } from '../storage/provider-operations.js'
 import { selectAccount, syncQuotaInBackground } from '../uploads/upload.routes.js'
 import {
   baseName,
@@ -42,11 +44,30 @@ export function findObject(userId: string, key: string) {
 }
 
 /**
+ * A freshly uploaded object is only `active` after the provider confirms it
+ * exists. Three short attempts absorb an eventually-consistent S3-compatible
+ * provider; an auth/permission failure is reported immediately.
+ */
+async function assertProviderFileAvailable(ref: ProviderFileRef): Promise<ProviderMetadata> {
+  let last: ProviderMetadata = { availability: 'unknown' }
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    last = await verifyProviderFile(ref)
+    if (last.availability === 'available') return last
+    if (last.availability === 'inaccessible') break
+    await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)))
+  }
+  throw new Error(`UPLOAD_VERIFICATION_FAILED: ${last.detail ?? 'the provider did not confirm the object exists'}`)
+}
+
+/**
  * Writes one object.
  *
- * Order matters: the new bytes land at the provider *before* the database row is
- * repointed and before any old object is removed, so a failed upload leaves the
- * previous version readable instead of losing both.
+ * Order matters: the new bytes land at a *new* provider key / Drive file before
+ * the database row is repointed and before any old object is removed, so a
+ * failed upload leaves the previous version readable instead of losing both.
+ * The declared byte count and a provider HEAD/get are checked before success is
+ * reported; a retry with the same key replaces the row rather than creating a
+ * duplicate.
  */
 export async function putObject(input: {
   userId: string
@@ -55,17 +76,26 @@ export async function putObject(input: {
   sizeBytes: bigint
   mimeType: string
   source: 'api' | 'signed-url'
+  /** Optional explicit storage provider selection for the resource API. */
+  provider?: 'google_drive' | 's3'
 }) {
-  const { userId, key, body, sizeBytes, mimeType } = input
+  const { userId, key, body, sizeBytes, mimeType, provider } = input
   const existing = await prisma.file.findFirst({ where: { userId, objectKey: key }, include: { connectedAccount: true } })
   const name = baseName(key)
 
   // Prefer the account that already holds this key, so an overwrite stays put;
-  // fall back to normal routing when that account is full or gone.
-  const pinned = existing?.connectedAccount?.status === 'connected' ? existing.connectedAccountId : undefined
-  const account = (pinned ? await selectAccount(userId, sizeBytes, undefined, pinned) : null)
-    ?? (await selectAccount(userId, sizeBytes))
+  // fall back to normal routing when that account is full, gone, or of another
+  // provider than the one explicitly requested.
+  const pinned =
+    existing?.connectedAccount?.status === 'connected' && (!provider || existing.connectedAccount.provider === provider)
+      ? existing.connectedAccountId
+      : undefined
+  const account = (pinned ? await selectAccount(userId, sizeBytes, undefined, pinned, provider) : null)
+    ?? (await selectAccount(userId, sizeBytes, undefined, null, provider))
   if (!account) {
+    // Drain the request: a router that returns 507 while the client is still
+    // sending a 2 GB body otherwise leaves the socket stuck.
+    ;(body as NodeJS.ReadableStream & { resume?: () => void }).resume?.()
     return {
       ok: false as const,
       code: 'NO_ACCOUNT_WITH_ENOUGH_SPACE' as const,
@@ -108,62 +138,88 @@ export async function putObject(input: {
   }))
 
   const hashing = hashingStream()
+  /**
+   * The Transform both counts/MD5s the bytes and is what the provider reads.
+   * Without piping the request into it, an object upload would write an empty
+   * stream forever - so this connection is the upload, not an optional detail.
+   */
+  const source = body as NodeJS.ReadableStream & { on?: (event: string, listener: (error: unknown) => void) => void }
+  source.on?.('error', (streamError) => {
+    hashing.stream.destroy(streamError instanceof Error ? streamError : new Error(String(streamError)))
+  })
+  source.pipe(hashing.stream)
+  /** Set as soon as the provider has bytes, so a failed upload can clean up. */
+  let createdProviderRef: ProviderFileRef | null = null
 
   try {
+    let providerFileId = ''
+    let uploadedName = name
+    let uploadedMimeType = mimeType
+
     if (account.provider === 's3') {
       const config = await getS3ConfigForAccount(account.id, userId)
-      const providerKey = buildS3ObjectKey(config, userId, row.id, name)
-      await uploadS3Object(config, providerKey, hashing.stream, mimeType)
-      const { checksum } = hashing.result()
-      const file = await prisma.file.update({
-        where: { id: row.id },
-        data: {
-          connectedAccountId: account.id,
-          provider: 's3',
-          providerFileId: providerKey,
-          name,
-          mimeType,
-          sizeBytes,
-          checksum,
-          objectKey: key,
-          status: 'active',
-          deletedAt: null,
-        },
-      })
-
-      // Same account: the put landed on the same provider key, which is the
-      // overwrite. A different account means the old copy has to be removed.
-      if (existing && existing.connectedAccountId !== account.id) {
-        await removeProviderObject(existing.connectedAccount.provider, existing).catch((error) => {
-          console.error('[objects] could not remove the superseded object:', error instanceof Error ? error.message : error)
-        })
+      // A unique key per attempt keeps the previous object readable until the
+      // database row is repointed; overwriting the old key in place would lose
+      // both versions if the network died midway.
+      const providerKey = buildS3ObjectKey(config, userId, `${row.id}-${randomUUID()}`, name)
+      createdProviderRef = {
+        provider: 's3',
+        providerFileId: providerKey,
+        connectedAccountId: account.id,
+        userId,
+        name,
+        mimeType,
       }
-
-      await completeSession(session.id)
-      await audit(userId, key, sizeBytes, input.source)
-      syncS3Quota(account.id).catch(() => undefined)
-      return { ok: true as const, file, created: !existing }
+      await uploadS3Object(config, providerKey, hashing.stream, mimeType)
+      providerFileId = providerKey
+    } else {
+      const auth = await getAuthedGoogleClient(account)
+      const drive = google.drive({ version: 'v3', auth })
+      const parentId = await ensureGoogleAppFolder(account)
+      const uploaded = await drive.files.create({
+        requestBody: { name, parents: [parentId] },
+        media: { mimeType, body: hashing.stream },
+        fields: 'id,name,mimeType',
+        supportsAllDrives: true,
+      })
+      providerFileId = uploaded.data.id ?? ''
+      uploadedName = uploaded.data.name ?? name
+      uploadedMimeType = uploaded.data.mimeType ?? mimeType
+      createdProviderRef = {
+        provider: 'google_drive',
+        providerFileId,
+        connectedAccountId: account.id,
+        userId,
+        name: uploadedName,
+        mimeType: uploadedMimeType,
+      }
     }
 
-    const auth = await getAuthedGoogleClient(account)
-    const drive = google.drive({ version: 'v3', auth })
-    const parentId = await ensureGoogleAppFolder(account)
-    const uploaded = await drive.files.create({
-      requestBody: { name, parents: [parentId] },
-      media: { mimeType, body: hashing.stream },
-      fields: 'id,name,mimeType',
+    const { checksum, bytes } = hashing.result()
+    if (BigInt(bytes) !== sizeBytes) {
+      throw new Error(`UPLOAD_SIZE_MISMATCH: received ${bytes} bytes, expected ${sizeBytes.toString()}.`)
+    }
+    if (!providerFileId) throw new Error('UPLOAD_FAILED: the storage provider did not return a file identifier.')
+
+    const verification = await assertProviderFileAvailable({
+      provider: account.provider,
+      providerFileId,
+      connectedAccountId: account.id,
+      userId,
+      name: uploadedName,
+      mimeType: uploadedMimeType,
+      sizeBytes,
     })
-    const { checksum } = hashing.result()
 
     const file = await prisma.file.update({
       where: { id: row.id },
       data: {
         connectedAccountId: account.id,
-        provider: 'google_drive',
-        providerFileId: uploaded.data.id ?? '',
-        name: uploaded.data.name ?? name,
-        mimeType: uploaded.data.mimeType ?? mimeType,
-        sizeBytes,
+        provider: account.provider,
+        providerFileId,
+        name: uploadedName,
+        mimeType: uploadedMimeType,
+        sizeBytes: verification.sizeBytes ?? sizeBytes,
         checksum,
         objectKey: key,
         status: 'active',
@@ -171,19 +227,31 @@ export async function putObject(input: {
       },
     })
 
-    // Drive always creates a new file, so the superseded one is never overwritten.
-    if (existing) {
+    // Only now is the superseded object safe to remove. A failure here is logged,
+    // not reported as an upload failure: the new file is already readable.
+    if (existing && existing.providerFileId && existing.providerFileId !== providerFileId) {
       await removeProviderObject(existing.connectedAccount.provider, existing).catch((error) => {
-        console.error('[objects] could not remove the superseded Drive file:', error instanceof Error ? error.message : error)
+        console.error('[objects] could not remove the superseded object:', error instanceof Error ? error.message : error)
       })
     }
+    createdProviderRef = null
 
     await completeSession(session.id)
     await audit(userId, key, sizeBytes, input.source)
-    syncQuotaInBackground(account.id, session.id)
-    return { ok: true as const, file, created: !existing }
+    if (account.provider === 's3') syncS3Quota(account.id).catch(() => undefined)
+    else syncQuotaInBackground(account.id, session.id)
+    return { ok: true as const, file, created: !existing, providerFileId }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'The storage provider refused the upload.'
+    // Stop reading the request body so the socket can be released cleanly.
+    const drainable = source as NodeJS.ReadableStream & { unpipe?: () => void; resume?: () => void }
+    drainable.unpipe?.()
+    drainable.resume?.()
+    if (createdProviderRef) {
+      await deleteProviderFile(createdProviderRef).catch((cleanupError) => {
+        console.error('[objects] could not clean up a failed upload:', cleanupError instanceof Error ? cleanupError.message : cleanupError)
+      })
+    }
     // A brand-new row has nothing behind it; mark it gone so the key stays usable.
     if (!existing) {
       await prisma.file.update({ where: { id: row.id }, data: { status: 'deleted', deletedAt: new Date() } }).catch(() => undefined)
@@ -212,13 +280,12 @@ type ProviderObject = {
 
 /** Deletes the bytes at the provider. Callers decide whether a failure matters. */
 export async function removeProviderObject(provider: string, file: ProviderObject) {
-  if (provider === 's3' || file.connectedAccount.provider === 's3') {
-    await deleteS3Object(file)
-    return
-  }
-  const account = await prisma.connectedAccount.findUniqueOrThrow({ where: { id: file.connectedAccount.id } })
-  const auth = await getAuthedGoogleClient(account)
-  await google.drive({ version: 'v3', auth }).files.delete({ fileId: file.providerFileId })
+  const resolved = file.connectedAccount.provider || provider
+  await deleteProviderFile({
+    provider: resolved,
+    providerFileId: file.providerFileId,
+    connectedAccountId: file.connectedAccountId,
+  })
 }
 
 /** Deletes an object for good - S3 has no trash, and `DELETE` is idempotent. */

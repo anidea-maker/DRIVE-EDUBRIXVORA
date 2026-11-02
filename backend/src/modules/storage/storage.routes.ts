@@ -2,9 +2,11 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { prisma } from '../../config/prisma.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
+import { requireRole } from '../../middleware/role.middleware.js'
 
 export const storageRouter = Router()
 storageRouter.use(requireAuth)
+storageRouter.use(requireRole('manage_resources'))
 
 type BreakdownRow = { kind: string; bytes: bigint | number | string | null }
 

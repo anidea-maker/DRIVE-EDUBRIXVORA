@@ -18,6 +18,7 @@ import { apiKeyRouter } from './modules/api-keys/api-key.routes.js'
 import { publicApiRouter } from './modules/public-api/public-api.routes.js'
 import { auditLogRouter } from './modules/audit-logs/audit-log.routes.js'
 import { systemRouter } from './modules/system/system.routes.js'
+import { adminRouter } from './modules/admin/admin.routes.js'
 import { frontendUrl } from './utils/redirect.js'
 import { describeConfigProblem, looksLikePlaceholder } from './modules/google/config-health.js'
 import { decryptText } from './utils/crypto.js'
@@ -371,6 +372,7 @@ const API_ROUTERS: Array<[string, import('express').Router]> = [
   ['/invites', inviteRouter],
   ['/audit-logs', auditLogRouter],
   ['/system', systemRouter],
+  ['/admin', adminRouter],
 ]
 
 for (const [prefix, router] of API_ROUTERS) {

@@ -2,11 +2,14 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { prisma } from '../../config/prisma.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
+import { requireRole } from '../../middleware/role.middleware.js'
 import { hashToken, randomToken } from '../../utils/crypto.js'
 import { ALL_SCOPES, API_SCOPES, selectScopes } from '../public-api/scopes.js'
 
 export const apiKeyRouter = Router()
 apiKeyRouter.use(requireAuth)
+// Creating or revoking a server-to-server credential is an admin operation.
+apiKeyRouter.use(requireRole('manage_resources'))
 
 const createSchema = z.object({
   name: z.string().trim().min(1).max(191),

@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { prisma } from '../../config/prisma.js'
 import { env } from '../../config/env.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
+import { requireRole } from '../../middleware/role.middleware.js'
 import { hashToken, randomToken } from '../../utils/crypto.js'
 import { getAuthedGoogleClient, syncGoogleAppFolderFiles, syncGoogleQuota } from '../google/google.service.js'
 import { deleteS3Object, syncS3Quota, createS3Client, getS3ConfigForAccount } from '../s3/s3.service.js'
@@ -13,6 +14,7 @@ import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { Readable } from 'node:stream'
 import { ZipArchive } from 'archiver'
 import { createAuditLog } from '../../utils/audit.js'
+import { mintResourceUrl } from '../resources/resource-urls.js'
 
 
 
@@ -33,6 +35,10 @@ fileRouter.get('/preview/:token', async (req, res, next) => {
 })
 
 fileRouter.use(requireAuth)
+// The dashboard is the storage-management site: only server-verified admins
+// may list, share, rename, delete or download from it. Public token routes above
+// this line are deliberately excluded.
+fileRouter.use(requireRole('manage_resources'))
 
 fileRouter.get('/', async (req: AuthRequest, res, next) => {
   try {
@@ -301,26 +307,26 @@ fileRouter.post('/:id/share', async (req: AuthRequest, res, next) => {
   }
 })
 
+/**
+ * Kept for compatibility with the dashboard's "copy a link" button, but it no
+ * longer changes Google Drive permissions. Making a private educational file
+ * `anyone/writer` was a security hole: previewing must use an authenticated
+ * stream or a short-lived capability URL instead.
+ */
 fileRouter.post('/:id/public-permission', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const fileId = String(req.params.id)
-    const file = await prisma.file.findFirstOrThrow({ where: { id: fileId, userId: req.user!.id }, include: { connectedAccount: true } })
-    if (file.provider !== 'google_drive') {
-      return res.status(400).json({ code: 'UNSUPPORTED_PROVIDER', message: 'Only Google Drive files can be made public.' })
-    }
-    const auth = await getAuthedGoogleClient(file.connectedAccount)
-    const drive = google.drive({ version: 'v3', auth })
-    await drive.permissions.create({
-      fileId: file.providerFileId,
-      requestBody: {
-        role: 'writer',
-        type: 'anyone'
-      }
+    const file = await prisma.file.findFirstOrThrow({ where: { id: fileId, userId: req.user!.id, status: 'active' } })
+    const minted = await mintResourceUrl(req, { id: file.id, userId: file.userId, objectKey: file.objectKey }, { download: false })
+    return res.json({
+      status: 'ok',
+      url: minted.url,
+      expiresAt: minted.expiresAt,
+      mechanism: minted.mechanism,
+      note: 'This is a short-lived access-controlled link. The underlying Drive file or S3 object was not made public.',
     })
-    const metadata = await drive.files.get({ fileId: file.providerFileId, fields: 'webViewLink,webContentLink' })
-    return res.json({ status: 'ok', url: metadata.data.webViewLink ?? metadata.data.webContentLink })
   } catch (error: any) {
-    return res.status(500).json({ code: 'GOOGLE_API_ERROR', message: error.message || 'Failed to update Google Drive permissions.' })
+    return next(error)
   }
 })
 
@@ -347,29 +353,18 @@ fileRouter.post('/:id/preview-token', async (req: AuthRequest, res, next) => {
   }
 })
 
+/**
+ * Returns a short-lived preview capability URL for *either* provider. It used to
+ * set `anyone/writer` on the Google file and hand out a webViewLink; that made
+ * private documents publicly editable. The URL below is minted after the
+ * dashboard's authenticated session and expires.
+ */
 fileRouter.get('/:id/view-url', async (req: AuthRequest, res, next) => {
   try {
     const fileId = String(req.params.id)
-    const file = await prisma.file.findFirstOrThrow({ where: { id: fileId, userId: req.user!.id }, include: { connectedAccount: true } })
-    if (file.provider === 's3') return res.json({ url: null })
-    const auth = await getAuthedGoogleClient(file.connectedAccount)
-    const drive = google.drive({ version: 'v3', auth })
-
-    // Automatically set permission to public writer when retrieving/copying the view URL!
-    try {
-      await drive.permissions.create({
-        fileId: file.providerFileId,
-        requestBody: {
-          role: 'writer',
-          type: 'anyone'
-        }
-      })
-    } catch (err: any) {
-      console.error('Failed to make Google Drive file public during view-url retrieval:', err.message || err)
-    }
-
-    const metadata = await drive.files.get({ fileId: file.providerFileId, fields: 'webViewLink,webContentLink' })
-    return res.json({ url: metadata.data.webViewLink ?? metadata.data.webContentLink })
+    const file = await prisma.file.findFirstOrThrow({ where: { id: fileId, userId: req.user!.id, status: 'active' } })
+    const minted = await mintResourceUrl(req, { id: file.id, userId: file.userId, objectKey: file.objectKey }, { download: false })
+    return res.json({ url: minted.url, expiresAt: minted.expiresAt, mechanism: minted.mechanism })
   } catch (error) {
     return next(error)
   }

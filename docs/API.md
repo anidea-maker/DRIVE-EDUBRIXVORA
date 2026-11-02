@@ -327,11 +327,85 @@ Errors are JSON with a stable `code` and a message that names the cause.
 | 502 | `UPLOAD_FAILED` / `DELETE_FAILED` | The provider refused; the message is the provider's |
 | 507 | `NO_ACCOUNT_WITH_ENOUGH_SPACE` | Nothing can hold this file |
 
+## Educational resources (Edvanta)
+
+`/api/v1/resources` is the authenticated contract for the main Edvanta website.
+It uses the same `files` registry, the same API key and the same scopes, but adds
+educational metadata, stable visibility, availability checks, preview/download
+capability URLs, streaming ZIPs and reconciliation. A browser must never hold
+the API key: Edvanta's server authenticates its own student/admin session first.
+
+| Method | Path | Scope | Extra requirement | Purpose |
+| --- | --- | --- | --- | --- |
+| `GET` | `/resources` | `files:read` | — | Paginated discovery: `q`, `category`, `subject`, `academicLevel`, `examType`, `provider`, `mimeType`, `visibility`, `status`, `availability`, `audience`, `limit`, `cursor`, `order` |
+| `POST` | `/resources` | `files:write` | admin/super_admin role | Multipart upload: `resourceMeta` field (title, category, subject, sizeBytes, optional `provider`, `clientRequestId`) then `file`. Retry-safe. |
+| `GET` | `/resources/:id` | `files:read` | — | Metadata, availability and endpoint URLs |
+| `PATCH` | `/resources/:id` | `files:write` | admin/super_admin role | Edit metadata without re-uploading |
+| `DELETE` | `/resources/:id` | `files:delete` | admin/super_admin role | Soft delete; `?permanent=1` also removes provider bytes |
+| `GET` | `/resources/:id/access` | `files:read` | — | Mint short-lived preview + download URLs |
+| `GET` | `/resources/:id/preview-url` | `files:read` | — | Short-lived inline URL, or `415` with a download URL for Office/unsupported types |
+| `GET` | `/resources/:id/preview` | `files:read` | — | `302` to the signed inline URL |
+| `GET` | `/resources/:id/download-url` / `/download` | `files:read` | — | Short-lived attachment URL / redirect |
+| `GET` | `/resources/:id/content` | `files:read` | — | Authenticated byte stream with `Range` for a server-side proxy |
+| `POST` | `/resources/bulk-download` | `files:read` | — | `{ "ids": [...] }` → streaming ZIP, per-file errors in headers and `_download-errors.txt` |
+| `POST` | `/resources/:id/verify` | `files:write` | admin/super_admin role | One provider HEAD/get; updates availability |
+| `POST` | `/resources/sync` | `files:write` | admin/super_admin role | On-demand reconciliation with a checkpoint cursor |
+| `GET` | `/resources/health` | `files:read` | — | Database, provider and availability health (no credentials) |
+
+```bash
+BASE=https://drive.example.com/api/v1
+KEY=9d_live_…
+
+curl -X POST "$BASE/resources" \
+  -H "Authorization: Bearer $KEY" \
+  -F 'resourceMeta={"title":"Cell Structure Notes","category":"Science","subject":"Biology","visibility":"students","provider":"s3","clientRequestId":"request-12345678","fileName":"biology.pdf","mimeType":"application/pdf","sizeBytes":"2048"}' \
+  -F 'file=@biology.pdf;type=application/pdf'
+
+curl -H "Authorization: Bearer $KEY" \
+  "$BASE/resources?audience=student&subject=Biology&limit=20"
+
+curl -H "Authorization: Bearer $KEY" \
+  "$BASE/resources/<id>/preview-url"
+
+curl -X POST -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"ids":["<id1>","<id2>"]}' "$BASE/resources/bulk-download" -o resources.zip
+```
+
+Visibility: `private` is only visible with `audience=admin`; `students` and
+`public` are visible to students. A student listing returns only
+`availability=available` by default. `previewSupported=false` still returns a
+download URL. A missing/inaccessible object yields `410`/`502` rather than a
+broken preview. Bulk limits are `RESOURCE_BULK_MAX_FILES` (25) and
+`RESOURCE_BULK_MAX_BYTES` (512 MiB).
+
+The full contract, role bootstrap, Render variables and manual cloud checklist
+are in [`docs/EDVANTA-INTEGRATION.md`](EDVANTA-INTEGRATION.md), with a tested
+copy-paste server client in [`examples/edvanta/`](../examples/edvanta/).
+
+### Errors specific to resources
+
+| Status | Code | Meaning |
+| --- | --- | --- |
+| 400 | `RESOURCE_META_INVALID` / `RESOURCE_CURSOR_INVALID` | Bad metadata or pagination token |
+| 403 | `ROLE_FORBIDDEN` / `RESOURCE_PRIVATE` | Key owner lacks the role, or a student requested a private record |
+| 409 | `RESOURCE_IDEMPOTENCY_CONFLICT` | Concurrent retry of the same `clientRequestId`; retry once |
+| 410 | `RESOURCE_MISSING` | Metadata exists, provider object is gone |
+| 413 | `BULK_TOO_MANY_FILES` / `BULK_TOO_LARGE` / `UPLOAD_TOO_LARGE` | Limit exceeded |
+| 415 | `PREVIEW_UNSUPPORTED` | Office/unsupported type; the body carries a download URL |
+| 502 | `RESOURCE_INACCESSIBLE` / `BULK_ALL_FILES_UNAVAILABLE` | Provider denied access or every selected file failed |
+| 507 | `NO_ACCOUNT_WITH_ENOUGH_SPACE` | No connected provider can hold the upload |
+
 ## Deployment notes
 
 - `PUBLIC_BASE_URL` pins the origin used in share and download URLs. Set it only
   when a proxy rewrites the `Host` header; by default the request's own origin is
   used.
+- `SUPER_ADMIN_EMAILS` bootstraps administrator roles; `RESOURCE_URL_TTL_SECONDS`,
+  `RESOURCE_BULK_MAX_FILES` and `RESOURCE_BULK_MAX_BYTES` cap capability URLs and
+  ZIPs. `OBJECT_URL_SIGNING_SECRET` is optional (derived from
+  `TOKEN_ENCRYPTION_KEY` when unset). See
+  [`docs/EDVANTA-INTEGRATION.md`](EDVANTA-INTEGRATION.md).
 - `API_RATE_LIMIT_PER_MINUTE=0` disables the limiter.
 - Uploads are routed by the dashboard's routing policy (most available space,
   round-robin, or priority) unless the folder is pinned to an account.

@@ -12,7 +12,8 @@ export const googleDownloadExportMimeTypes: Record<string, { mimeType: string; e
   'application/vnd.google-apps.drawing': { mimeType: 'image/png', extension: '.png' },
 }
 
-const googlePreviewExportMimeTypes: Record<string, { mimeType: string; extension: string }> = {
+/** Preview uses PDF/PNG exports so a browser can actually display the file. */
+export const googlePreviewExportMimeTypes: Record<string, { mimeType: string; extension: string }> = {
   ...googleDownloadExportMimeTypes,
   'application/vnd.google-apps.spreadsheet': { mimeType: 'application/pdf', extension: '.pdf' },
 }

@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { env } from '../../config/env.js'
 import { prisma } from '../../config/prisma.js'
 import { requireApiKey, SCOPE_HEADER, type ApiKeyRequest } from '../../middleware/api-key.middleware.js'
+import { requireRole } from '../../middleware/role.middleware.js'
 import { createAuditLog } from '../../utils/audit.js'
 import { hashToken, randomToken } from '../../utils/crypto.js'
 import { streamProviderFile } from '../files/stream-file.js'
@@ -14,6 +15,7 @@ import { handleUpload, selectAccount, syncQuotaInBackground } from '../uploads/u
 import { API_SCOPES } from './scopes.js'
 import { KIND_FILTERS, absoluteUrl, apiFile, apiFolder, publicBaseUrl } from './serialize.js'
 import { objectsRouter } from './objects.routes.js'
+import { resourceRouter } from '../resources/resource.routes.js'
 
 export const publicApiRouter = Router()
 
@@ -64,7 +66,7 @@ publicApiRouter.get(['/v1', '/v1/'], (req, res) => {
     service: '9Drive Storage API',
     version: '1',
     baseUrl: `${base}/api/v1`,
-    description: 'Store and serve files from 9Drive-connected storage (S3-compatible buckets and Google Drive).',
+    description: 'Store and serve files from 9Drive-connected storage (S3-compatible buckets and Google Drive). /resources adds the educational registry consumed by Edvanta.',
     auth: {
       type: 'bearer',
       header: 'Authorization: Bearer 9d_live_...',
@@ -80,6 +82,9 @@ publicApiRouter.get(['/v1', '/v1/'], (req, res) => {
     limits: {
       maxUploadBytes: String(env.MAX_UPLOAD_BYTES),
       rateLimitPerMinute: env.API_RATE_LIMIT_PER_MINUTE,
+      resourceUrlTtlSeconds: env.RESOURCE_URL_TTL_SECONDS,
+      resourceBulkMaxFiles: env.RESOURCE_BULK_MAX_FILES,
+      resourceBulkMaxBytes: String(env.RESOURCE_BULK_MAX_BYTES),
     },
     endpoints: [
       { method: 'GET', path: '/api/v1/me', scope: 'files:read', description: 'Identity, scopes and storage totals.' },
@@ -101,6 +106,18 @@ publicApiRouter.get(['/v1', '/v1/'], (req, res) => {
       { method: 'DELETE', path: '/api/v1/objects/:key', scope: 'files:delete', description: 'Deletes the object. Always 204, like S3.' },
       { method: 'GET', path: '/api/v1/objects', scope: 'files:read', description: 'List objects. Query: prefix, delimiter, max-keys, continuation-token.' },
       { method: 'POST', path: '/api/v1/objects/sign', scope: 'files:read', description: 'Expiring signed URL for GET/HEAD/PUT, so a browser can read or upload without a key.' },
+      { method: 'GET', path: '/api/v1/resources', scope: 'files:read', description: 'Paginated educational resource discovery. Query: q, category, subject, academicLevel, examType, provider, visibility, audience, limit, cursor, order.' },
+      { method: 'POST', path: '/api/v1/resources', scope: 'files:write', description: 'Admin multipart upload with resourceMeta (title, category, subject, provider, clientRequestId). Retry-safe.' },
+      { method: 'GET', path: '/api/v1/resources/:id', scope: 'files:read', description: 'Stable resource metadata, availability and endpoint URLs.' },
+      { method: 'PATCH', path: '/api/v1/resources/:id', scope: 'files:write', description: 'Admin metadata update without re-uploading bytes.' },
+      { method: 'DELETE', path: '/api/v1/resources/:id', scope: 'files:delete', description: 'Admin soft or permanent delete.' },
+      { method: 'GET', path: '/api/v1/resources/:id/access', scope: 'files:read', description: 'Mint short-lived preview and download URLs after Edvanta authenticates its own user.' },
+      { method: 'GET', path: '/api/v1/resources/:id/preview-url', scope: 'files:read', description: 'Short-lived preview capability URL; 415 plus a download URL for Office/unsupported types.' },
+      { method: 'GET', path: '/api/v1/resources/:id/download-url', scope: 'files:read', description: 'Short-lived attachment URL.' },
+      { method: 'GET', path: '/api/v1/resources/:id/content', scope: 'files:read', description: 'Authenticated byte stream with Range support for a server-side proxy.' },
+      { method: 'POST', path: '/api/v1/resources/bulk-download', scope: 'files:read', description: 'Streaming ZIP of selected resources with per-file errors and limits.' },
+      { method: 'POST', path: '/api/v1/resources/sync', scope: 'files:write', description: 'Admin on-demand reconciliation of registry availability against providers.' },
+      { method: 'GET', path: '/api/v1/resources/health', scope: 'files:read', description: 'Database, provider and resource availability health; no credentials.' },
     ],
   })
 })
@@ -111,10 +128,13 @@ publicApiRouter.get(['/v1', '/v1/'], (req, res) => {
 
 const storageRouter = Router()
 publicApiRouter.use('/v1/objects', objectsRouter)
+// Mounted before /v1's generic storage router so /v1/resources/... is owned by
+// the educational registry, not interpreted as a file id.
+publicApiRouter.use('/v1/resources', resourceRouter)
 publicApiRouter.use('/v1', storageRouter)
 
 /** Legacy path from the first API version; kept so existing scripts keep working. */
-publicApiRouter.post('/v1/uploads', requireApiKey('files:write'), withApiFileShape, handleUpload)
+publicApiRouter.post('/v1/uploads', requireApiKey('files:write'), requireRole('manage_resources'), withApiFileShape, handleUpload)
 
 storageRouter.get('/me', requireApiKey('files:read'), async (req: ApiKeyRequest, res, next) => {
   try {
@@ -247,7 +267,7 @@ storageRouter.get('/files', requireApiKey('files:read'), async (req: ApiKeyReque
 
 // Multipart upload: same parser the dashboard uses, so routing, quota selection
 // and provider handling cannot behave differently between the two.
-storageRouter.post('/files', requireApiKey('files:write'), withApiFileShape, handleUpload)
+storageRouter.post('/files', requireApiKey('files:write'), requireRole('manage_resources'), withApiFileShape, handleUpload)
 
 /**
  * Raw body upload: `curl --data-binary @photo.jpg`.
@@ -256,7 +276,7 @@ storageRouter.post('/files', requireApiKey('files:write'), withApiFileShape, han
  * the same as a small one. The size comes from Content-Length, because quota
  * routing has to pick an account *before* the bytes are read.
  */
-storageRouter.post('/files/raw', requireApiKey('files:write'), async (req: ApiKeyRequest, res, next) => {
+storageRouter.post('/files/raw', requireApiKey('files:write'), requireRole('manage_resources'), async (req: ApiKeyRequest, res, next) => {
   try {
     if (req.body !== undefined && !Buffer.isBuffer(req.body)) {
       return res.status(400).json({
@@ -417,7 +437,7 @@ storageRouter.get('/files/:id/download', requireApiKey('files:read'), async (req
   }
 })
 
-storageRouter.patch('/files/:id', requireApiKey('files:write'), async (req: ApiKeyRequest, res, next) => {
+storageRouter.patch('/files/:id', requireApiKey('files:write'), requireRole('manage_resources'), async (req: ApiKeyRequest, res, next) => {
   try {
     const body = z.object({ name: z.string().trim().min(1).max(255).optional(), folderId: z.string().nullable().optional() }).parse(req.body)
     const file = await findOwnedFile(req)
@@ -445,7 +465,7 @@ storageRouter.patch('/files/:id', requireApiKey('files:write'), async (req: ApiK
   }
 })
 
-storageRouter.delete('/files/:id', requireApiKey('files:delete'), async (req: ApiKeyRequest, res, next) => {
+storageRouter.delete('/files/:id', requireApiKey('files:delete'), requireRole('manage_resources'), async (req: ApiKeyRequest, res, next) => {
   try {
     const permanent = ['1', 'true'].includes(String(req.query.permanent ?? ''))
     const file = await findOwnedFile(req)
@@ -487,7 +507,7 @@ const shareSchema = z.object({ expiresInSeconds: z.coerce.number().int().min(60)
  * website: the site's HTML cannot carry an API key, but it can hold
  * `<img src="https://…/api/public/files/<token>/preview">`.
  */
-storageRouter.post('/files/:id/share', requireApiKey('files:write'), async (req: ApiKeyRequest, res, next) => {
+storageRouter.post('/files/:id/share', requireApiKey('files:write'), requireRole('manage_resources'), async (req: ApiKeyRequest, res, next) => {
   try {
     const body = shareSchema.parse(req.body ?? {})
     const file = await findOwnedFile(req)
@@ -521,7 +541,7 @@ storageRouter.post('/files/:id/share', requireApiKey('files:write'), async (req:
   }
 })
 
-storageRouter.delete('/files/:id/share', requireApiKey('files:write'), async (req: ApiKeyRequest, res, next) => {
+storageRouter.delete('/files/:id/share', requireApiKey('files:write'), requireRole('manage_resources'), async (req: ApiKeyRequest, res, next) => {
   try {
     await prisma.fileShare.updateMany({ where: { fileId: String(req.params.id), userId: req.user!.id, enabled: true }, data: { enabled: false } })
     return res.json({ status: 'ok' })
@@ -546,7 +566,7 @@ storageRouter.get('/folders', requireApiKey('files:read'), async (req: ApiKeyReq
   }
 })
 
-storageRouter.post('/folders', requireApiKey('files:write'), async (req: ApiKeyRequest, res, next) => {
+storageRouter.post('/folders', requireApiKey('files:write'), requireRole('manage_resources'), async (req: ApiKeyRequest, res, next) => {
   try {
     const body = folderCreateSchema.parse(req.body)
     const folder = await createFolder(req.user!.id, body)
