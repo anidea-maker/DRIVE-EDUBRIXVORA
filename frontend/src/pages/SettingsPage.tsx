@@ -33,7 +33,7 @@ type S3Preset = {
  * the environment is three fields instead of six. B2 and Wasabi derive their
  * endpoint from the region; R2 and MinIO need one typed.
  */
-type ManualTemplate = 'aws' | 'b2' | 'tigris' | 'r2' | 'wasabi' | 'custom'
+type ManualTemplate = 'aws' | 'b2' | 'hetzner' | 'tigris' | 'r2' | 'wasabi' | 'custom'
 
 const MANUAL_TEMPLATES: Array<{ id: ManualTemplate; label: string; pathStyle: boolean; region?: string; endpointFor?: (region: string) => string; hint?: string }> = [
   { id: 'aws', label: 'Amazon S3', pathStyle: false },
@@ -41,6 +41,8 @@ const MANUAL_TEMPLATES: Array<{ id: ManualTemplate; label: string; pathStyle: bo
   // Tigris has one global endpoint and the region is the literal string "auto", so
   // it needs no environment variables at all to be entered by hand.
   { id: 'tigris', label: 'Tigris', pathStyle: true, region: 'auto', endpointFor: () => 'https://t3.storage.dev', hint: 'Endpoint https://t3.storage.dev and region auto are filled in. Paste the access key ID / secret access key from the Tigris console. Buckets created inside Fly.io use https://fly.storage.tigris.dev instead.' },
+  // Hetzner derives the host from the location code: fsn1, nbg1 or hel1.
+  { id: 'hetzner', label: 'Hetzner Object Storage', pathStyle: true, region: 'fsn1', endpointFor: (region) => (region ? `https://${region}.your-objectstorage.com` : ''), hint: 'Region is the location code: fsn1 (Falkenstein), nbg1 (Nuremberg) or hel1 (Helsinki). The endpoint becomes https://<location>.your-objectstorage.com.' },
   { id: 'wasabi', label: 'Wasabi', pathStyle: false, endpointFor: (region) => (region ? `https://s3.${region}.wasabisys.com` : '') },
   { id: 'r2', label: 'Cloudflare R2', pathStyle: true, hint: 'Endpoint looks like https://<account-id>.r2.cloudflarestorage.com' },
   { id: 'custom', label: 'Other (Storj, Hetzner, MinIO, IDrive…)', pathStyle: true },

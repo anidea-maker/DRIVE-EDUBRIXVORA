@@ -89,6 +89,32 @@ function readAny(...names: string[]): string | null {
 }
 
 /**
+ * An endpoint, read without the *credential* placeholder rules.
+ *
+ * `/\byour[-_.]/` exists to catch documentation text in secrets, but Hetzner's real
+ * S3 host is `fsn1.your-objectstorage.com` - applying it to hosts rejected a
+ * perfectly good endpoint, and the connect attempt then failed with "endpoint is
+ * required" while the variable was visibly set. Angle brackets, `example.com` and
+ * the usual filler words are still refused, and the value is validated as a URL
+ * afterwards by `normalizeEndpoint`.
+ */
+const ENDPOINT_PLACEHOLDER = /<[^<>]*>|\bexample\.(com|org|net)\b|\bchangeme\b|\breplace[-_]?with\b|\bxxxxxxxx/i
+
+function readEndpointEnv(name: string): string | null {
+  const raw = process.env[name]?.trim()
+  if (!raw || ENDPOINT_PLACEHOLDER.test(raw)) return null
+  return raw
+}
+
+function readAnyEndpoint(...names: string[]): string | null {
+  for (const name of names) {
+    const value = readEndpointEnv(name)
+    if (value) return value
+  }
+  return null
+}
+
+/**
  * An S3 endpoint as the SDK needs it: absolute, https, no trailing slash.
  *
  * `B2_ENDPOINT_URL=s3.ca-east-006.backblazeb2.com` (no scheme) is what the live
@@ -160,7 +186,7 @@ function endpointNote(raw: string | null, normalized: string | null): string | n
 function resolveB2(): Resolved {
   const bucket = readEnv('B2_BUCKET')
   const region = readEnv('B2_REGION')
-  const explicitEndpoint = readEnv('B2_ENDPOINT_URL')
+  const explicitEndpoint = readEndpointEnv('B2_ENDPOINT_URL')
   const endpoint = normalizeEndpoint(explicitEndpoint) ?? (region ? normalizeEndpoint(`s3.${region}.backblazeb2.com`) : null)
   const quota = megabytesToBytes('B2_STORAGE_MAX_MB')
   const notes: string[] = ['Backblaze B2 needs path-style addressing; it is enabled for you.']
@@ -200,7 +226,7 @@ function resolveB2(): Resolved {
  * (`IDRIVE_E2_ENDPOINT_URL`, copied from the IDrive console).
  */
 function resolveIdriveE2(): Resolved {
-  const endpoint = normalizeEndpoint(readEnv('IDRIVE_E2_ENDPOINT_URL'))
+  const endpoint = normalizeEndpoint(readEndpointEnv('IDRIVE_E2_ENDPOINT_URL'))
   const notes: string[] = []
   if (!endpoint) {
     notes.push('Copy the endpoint from the IDrive E2 console into IDRIVE_E2_ENDPOINT_URL (it looks like https://abc12.va.idrivee2-18.com).')
@@ -236,7 +262,7 @@ function resolveIdriveE2(): Resolved {
  * and a preset that cannot connect is worse than no preset.
  */
 function resolveTigris(): Resolved {
-  const explicitEndpoint = readEnv('TIGRIS_ENDPOINT_URL')
+  const explicitEndpoint = readEndpointEnv('TIGRIS_ENDPOINT_URL')
   const endpoint = normalizeEndpoint(explicitEndpoint) ?? 'https://t3.storage.dev'
   const region = readEnv('TIGRIS_REGION') ?? 'auto'
   const quota = megabytesToBytes('TIGRIS_STORAGE_MAX_MB')
@@ -269,6 +295,67 @@ function resolveTigris(): Resolved {
   }
 }
 
+/**
+ * The provider a host belongs to, for naming a generic backend.
+ *
+ * Hosting panels hand out ready-to-paste blocks (`AWS_ENDPOINT_URL_S3=…`,
+ * `AWS_REGION=fsn1`) without naming the provider in prose; the host does name it.
+ * Turning it into a label means the chip reads "Hetzner" instead of "S3 compatible".
+ */
+const PROVIDER_HOSTS: Array<[RegExp, string]> = [
+  [/your-objectstorage\.com$/i, 'Hetzner Object Storage'],
+  [/(^|\.)t3\.storage\.dev$/i, 'Tigris'],
+  [/tigris/i, 'Tigris'],
+  [/storjshare\.io$/i, 'Storj'],
+  [/digitaloceanspaces\.com$/i, 'DigitalOcean Spaces'],
+  [/r2\.cloudflarestorage\.com$/i, 'Cloudflare R2'],
+  [/linodeobjects\.com$/i, 'Linode Object Storage'],
+  [/wasabisys\.com$/i, 'Wasabi'],
+  [/scw\.cloud$/i, 'Scaleway'],
+  [/io\.cloud\.ovh\.net$/i, 'OVHcloud'],
+  [/vultrobjects\.com$/i, 'Vultr Object Storage'],
+  [/backblazeb2\.com$/i, 'Backblaze B2'],
+  [/idrivee2(-[0-9]+)?\.com$/i, 'IDrive E2'],
+  [/filebase\.(io|com)$/i, 'Filebase'],
+  [/s3\.amazonaws\.com$/i, 'Amazon S3'],
+  [/storage\.googleapis\.com$/i, 'Google Cloud Storage'],
+]
+
+export function inferProviderLabel(endpoint: string | null): string | null {
+  if (!endpoint) return null
+  try {
+    const host = new URL(endpoint).host
+    for (const [pattern, label] of PROVIDER_HOSTS) {
+      if (pattern.test(host)) return label
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+/**
+ * Split a bucket name that was handed over as part of the URL.
+ *
+ * Providers that publish a single "storage URL" put the bucket in the path
+ * (`https://fsn1.your-objectstorage.com/my-bucket`). The SDK needs the host and the
+ * bucket separately, and a path left on the endpoint would be requested twice.
+ * Only a single non-empty segment is treated as a bucket - anything longer is a
+ * genuine path prefix and is kept.
+ */
+function splitEndpointAndBucket(raw: string | null): { endpoint: string | null; bucket: string | null } {
+  const endpoint = normalizeEndpoint(raw)
+  if (!endpoint) return { endpoint: null, bucket: null }
+  try {
+    const url = new URL(endpoint)
+    const segment = url.pathname.replace(/^\/+|\/+$/g, '')
+    if (!segment || segment.includes('/')) return { endpoint, bucket: null }
+    return { endpoint: `${url.protocol}//${url.host}`, bucket: decodeURIComponent(segment) }
+  } catch {
+    return { endpoint, bucket: null }
+  }
+}
+
 /** `"true"`/`"1"`/`"yes"` - anything else is a note, not a silent default. */
 function readBoolean(name: string, fallback: boolean): { value: boolean; note?: string } {
   const raw = readEnv(name)
@@ -279,32 +366,68 @@ function readBoolean(name: string, fallback: boolean): { value: boolean; note?: 
 }
 
 /**
- * Any other S3-compatible provider, described by `S3_*`.
+ * Any other S3-compatible provider.
  *
- * Storj, Hetzner, Tigris, DigitalOcean Spaces, Linode, Scaleway, MinIO, AWS, and
- * anything else: the endpoint, region and path-style behaviour are the only things
- * that differ, and all three are variables here.
+ * The canonical names are `S3_*`, but hosting panels and the AWS CLI/SDKs publish
+ * `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_ENDPOINT_URL_S3` / `AWS_REGION`,
+ * and some providers (Hetzner resellers, for instance) add their own
+ * `<PREFIX>_STORAGE_URL` / `_STORAGE_ACCESS_KEY` / `_STORAGE_SECRET_KEY`. All of them
+ * are read, in that order of preference, so credentials that already exist on the
+ * service do not have to be copied under new names. A block that is read from the
+ * AWS names says so in `notes`, so the source of the values is never a mystery.
+ *
+ * The provider is named from its host when no explicit label is set, and a bucket
+ * handed over as part of a "storage URL" is split out.
  */
 function resolveCustom(): Resolved {
-  const endpoint = normalizeEndpoint(readEnv('S3_ENDPOINT_URL'))
-  const bucket = readEnv('S3_BUCKET')
-  const region = readEnv('S3_REGION') ?? 'us-east-1'
+  // Which variable supplied the endpoint decides the wording of the note below.
+  const endpointSource = readEndpointEnv('S3_ENDPOINT_URL')
+    ? 'S3_ENDPOINT_URL'
+    : readEndpointEnv('AWS_ENDPOINT_URL_S3')
+      ? 'AWS_ENDPOINT_URL_S3'
+      : readEndpointEnv('AWS_ENDPOINT_URL')
+        ? 'AWS_ENDPOINT_URL'
+        : readEndpointEnv('DBRIJ_STORAGE_URL')
+          ? 'DBRIJ_STORAGE_URL'
+          : null
+  const rawEndpoint = readAnyEndpoint('S3_ENDPOINT_URL', 'AWS_ENDPOINT_URL_S3', 'AWS_ENDPOINT_URL', 'DBRIJ_STORAGE_URL')
+  const split = splitEndpointAndBucket(rawEndpoint)
+  const endpoint = split.endpoint
+  const region = readAny('S3_REGION', 'AWS_REGION', 'AWS_DEFAULT_REGION') ?? 'us-east-1'
+  const bucket = readAny('S3_BUCKET', 'AWS_S3_BUCKET', 'AWS_BUCKET_NAME', 'BUCKET_NAME', 'DBRIJ_STORAGE_BUCKET') ?? split.bucket
+  const accessKeyId = readAny('S3_ACCESS_KEY_ID', 'AWS_ACCESS_KEY_ID', 'DBRIJ_STORAGE_ACCESS_KEY', 'DBRIJ_STORAGE_ACCESS_KEY_ID')
+  const secretAccessKey = readAny('S3_SECRET_ACCESS_KEY', 'AWS_SECRET_ACCESS_KEY', 'DBRIJ_STORAGE_SECRET_KEY')
   const pathStyle = readBoolean('S3_FORCE_PATH_STYLE', Boolean(endpoint))
   const quota = megabytesToBytes('S3_STORAGE_MAX_MB')
-  const label = readEnv('S3_LABEL')
+  const label = readAny('S3_LABEL', 'STORAGE_LABEL') ?? inferProviderLabel(endpoint)
+  const usingAwsNames = !readEnv('S3_ACCESS_KEY_ID') && Boolean(readEnv('AWS_ACCESS_KEY_ID'))
+  const usingDbrijNames = !readEnv('S3_ACCESS_KEY_ID') && !readEnv('AWS_ACCESS_KEY_ID') && Boolean(readEnv('DBRIJ_STORAGE_ACCESS_KEY'))
 
   const notes: string[] = []
-  if (!endpoint) notes.push('S3_ENDPOINT_URL is required for a non-AWS provider (AWS itself needs no endpoint, but this preset expects one).')
+  if (usingAwsNames) {
+    notes.push('Credentials read from the standard AWS names (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINT_URL_S3, AWS_REGION) - the block the provider publishes for "S3 tools and SDKs".')
+  }
+  if (usingDbrijNames) {
+    notes.push('Credentials read from DBRIJ_STORAGE_ACCESS_KEY / DBRIJ_STORAGE_SECRET_KEY.')
+  }
+  if (endpointSource && endpointSource !== 'S3_ENDPOINT_URL') {
+    notes.push(`Endpoint read from ${endpointSource}.`)
+  }
+  if (split.bucket && !readAny('S3_BUCKET', 'AWS_S3_BUCKET', 'AWS_BUCKET_NAME', 'BUCKET_NAME', 'DBRIJ_STORAGE_BUCKET')) {
+    notes.push(`Bucket "${split.bucket}" was read from the storage URL path; the endpoint was reduced to ${endpoint}.`)
+  }
+  if (label) notes.push(`Provider recognised from the endpoint: ${label}.`)
+  if (!endpoint) notes.push('S3_ENDPOINT_URL (or AWS_ENDPOINT_URL_S3) is required: the SDK needs the S3 API host of the provider.')
   if (pathStyle.note) notes.push(pathStyle.note)
   if (quota.note) notes.push(quota.note)
-  if (!bucket) notes.push('Set S3_BUCKET to the bucket name exactly as the provider lists it.')
+  if (!bucket) notes.push('Set S3_BUCKET (or AWS_S3_BUCKET) to the bucket name exactly as the provider lists it.')
 
   return {
     bucket,
     region,
     endpoint,
-    accessKeyId: readEnv('S3_ACCESS_KEY_ID'),
-    secretAccessKey: readEnv('S3_SECRET_ACCESS_KEY'),
+    accessKeyId,
+    secretAccessKey,
     quotaBytes: quota.value,
     forcePathStyle: pathStyle.value,
     name: label ?? 'S3 compatible',
@@ -312,8 +435,8 @@ function resolveCustom(): Resolved {
     required: [
       ['S3_ENDPOINT_URL', endpoint],
       ['S3_BUCKET', bucket],
-      ['S3_ACCESS_KEY_ID', readEnv('S3_ACCESS_KEY_ID')],
-      ['S3_SECRET_ACCESS_KEY', readEnv('S3_SECRET_ACCESS_KEY')],
+      ['S3_ACCESS_KEY_ID', accessKeyId],
+      ['S3_SECRET_ACCESS_KEY', secretAccessKey],
     ],
   }
 }
@@ -373,7 +496,10 @@ const DEFINITIONS: Definition[] = [
     pathStyle: true,
     credentialsHint: 'Generic: S3_ENDPOINT_URL, S3_REGION, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY (+ S3_FORCE_PATH_STYLE, S3_LABEL, S3_STORAGE_MAX_MB). Use for Storj, Hetzner, Tigris, DigitalOcean, Linode, Scaleway, MinIO, AWS.',
     hideWhenUnconfigured: true,
-    presenceVars: ['S3_ENDPOINT_URL', 'S3_BUCKET', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_LABEL'],
+    presenceVars: [
+      'S3_ENDPOINT_URL', 'S3_BUCKET', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_LABEL',
+      'AWS_ENDPOINT_URL_S3', 'AWS_ENDPOINT_URL', 'AWS_S3_BUCKET', 'DBRIJ_STORAGE_URL', 'DBRIJ_STORAGE_BUCKET',
+    ],
     resolve: resolveCustom,
   },
 ]
@@ -389,7 +515,10 @@ export function listStoragePresets(): StoragePreset[] {
     const unsetVars = env.filter((entry) => entry.state === 'unset').map((entry) => entry.name)
     return {
       id: definition.id,
-      label: definition.label,
+      // A generic backend is named after its provider (`S3_LABEL`, or inferred from
+      // the endpoint host), so the chip reads "Hetzner Object Storage" rather than
+      // a second identical "S3 compatible".
+      label: resolved.name ?? definition.label,
       name: resolved.name ?? definition.name,
       bucket: resolved.bucket,
       region: resolved.region,
