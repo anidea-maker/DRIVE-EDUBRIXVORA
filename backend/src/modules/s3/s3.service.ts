@@ -64,6 +64,16 @@ export function describeS3Error(error: unknown, context: { bucket: string; endpo
       message: `The bucket "${context.bucket}" lives in a different region than "${context.region}". Copy the region from the provider's console and try again.`,
     }
   }
+  if (/Deserialization error|is not expected|UnexpectedEndOfRequestContent|InvalidXml|not valid XML/i.test(`${name} ${raw}`)) {
+    // The endpoint answered, but not with S3 XML: a REST/dashboard URL was used as
+    // the S3 host. The SDK's own message ("char '{' is not expected.:1:1") names the
+    // symptom and hides the cause.
+    const dbrij = /dbrij/i.test(context.endpoint ?? '')
+    return {
+      code: 'S3_ENDPOINT_NOT_S3',
+      message: `${context.endpoint ?? 'The endpoint'} answered with JSON or HTML instead of S3 XML, so it is the provider's API/dashboard URL rather than its S3 API host. ${dbrij ? 'For Dbrij use https://s3.dbrij.com.' : 'Copy the endpoint that starts with "s3." from the provider console.'}`,
+    }
+  }
   if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|TimeoutError|net::|socket|EPROTO|CERT/i.test(`${name} ${raw}`)) {
     return {
       code: 'S3_ENDPOINT_UNREACHABLE',

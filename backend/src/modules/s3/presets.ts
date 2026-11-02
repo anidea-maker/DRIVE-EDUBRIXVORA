@@ -261,9 +261,14 @@ function resolveIdriveE2(): Resolved {
  * route lists the account's buckets and uses the only one when it is unambiguous.
  */
 function resolveDbrij(): Resolved {
-  const explicitEndpoint = readAnyEndpoint('DBRIJ_STORAGE_URL', 'DBRIJ_ENDPOINT_URL')
-  const awsEndpoint = explicitEndpoint ? null : readEndpointEnv('AWS_ENDPOINT_URL_S3')
-  const split = splitEndpointAndBucket(explicitEndpoint ?? awsEndpoint)
+  const storageUrl = readAnyEndpoint('DBRIJ_STORAGE_URL', 'DBRIJ_ENDPOINT_URL')
+  const awsEndpoint = readEndpointEnv('AWS_ENDPOINT_URL_S3')
+  const ignoredRestUrl = storageUrl && looksLikePanelRestUrl(normalizeEndpoint(storageUrl)) ? storageUrl : null
+  // Prefer whichever value is actually an S3 host; the panel's REST base is skipped.
+  const usable = [storageUrl, awsEndpoint]
+    .filter((value): value is string => Boolean(value))
+    .find((value) => !looksLikePanelRestUrl(normalizeEndpoint(value)))
+  const split = splitEndpointAndBucket(usable ?? null)
   const endpoint = split.endpoint ?? 'https://s3.dbrij.com'
   const region = readAny('DBRIJ_REGION', 'DBRIJ_STORAGE_REGION', 'AWS_REGION', 'AWS_DEFAULT_REGION') ?? 'fsn1'
   const quota = megabytesToBytes('DBRIJ_STORAGE_MAX_MB')
@@ -271,8 +276,14 @@ function resolveDbrij(): Resolved {
   const secretAccessKey = readAny('DBRIJ_STORAGE_SECRET_KEY', 'DBRIJ_SECRET_KEY', 'DBRIJ_SECRET_ACCESS_KEY', 'AWS_SECRET_ACCESS_KEY')
   const bucket = readAny('DBRIJ_STORAGE_BUCKET', 'DBRIJ_BUCKET', 'AWS_S3_BUCKET') ?? split.bucket
 
-  const notes: string[] = ['Dbrij Storage: endpoint https://s3.dbrij.com, path-style. The panel publishes its own DBRIJ_STORAGE_* block and an AWS_* block for S3 tools - either is read.']
-  if (!explicitEndpoint && awsEndpoint) notes.push('Endpoint read from AWS_ENDPOINT_URL_S3.')
+  const notes: string[] = [`Dbrij Storage: S3 endpoint ${endpoint}, path-style addressing.`]
+  if (ignoredRestUrl) {
+    notes.push(`${ignoredRestUrl} is the panel's REST URL, not the S3 API host - it answers JSON, which the S3 client cannot read. Using ${endpoint} instead; set DBRIJ_STORAGE_URL to https://s3.dbrij.com (or remove it) to silence this.`)
+  } else if (!usable) {
+    notes.push('No S3 endpoint in the environment: defaulting to https://s3.dbrij.com.')
+  } else if (!readEndpointEnv('DBRIJ_STORAGE_URL') && !readEndpointEnv('DBRIJ_ENDPOINT_URL') && awsEndpoint) {
+    notes.push('Endpoint read from AWS_ENDPOINT_URL_S3.')
+  }
   if (!readEnv('DBRIJ_STORAGE_ACCESS_KEY') && readEnv('AWS_ACCESS_KEY_ID')) {
     notes.push('Credentials read from AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.')
   }
@@ -281,9 +292,6 @@ function resolveDbrij(): Resolved {
   }
   if (split.bucket) notes.push(`Bucket "${split.bucket}" was read from the storage URL path; the endpoint was reduced to ${endpoint}.`)
   if (quota.note) notes.push(quota.note)
-  // When the path was a bucket, the split note above already explains the change.
-  const normalised = split.bucket ? null : endpointNote(explicitEndpoint ?? awsEndpoint, endpoint)
-  if (normalised) notes.push(normalised)
   if (/filebase|tigris|backblazeb2|idrivee2/i.test(endpoint)) {
     notes.push('That endpoint belongs to a different provider - Dbrij Storage is https://s3.dbrij.com.')
   }
@@ -330,6 +338,41 @@ const PROVIDER_HOSTS: Array<[RegExp, string]> = [
   [/amazonaws\.com$/i, 'Amazon S3'],
   [/storage\.googleapis\.com$/i, 'Google Cloud Storage'],
 ]
+
+/**
+ * Does this look like a provider's *panel* URL rather than its S3 API host?
+ *
+ * `DBRIJ_STORAGE_URL=https://api.dbrij.com/api/storage` is the REST base of the
+ * control panel: the S3 SDK sent a signed request there and got JSON back, which
+ * surfaced as `char '{' is not expected.:1:1 Deserialization error`. The S3 API for
+ * the same account is `https://s3.dbrij.com`. Rather than trusting a variable whose
+ * meaning changes between panels, an endpoint is rejected when its host is `api.*`
+ * or its path is a REST route (`/api/storage`).
+ */
+export function looksLikePanelRestUrl(endpoint: string | null): boolean {
+  if (!endpoint) return false
+  let url: URL
+  try {
+    url = new URL(endpoint)
+  } catch {
+    return false
+  }
+  if (/^api\./i.test(url.host)) return true
+  const segments = url.pathname.split('/').filter(Boolean)
+  if (segments.length > 1) return true
+  // `/api`, `/v1`, `/storage` as the single segment: a management route, not a path
+  // prefix of an S3 gateway.
+  if (segments.length === 1 && /^(api|v\d+|storage|dashboard)$/i.test(segments[0]) && !/^s3\./i.test(url.host)) return true
+  return false
+}
+
+/** The registrable-ish site of a host (`api.dbrij.com` -> `dbrij.com`). */
+export function endpointSite(endpoint: string | null): string | null {
+  const host = endpointHost(endpoint)
+  if (!host) return null
+  const labels = host.split('.')
+  return labels.length <= 2 ? host : labels.slice(-2).join('.')
+}
 
 /** Just the host of an endpoint, for comparing two backends. */
 export function endpointHost(endpoint: string | null): string | null {
@@ -578,10 +621,12 @@ export function listStoragePresets(): StoragePreset[] {
    * the same variables and resolve the same host - showing both means two chips
    * with the same name, so the generic entry steps aside.
    */
-  const dedicatedHosts = new Set(
-    presets.filter((preset) => preset.id !== 'custom').map((preset) => endpointHost(preset.endpoint)).filter(Boolean),
+  // Compared by site, not by exact host: `api.dbrij.com` and `s3.dbrij.com` are the
+  // same provider, and showing two Dbrij chips is what this rule exists to prevent.
+  const dedicatedSites = new Set(
+    presets.filter((preset) => preset.id !== 'custom').map((preset) => endpointSite(preset.endpoint)).filter(Boolean),
   )
-  return presets.filter((preset) => preset.id !== 'custom' || !dedicatedHosts.has(endpointHost(preset.endpoint)))
+  return presets.filter((preset) => preset.id !== 'custom' || !dedicatedSites.has(endpointSite(preset.endpoint)))
 }
 
 export function getStoragePreset(id: string): StoragePreset | undefined {
