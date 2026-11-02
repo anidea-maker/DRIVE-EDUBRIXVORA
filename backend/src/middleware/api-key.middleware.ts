@@ -3,6 +3,7 @@ import { env } from '../config/env.js'
 import { prisma } from '../config/prisma.js'
 import { hashToken } from '../utils/crypto.js'
 import { grantsScope, normalizeScopes, type ApiScope } from '../modules/public-api/scopes.js'
+import { takeApiKeyToken } from '../modules/public-api/rate-limit.js'
 
 export type ApiKeyRequest = Request & {
   user?: { id: string; sessionId: string }
@@ -18,47 +19,47 @@ const SCOPE_FIXES: Partial<Record<ApiScope, string>> = {
   'files:delete': 'Create a key with the "Delete" scope in 9Drive -> API Management.',
 }
 
-/**
- * Per-key request budget, in memory.
- *
- * An external site in a retry loop can otherwise turn one bug into thousands of
- * database reads and provider calls per minute. Deliberately per-instance and
- * lossy: it protects the service, it is not a billing meter.
- */
-const WINDOW_MS = 60_000
-const buckets = new Map<string, { count: number; resetAt: number }>()
-
-function takeToken(keyId: string, limit: number) {
-  const now = Date.now()
-  const bucket = buckets.get(keyId)
-  if (!bucket || bucket.resetAt <= now) {
-    buckets.set(keyId, { count: 1, resetAt: now + WINDOW_MS })
-    return { allowed: true, remaining: limit - 1, resetAt: now + WINDOW_MS }
-  }
-  bucket.count += 1
-  return { allowed: bucket.count <= limit, remaining: Math.max(0, limit - bucket.count), resetAt: bucket.resetAt }
+export type ApiKeyReadResult = {
+  rawKey: string | null
+  problem: 'query' | 'missing' | null
 }
 
-// Keep the map from growing without bound on a long-lived process.
-setInterval(() => {
-  const now = Date.now()
-  for (const [key, bucket] of buckets) if (bucket.resetAt <= now) buckets.delete(key)
-}, WINDOW_MS).unref?.()
+/**
+ * Reads the key from the Authorization header only. Query-string keys are
+ * rejected explicitly: URLs are logged, shared and leaked through Referer.
+ * Pure and exported so the rule can be tested without a database.
+ */
+export function readBearerKey(req: Pick<Request, 'header'> & { query?: Record<string, unknown> }): ApiKeyReadResult {
+  const queryKey = typeof req.query?.api_key === 'string' ? req.query.api_key : null
+  if (queryKey) return { rawKey: null, problem: 'query' }
+  const header = req.header('Authorization')
+  if (!header?.startsWith('Bearer ')) return { rawKey: null, problem: 'missing' }
+  const rawKey = header.slice(7).trim()
+  return rawKey ? { rawKey, problem: null } : { rawKey: null, problem: 'missing' }
+}
 
 /**
  * Authenticates an external caller by API key.
  *
  * `scope` is the permission this route needs. When several are passed, any one
  * of them is enough (used by routes that serve both a read and a write use).
+ * The signed-URL flow performs its own live key-status/scope check because it
+ * carries no Authorization header.
  */
 export function requireApiKey(scope: ApiScope | ApiScope[]) {
   const needed = Array.isArray(scope) ? scope : [scope]
 
   return async (req: ApiKeyRequest, res: Response, next: NextFunction) => {
     try {
-      const header = req.header('Authorization')
-      const queryKey = typeof req.query.api_key === 'string' ? req.query.api_key : null
-      if (!header?.startsWith('Bearer ') && !queryKey) {
+      const read = readBearerKey(req)
+      if (read.problem === 'query') {
+        return res.status(401).json({
+          code: 'API_KEY_QUERY_NOT_ALLOWED',
+          message: 'API keys must be sent in the Authorization header; query-string keys are not accepted.',
+          hint: 'Use "Authorization: Bearer 9d_live_..." and rotate the key if it was ever placed in a URL.',
+        })
+      }
+      if (!read.rawKey) {
         return res.status(401).json({
           code: 'API_KEY_REQUIRED',
           message: 'Send your key as "Authorization: Bearer 9d_live_...".',
@@ -66,8 +67,7 @@ export function requireApiKey(scope: ApiScope | ApiScope[]) {
         })
       }
 
-      const rawKey = header?.startsWith('Bearer ') ? header.slice(7).trim() : queryKey!.trim()
-      const apiKey = await prisma.apiKey.findUnique({ where: { keyHash: hashToken(rawKey) } })
+      const apiKey = await prisma.apiKey.findUnique({ where: { keyHash: hashToken(read.rawKey) } })
 
       if (!apiKey) {
         return res.status(401).json({ code: 'API_KEY_INVALID', message: 'This API key does not exist. It may have been revoked, or the value was copied incompletely.' })
@@ -93,7 +93,7 @@ export function requireApiKey(scope: ApiScope | ApiScope[]) {
       }
 
       if (env.API_RATE_LIMIT_PER_MINUTE > 0) {
-        const budget = takeToken(apiKey.id, env.API_RATE_LIMIT_PER_MINUTE)
+        const budget = await takeApiKeyToken(apiKey.id, env.API_RATE_LIMIT_PER_MINUTE, { storage: env.API_RATE_LIMIT_STORAGE })
         res.setHeader('X-RateLimit-Limit', String(env.API_RATE_LIMIT_PER_MINUTE))
         res.setHeader('X-RateLimit-Remaining', String(budget.remaining))
         res.setHeader('X-RateLimit-Reset', String(Math.ceil(budget.resetAt / 1000)))

@@ -48,11 +48,15 @@ EduBrixVora → **API Management**. It is stored hashed. Scopes:
 | `files:write` | uploads, metadata updates, share links, reconciliation (`/sync`, `/verify`) |
 | `files:delete` | soft/permanent resource deletion |
 
-Every write route additionally calls `requireRole('manage_resources')`, which
-loads the **key owner's** role from MySQL. Roles are `super_admin`, `admin`,
-`student`, `visitor`; existing accounts migrate to `admin` so current behaviour
-is preserved. A role in a request body/header is never trusted; the Zod schemas
-are `.strict()` and reject a `role` field.
+Educational-resource writes and API-key management call
+`requireRole('manage_resources')`, which loads the **key owner's** role from
+MySQL. The website/object API instead relies on the bearer key's scopes and
+per-user ownership, so a valid website key is not blocked by a later role
+demotion. Roles are `super_admin`, `admin`, `student`, `visitor`; **new**
+accounts default to `visitor` and must be promoted explicitly. Existing rows
+keep their stored role, so current administrators are preserved. A role in a
+request body/header is never trusted; the Zod schemas are `.strict()` and reject
+a `role` field.
 
 Bootstrap a super administrator without editing the database:
 
@@ -484,7 +488,7 @@ root `Dockerfile` (`API + SPA on one origin`, `SERVE_FRONTEND` set by the image)
 | Start | root `Dockerfile` CMD runs `npm run db:migrate:deploy`, an optional Google config seed, then `node dist/server.js` (equivalently `npm run start:deploy`) |
 | Port | Render injects `PORT`; the app prefers it over `APP_PORT` |
 | Health | `/health`; readiness `/ready`; diagnostics `/api/diagnostics` |
-| Database | hosted MySQL 8 via `DATABASE_URL`; apply `20261102130000_education_resources` with `npm run db:migrate:deploy` |
+| Database | hosted MySQL 8 via `DATABASE_URL`; apply `20261102130000_education_resources` and `20261102140000_website_api_hardening` with `npm run db:migrate:deploy` |
 
 Required / relevant environment variables (set in Render → Environment, never in
 the frontend build):
@@ -497,7 +501,10 @@ TOKEN_ENCRYPTION_KEY=…                 # generated once, KEEP STABLE
 FRONTEND_URL=https://drive-edubrixvora-1.onrender.com
 PUBLIC_BASE_URL=                       # optional; only when a proxy rewrites Host
 MAX_UPLOAD_BYTES=5368709120
+REQUEST_TIMEOUT_MS=1800000             # 30 min; must suit MAX_UPLOAD_BYTES
 API_RATE_LIMIT_PER_MINUTE=600
+API_RATE_LIMIT_STORAGE=memory          # use database for multi-instance deployments
+API_CORS_ORIGINS=                      # optional exact browser origins, comma-separated
 SUPER_ADMIN_EMAILS=owner@example.com   # optional bootstrap for role management
 RESOURCE_URL_TTL_SECONDS=600
 RESOURCE_BULK_MAX_FILES=25
@@ -607,11 +614,13 @@ URL and account details; admin routes must stay behind Edvanta's real admin
 session middleware.
 
 CORS: `/api/v1/*`, the bare `/api/resources/*`, `/api/upload` and
-`/api/storage-status` aliases, and `/api/public/*` accept any origin because
-they require a bearer key or a signed URL (credentials are off). Dashboard
-routes remain restricted to `FRONTEND_URL`. Both services must use HTTPS. Set
-reasonable timeouts on Edvanta's proxy (`STORAGE_TIMEOUT_MS`) for large
-uploads/ZIPs.
+`/api/storage-status` aliases, and `/api/public/*` accept any origin by default
+because they require a bearer key or a signed URL (credentials are off). Set
+`API_CORS_ORIGINS` to exact origins when browser JavaScript calls them directly;
+CORS is not authentication. Dashboard routes remain restricted to
+`FRONTEND_URL`. Both services must use HTTPS. Set reasonable timeouts on
+Edvanta's proxy (`STORAGE_TIMEOUT_MS`) and on 9Drive
+(`REQUEST_TIMEOUT_MS`) for large uploads/ZIPs.
 
 ### Rectifying “9drive file storage is unavailable right now” during a batch
 
@@ -649,17 +658,19 @@ that an authenticated live upload succeeded. See the manual checklist below.
 Mocked/automated (no cloud credentials, no MySQL):
 
 ```bash
-cd backend && npm test                                 # 21/21 pass (includes 4 storage-status tests)
+cd backend && npm test                                 # 29/29 pass (includes 8 website/object-API tests)
 cd frontend && npm run build                            # typecheck + Vite + nginx template pass
 node --test examples/edvanta/*.test.mjs                 # 22/22 pass
 python3 -m unittest discover -s examples/edvanta -p 'test_*.py'  # 5/5 pass (FastAPI helper)
-node --test examples/other-website/drive-storage.test.mjs  # 13/13 pass (existing kit)
+node --test examples/other-website/drive-storage.test.mjs  # 15/15 pass (website kit)
+npx prisma validate                                    # schema + additive migration valid
 ```
 
 The backend test also runs `tsc`; `dist/` is generated locally. Prisma client
 generation in this sandbox used `--no-engine` because `binaries.prisma.sh` is not
 reachable here; on Render `npm ci` / `npm run prisma:generate` have normal
-network access and produce the full engine.
+network access and produce the full engine. The requirement-by-requirement
+website-API audit is in [`docs/WEBSITE-API-AUDIT.md`](WEBSITE-API-AUDIT.md).
 
 ### NOT verified here (requires real credentials / Edvanta write access)
 

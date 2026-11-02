@@ -20,20 +20,20 @@ export const API_SCOPES: readonly ApiScopeInfo[] = [
   {
     id: 'files:read',
     label: 'Read',
-    description: 'List folders and files, read metadata, download bytes.',
-    grants: ['GET /v1/files', 'GET /v1/files/:id/content'],
+    description: 'List objects/files, inspect metadata, download bytes.',
+    grants: ['GET /v1/files', 'GET /v1/files/:id/content', 'GET /v1/objects', 'GET /v1/objects/:key', 'HEAD /v1/objects/:key'],
   },
   {
     id: 'files:write',
     label: 'Write',
-    description: 'Upload files, create folders, rename or move, mint share links.',
-    grants: ['POST /v1/files', 'POST /v1/folders', 'POST /v1/files/:id/share'],
+    description: 'Upload/replace objects and files, create folders, mint share/signed links.',
+    grants: ['POST /v1/files', 'PUT /v1/objects/:key', 'POST /v1/objects/sign', 'POST /v1/folders', 'POST /v1/files/:id/share'],
   },
   {
     id: 'files:delete',
     label: 'Delete',
-    description: 'Move files and folders to the trash.',
-    grants: ['DELETE /v1/files/:id'],
+    description: 'Delete objects, move files and folders to the trash.',
+    grants: ['DELETE /v1/files/:id', 'DELETE /v1/objects/:key'],
   },
 ]
 

@@ -72,6 +72,29 @@ const envSchema = z.object({
   /** Request budget per API key, per minute. 0 disables the limit. */
   API_RATE_LIMIT_PER_MINUTE: z.coerce.number().default(600),
   /**
+   * `memory` protects one instance without a DB write per request. `database`
+   * uses the shared `api_key_rate_limit_windows` table, so every instance sees
+   * the same budget; set it when the API runs on more than one instance.
+   */
+  API_RATE_LIMIT_STORAGE: z.enum(['memory', 'database']).default('memory'),
+  /**
+   * Optional exact browser origins allowed to call the external API. Empty
+   * means any origin, which is safe for server-to-server bearer-key requests.
+   * Set this when browser JavaScript calls the API directly; CORS is not auth.
+   */
+  API_CORS_ORIGINS: z
+    .string()
+    .optional()
+    .transform((value) =>
+      (value ?? '')
+        .replace(CONTROL_CHARS, '')
+        .split(',')
+        .map((origin) => normalizeOrigin(origin.trim()))
+        .filter((origin) => /^https?:\/\//i.test(origin)),
+    ),
+  /** Maximum time to receive one request, including large streaming uploads. */
+  REQUEST_TIMEOUT_MS: z.coerce.number().int().min(60_000).max(3_600_000).default(1_800_000),
+  /**
    * Bootstrap for the super-admin role. Comma-separated, lower-cased email
    * addresses. This is server-side configuration, never a value a browser can
    * supply; it exists so a fresh deployment does not need a manual DB edit.

@@ -128,12 +128,21 @@ async function main() {
     console.log('object overwrite  ok')
 
     /* --------------------------------------------------------- object listing */
-    const listing = await json<{ objects: Array<{ key: string }>; isTruncated: boolean }>(
+    const listing = await json<{ objects: Array<{ key: string; checksum: string | null }>; isTruncated: boolean }>(
       await fetch(`${apiUrl}/api/v1/objects?prefix=api-smoke/`, { headers: auth }),
       'object list',
     )
     assert(listing.objects.some((object) => object.key === objectKey), 'the object is missing from the listing')
     console.log('object list       ok', listing.objects.length, 'objects')
+
+    const checksum = listing.objects.find((object) => object.key === objectKey)?.checksum
+    assert(checksum, 'object listing did not return a checksum')
+    const duplicates = await json<{ objects: Array<{ key: string }> }>(
+      await fetch(`${apiUrl}/api/v1/objects?checksum=${encodeURIComponent(checksum)}`, { headers: auth }),
+      'checksum duplicate lookup',
+    )
+    assert(duplicates.objects.some((object) => object.key === objectKey), 'checksum lookup missed the uploaded object')
+    console.log('checksum lookup   ok', checksum)
 
     /* ---------------------------------------------------------- signed links */
     const signed = await json<{ url: string }>(
@@ -147,12 +156,20 @@ async function main() {
     const unsigned = await fetch(signed.url)
     assert(unsigned.ok, `signed GET failed without a key: ${unsigned.status}`)
     assert((await unsigned.text()) === 'replaced!', 'signed GET returned different bytes')
-    console.log('object sign       ok')
+    const signedIdentity = new URL(signed.url).searchParams.get('k')
+    assert(signedIdentity?.startsWith('api-key:'), `signed URL is missing its live key identity, got ${signedIdentity}`)
+    console.log('object sign       ok', signedIdentity)
 
     const tampered = await fetch(signed.url.replace(/sig=[^&]+/, 'sig=deadbeef'))
     assert(tampered.status === 403, `a bad signature should be 403, got ${tampered.status}`)
     const unsignedNoQuery = await fetch(signed.url.split('?')[0]!)
     assert(unsignedNoQuery.status === 401, `an unsigned request should be 401, got ${unsignedNoQuery.status}`)
+
+    // Revoking the key that minted the link must invalidate it immediately.
+    await prisma.apiKey.update({ where: { id: apiKey.id }, data: { status: 'revoked', revokedAt: new Date() } })
+    const revokedLink = await fetch(signed.url)
+    assert(revokedLink.status === 403, `a link from a revoked key should be 403, got ${revokedLink.status}`)
+    await prisma.apiKey.update({ where: { id: apiKey.id }, data: { status: 'active', revokedAt: null } })
     console.log('signature refusal ok')
 
     /* --------------------------------------------------------- object delete */
@@ -167,6 +184,10 @@ async function main() {
     /* -------------------------------------------------------------- scopes */
     const forbidden = await fetch(`${apiUrl}/api/v1/files`, { headers: { Authorization: 'Bearer 9d_live_not_a_key' } })
     assert(forbidden.status === 401, `a bogus key should be 401, got ${forbidden.status}`)
+    const queryKey = await fetch(`${apiUrl}/api/v1/files?api_key=ignored`, { headers: auth })
+    assert(queryKey.status === 401, `a query-string key should be rejected, got ${queryKey.status}`)
+    const queryKeyBody = await queryKey.json() as { code?: string }
+    assert(queryKeyBody.code === 'API_KEY_QUERY_NOT_ALLOWED', `expected API_KEY_QUERY_NOT_ALLOWED, got ${queryKeyBody.code}`)
     console.log('auth rejection    ok')
   } finally {
     for (const id of created) {

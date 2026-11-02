@@ -81,10 +81,13 @@ export async function selectAccount(
         await syncGoogleQuota(account.id)
       }
     } catch (err: any) {
-      console.error(`[upload] failed to sync quota for account ${account.email} (${account.id}):`, err.message || err)
+      // Log only the account id and a stable code. Provider messages can contain
+      // bucket names, endpoints and account emails, none of which the external
+      // website (or a shared log) should see.
+      console.error(`[upload] quota sync failed for account ${account.id}: QUOTA_SYNC_FAILED`)
       await prisma.connectedAccount.update({
         where: { id: account.id },
-        data: { lastError: err.message || 'Quota sync failed' }
+        data: { lastError: 'Quota sync failed' }
       }).catch(() => undefined)
     }
   }))

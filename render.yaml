@@ -112,6 +112,16 @@ services:
         sync: false
       - key: API_RATE_LIMIT_PER_MINUTE
         value: "600"
+      # Use database only for multi-instance deployments; requires migration
+      # 20261102140000_website_api_hardening.
+      - key: API_RATE_LIMIT_STORAGE
+        value: "memory"
+      # Comma-separated exact browser origins when a site calls the API from JS.
+      # Leave empty for server-to-server bearer-key calls.
+      - key: API_CORS_ORIGINS
+        sync: false
+      - key: REQUEST_TIMEOUT_MS
+        value: "1800000"
       # Edvanta resource API + server-verified administrator roles.
       # Comma-separated emails; leave empty when roles are assigned in the DB.
       - key: SUPER_ADMIN_EMAILS

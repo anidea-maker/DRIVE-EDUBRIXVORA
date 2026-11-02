@@ -279,6 +279,9 @@ Either way, the credentials are encrypted and stored in MySQL as one global conf
 | `ACCESS_TOKEN_TTL_SECONDS` | Access token lifetime (default `900`). |
 | `REFRESH_TOKEN_TTL_DAYS` | Refresh token lifetime (default `30`). |
 | `MAX_UPLOAD_BYTES` | Largest allowed upload (default 5 GB). |
+| `REQUEST_TIMEOUT_MS` | Maximum time to receive one request, including streaming uploads (default 30 min). |
+| `API_RATE_LIMIT_PER_MINUTE` / `API_RATE_LIMIT_STORAGE` | Per-key request budget. `memory` (default) for one instance; `database` for shared multi-instance limits (requires the additive hardening migration). |
+| `API_CORS_ORIGINS` | Optional comma-separated exact origins for browser calls to the external API. Empty means any origin; CORS is not authentication. |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` | Only read by the seed command. The app reads the encrypted copy from the database. |
 | `STORAGE_BACKEND` | Optional. Preselects the storage backend below (`b2`, `idrive_e2`, `dbrij`, `custom`) or a comma-separated preference list (`b2,dbrij`). `s3` means "the first complete backend". Defaults to the first complete backend. |
 | `B2_KEY_ID` / `B2_APPLICATION_KEY` / `B2_BUCKET` / `B2_REGION` | Optional. Backblaze B2 credentials. The S3 endpoint is derived (`https://s3.<region>.backblazeb2.com`); `B2_ENDPOINT_URL` overrides it, `B2_DISPLAY_NAME` names the account in the app, and `B2_STORAGE_MAX_GB` (or `B2_STORAGE_MAX_MB`) sets the account's total quota. |
@@ -683,9 +686,10 @@ Vite bakes `VITE_API_URL` into the build. Rebuild the frontend, or with Docker r
 
 - Uploads stream through the backend straight to Google Drive or S3. **Nothing is stored on the server's disk.**
 - Google tokens and S3 credentials are encrypted in MySQL. App refresh tokens, API keys, preview tokens, and auth-handoff tokens are stored only as hashes.
-- Dashboard/session routes allow only `FRONTEND_URL`. `/api/v1/*` and `/api/public/*` accept any origin because they require a bearer API key or an expiring signed URL; credentials are off.
-- Google Drive files are **not** made public: preview/download use authenticated streams or short-lived capability URLs. S3 buckets stay private.
-- Protected writes verify the key owner's role in the database; a frontend-supplied role is never trusted. `SUPER_ADMIN_EMAILS` bootstraps role management.
+- Dashboard/session routes allow only `FRONTEND_URL`. `/api/v1/*` and `/api/public/*` accept any origin by default because they require a bearer API key or an expiring signed URL; `API_CORS_ORIGINS` can restrict them to exact browser origins. Credentials are off.
+- API keys are header-only (`Authorization: Bearer …`), stored hashed, shown once, revocable and rotatable. `?api_key=…` is rejected. Signed URLs are bound to a live key/resource identity, so revocation or scope removal invalidates them.
+- Google Drive files are **not** made public: preview/download use authenticated streams or short-lived capability URLs. S3 buckets stay private. Provider errors are returned as safe codes, never raw bucket names, endpoints, emails or tokens.
+- Educational-resource writes and API-key management verify the key owner's role in the database; the website/object API enforces bearer scopes and per-user ownership. A frontend-supplied role is never trusted. New accounts default to `visitor`; `SUPER_ADMIN_EMAILS` bootstraps explicit role management.
 - Never commit `.env` files or share `TOKEN_ENCRYPTION_KEY`, `JWT_ACCESS_SECRET`, `OBJECT_URL_SIGNING_SECRET`, OAuth client secrets, or raw share links you want to keep private.
 
 ## Project structure

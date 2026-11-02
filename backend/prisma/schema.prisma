@@ -14,12 +14,12 @@ model User {
   passwordHash   String             @map("password_hash") @db.VarChar(255)
   status         String             @default("active") @db.VarChar(32)
   /**
-   * Server-verified role. Every existing account keeps `admin`, so registration
-   * and uploads continue to work after the migration. `SUPER_ADMIN_EMAILS` can
-   * grant `super_admin` without a database edit; a super admin can then assign
-   * roles through the admin API. Never read a role from a request body.
+   * Server-verified role. New accounts are least-privileged `visitor`; existing
+   * rows keep whatever role they already have. `SUPER_ADMIN_EMAILS` can grant
+   * `super_admin` without a database edit, and a super admin can explicitly
+   * promote accounts through the admin API. Never read a role from a request body.
    */
-  role           String             @default("admin") @db.VarChar(32)
+  role           String             @default("visitor") @db.VarChar(32)
   createdAt      DateTime           @default(now()) @map("created_at")
   updatedAt      DateTime           @updatedAt @map("updated_at")
   sessions       UserSession[]
@@ -55,10 +55,30 @@ model ApiKey {
   createdAt  DateTime  @default(now()) @map("created_at")
   updatedAt  DateTime  @updatedAt @map("updated_at")
   user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rateLimitWindows ApiKeyRateLimitWindow[]
 
   @@index([userId])
   @@index([userId, status, createdAt])
   @@map("api_keys")
+}
+
+/**
+ * Shared, persistent one-minute API-key request budget. Only used when
+ * API_RATE_LIMIT_STORAGE=database (multi-instance deployments); the default
+ * single-instance limiter stays in memory and writes no rows.
+ */
+model ApiKeyRateLimitWindow {
+  id          String   @id @default(uuid()) @db.Char(36)
+  apiKeyId    String   @map("api_key_id") @db.Char(36)
+  windowStart DateTime @map("window_start") @db.DateTime(3)
+  count       Int      @default(0)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  apiKey      ApiKey   @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+
+  @@unique([apiKeyId, windowStart])
+  @@index([windowStart])
+  @@map("api_key_rate_limit_windows")
 }
 
 model UploadRoutingPolicy {

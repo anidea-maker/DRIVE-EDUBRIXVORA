@@ -164,8 +164,8 @@ function availabilityProblem(row: PrismaFile) {
 function uploadStatus(code: string) {
   if (code === 'NO_ACCOUNT_WITH_ENOUGH_SPACE') return 507
   if (code === 'UPLOAD_TOO_LARGE') return 413
-  if (code === 'RESOURCE_KEY_INVALID' || code === 'RESOURCE_META_INVALID') return 400
-  if (code === 'RESOURCE_IDEMPOTENCY_CONFLICT' || code === 'RESOURCE_IN_PROGRESS') return 409
+  if (code === 'RESOURCE_KEY_INVALID' || code === 'RESOURCE_META_INVALID' || code === 'UPLOAD_SIZE_MISMATCH') return 400
+  if (code === 'RESOURCE_IDEMPOTENCY_CONFLICT' || code === 'RESOURCE_IN_PROGRESS' || code === 'STORAGE_ACCOUNT_UNAVAILABLE' || code === 'OBJECT_PROVIDER_MIGRATION_UNSUPPORTED') return 409
   return 502
 }
 

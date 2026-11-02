@@ -74,7 +74,13 @@ function isExternalApiPath(path: string) {
 }
 
 const externalApiCors = {
-  origin: true,
+  origin(origin: string | undefined, callback: (error: null, allow: boolean) => void) {
+    // No Origin header (curl, server-to-server) is always fine. When exact
+    // origins are configured, browser JavaScript is limited to those origins;
+    // CORS remains defence in depth, never a replacement for the bearer key.
+    if (!origin || env.API_CORS_ORIGINS.length === 0) return callback(null, true)
+    return callback(null, env.API_CORS_ORIGINS.includes(origin))
+  },
   credentials: false,
   methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   // Range/If-Range are sent by <video>/<audio> when they stream a share link.

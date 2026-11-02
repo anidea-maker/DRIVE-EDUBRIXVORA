@@ -28,9 +28,12 @@ stored only as a SHA-256 hash.
 Authorization: Bearer 9d_live_…
 ```
 
-A query parameter (`?api_key=9d_live_…`) is accepted for clients that cannot set
-headers. Do not use it for anything a browser loads: the key would travel in the
-URL, into logs and `Referer` headers. Use a share link instead.
+The key is **header-only**. `?api_key=…` is rejected with
+`API_KEY_QUERY_NOT_ALLOWED`: URLs are logged, shared and leaked through
+`Referer`. Use a signed URL (below) for anything a browser loads directly.
+Create one key for the website. Rotate it with
+`POST /api/api-keys/:id/regenerate` (dashboard session + admin role), which
+revokes the old row and returns a new secret once.
 
 Keys carry scopes:
 
@@ -46,9 +49,12 @@ new key.
 
 ## CORS
 
-Any origin may call these routes with a key. That is safe: the key is a bearer
-token, so a browser never attaches one by itself, and `credentials` is off.
-Dashboard routes (cookies) remain restricted to `FRONTEND_URL`.
+By default any origin may call these routes with a key. That is safe for
+server-to-server use: the key is a bearer token, so a browser never attaches one
+by itself, and `credentials` is off. Set `API_CORS_ORIGINS` to a comma-separated
+list of exact origins when browser JavaScript calls this API directly; CORS is
+not authentication. Dashboard routes (cookies) remain restricted to
+`FRONTEND_URL`.
 
 ## Files
 
@@ -195,7 +201,7 @@ client, SigV4, or XML.
 | `GET` | `/api/v1/objects/:key` | Bytes, `Range`, `If-None-Match` → `304` |
 | `HEAD` | `/api/v1/objects/:key` | `Content-Type`, `Content-Length`, `ETag`, `Last-Modified`, no body |
 | `DELETE` | `/api/v1/objects/:key` | Deletes for good. Always `204` |
-| `GET` | `/api/v1/objects` | List: `prefix`, `delimiter`, `max-keys`, `continuation-token` |
+| `GET` | `/api/v1/objects` | List/search: `prefix`, `delimiter`, `q`, `checksum`, `mimeType`, `max-keys`, `continuation-token` |
 | `POST` | `/api/v1/objects/sign` | Expiring URL for `GET`/`HEAD`/`PUT` |
 
 ```bash
@@ -209,14 +215,28 @@ curl -X PUT "$BASE/objects/branding/logo.png" \
 `..`, at most 700 characters. They are opaque - no case folding, no
 normalisation - so two callers that agree on a string land on the same object.
 
-**Overwrites** are in place: `PUT` to an existing key replaces the bytes and the
-metadata, and there is never a second row. On an S3-backed account this is a
-single provider `PutObject`; on Google Drive the new file is written first and
-the old one is removed after, so a failed overwrite leaves the previous version
-readable.
+**Unique keys** are app-level paths, not filenames. Use a generated id segment
+(`uploads/<uuid>/report.pdf`) so two files with the same display name coexist.
+The kit exports `uniqueKey(prefix, fileName)` for this.
 
-**`ETag`** is the MD5 of the body, computed while streaming, so revalidation and
-`If-None-Match` cost nothing extra. Every write returns it.
+**Overwrites** stay on the connected account already recorded for that key.
+There is no silent provider migration: a disconnected, full or deleted account
+returns `409 STORAGE_ACCOUNT_UNAVAILABLE`, and an explicit request to change
+provider returns `409 OBJECT_PROVIDER_MIGRATION_UNSUPPORTED`. `PUT` to an
+existing key replaces the bytes/metadata, and there is never a second row. On an
+S3-backed account this is a single provider `PutObject`; on Google Drive the new
+file is written first and the old one removed after, so a failed overwrite leaves
+the previous version readable.
+
+**`checksum` / `ETag`** are the MD5 of the body, computed while streaming. List
+with `?checksum=<md5>` for content-based duplicate detection rather than
+matching filenames. Every write returns the checksum and a quoted ETag;
+revalidation and `If-None-Match` cost nothing extra.
+
+**Preview** is allowlisted. PDF, common images, plain text, CSV and common
+audio/video may render inline with `X-Content-Type-Options: nosniff` and a
+sandbox CSP. SVG, HTML, JavaScript, Office, archives and unknown types are
+forced to `Content-Disposition: attachment`; `?download=1` always does the same.
 
 **`DELETE`** is idempotent, like S3: deleting a key that does not exist answers
 `204`. A `GET` or `HEAD` for a missing key answers `404` with `NO_SUCH_KEY`
@@ -228,7 +248,17 @@ readable.
 {
   "prefix": "branding/",
   "delimiter": "/",
-  "objects": [{ "key": "branding/logo.png", "sizeBytes": "4829", "lastModified": "…", "etag": "\"9b2c…\"", "mimeType": "image/png" }],
+  "objects": [{
+    "key": "branding/logo.png",
+    "name": "logo.png",
+    "sizeBytes": "4829",
+    "mimeType": "image/png",
+    "checksum": "9b2c…",
+    "createdAt": "…",
+    "lastModified": "…",
+    "etag": "\"9b2c…\"",
+    "metadata": null
+  }],
   "prefixes": ["branding/icons/"],
   "isTruncated": false,
   "nextContinuationToken": null
@@ -237,7 +267,8 @@ readable.
 
 `delimiter=/` collapses everything below the prefix into `prefixes`, which is how
 a console renders folders. Paginate with `max-keys` (default 1000) and
-`continuation-token` from the previous page.
+`continuation-token` from the previous page. `q` searches name, key and indexed
+metadata; `checksum` is an exact content hash; `mimeType` is an exact filter.
 
 ### Signed URLs
 
@@ -254,18 +285,19 @@ POST /api/v1/objects/sign
 {
   "key": "branding/logo.png",
   "method": "GET",
-  "url": "https://host/api/public/objects/branding/logo.png?u=…&m=GET&exp=…&sig=…",
+  "url": "https://host/api/public/objects/branding/logo.png?u=…&k=api-key%3A…&m=GET&exp=…&sig=…",
   "expiresAt": "2026-05-01T10:12:00.000Z"
 }
 ```
 
 - `GET`/`HEAD` links read; `PUT` links write. A `GET` link cannot be replayed as a `PUT`, and a link for one key cannot be pointed at another.
-- The signature covers user, key, method and expiry, and is verified with a constant-time comparison.
+- The signature covers user, signing identity (`k`), object key, method and expiry, and is verified with a constant-time comparison.
+- `k` is checked against the live API-key row on every use. Revoking/expiring the key, removing its scope, or changing the owner invalidates outstanding links; resource capability URLs use a `resource:<id>` identity and are checked against that row instead.
 - Signing requires the scope the method needs (`files:read` for `GET`, `files:write` for `PUT`), so it can never widen a key's access.
 - Links are signed with `OBJECT_URL_SIGNING_SECRET` when set, otherwise a key derived from `TOKEN_ENCRYPTION_KEY` - no configuration needed, and rotating that secret invalidates every outstanding link.
 
 ```html
-<img src="https://host/api/public/objects/branding/logo.png?u=…&m=GET&exp=…&sig=…" />
+<img src="https://host/api/public/objects/branding/logo.png?u=…&k=api-key%3A…&m=GET&exp=…&sig=…" />
 ```
 
 ### Errors specific to objects
@@ -273,10 +305,13 @@ POST /api/v1/objects/sign
 | Status | Code | Meaning |
 | --- | --- | --- |
 | 400 | `OBJECT_KEY_INVALID` | The key has a leading/trailing slash, `//`, `.`, `..`, control characters, or is over 700 characters |
+| 400 | `UPLOAD_SIZE_MISMATCH` | Received bytes did not match the declared `Content-Length` |
 | 404 | `NO_SUCH_KEY` | No object at that key |
+| 409 | `STORAGE_ACCOUNT_UNAVAILABLE` / `OBJECT_PROVIDER_MIGRATION_UNSUPPORTED` | The recorded account is unavailable/full, or an overwrite tried to move providers |
 | 411 | `OBJECT_SIZE_REQUIRED` | `PUT` without `Content-Length` |
 | 413 | `OBJECT_TOO_LARGE` | Over `MAX_UPLOAD_BYTES` |
-| 401/403 | `SIGNED_URL_REQUIRED` / `SIGNED_URL_EXPIRED` / `SIGNED_URL_INVALID` | Signed link missing, expired, or tampered with |
+| 401/403 | `SIGNED_URL_REQUIRED` / `SIGNED_URL_IDENTITY_REQUIRED` / `SIGNED_URL_PERMISSION_REVOKED` / `SIGNED_URL_EXPIRED` / `SIGNED_URL_INVALID` | Signed link missing, missing identity, no longer authorized, expired, or tampered with |
+| 502 | `UPLOAD_VERIFICATION_FAILED` / `S3_*` / `GOOGLE_DRIVE_OPERATION_FAILED` | Provider refused; safe code and operator guidance, never raw credentials or internal paths |
 
 ## Folders
 
@@ -303,11 +338,14 @@ never invent a number there, and never read `null` as "unlimited".
 | Limit | Value |
 | --- | --- |
 | Max upload | `MAX_UPLOAD_BYTES` (5 GiB by default) |
+| Request timeout | `REQUEST_TIMEOUT_MS` (30 min by default) |
 | Requests | `API_RATE_LIMIT_PER_MINUTE` per key (600 by default) |
 | Files per multipart request | 25 |
 
 Rate-limit responses are `429` with `Retry-After`, and every response carries
-`X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset`.
+`X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset`. The default
+`API_RATE_LIMIT_STORAGE=memory` protects one instance; set `database` on
+multi-instance deployments so all instances share one counter.
 
 ## Errors
 
@@ -316,6 +354,7 @@ Errors are JSON with a stable `code` and a message that names the cause.
 | Status | Code | Meaning |
 | --- | --- | --- |
 | 401 | `API_KEY_REQUIRED` | No `Authorization` header |
+| 401 | `API_KEY_QUERY_NOT_ALLOWED` | Key was sent in `?api_key=`; use the header and rotate it |
 | 401 | `API_KEY_INVALID` | Key does not exist (revoked, or copied incompletely) |
 | 401 | `API_KEY_REVOKED` / `API_KEY_EXPIRED` | Key is no longer usable |
 | 403 | `API_KEY_SCOPE_MISSING` | Key lacks the scope; `requiredScope` and `keyScopes` are in the body |
@@ -526,6 +565,16 @@ copy-paste server client in [`examples/edvanta/`](../examples/edvanta/).
   ZIPs. `OBJECT_URL_SIGNING_SECRET` is optional (derived from
   `TOKEN_ENCRYPTION_KEY` when unset). See
   [`docs/EDVANTA-INTEGRATION.md`](EDVANTA-INTEGRATION.md).
-- `API_RATE_LIMIT_PER_MINUTE=0` disables the limiter.
+- `API_RATE_LIMIT_PER_MINUTE=0` disables the limiter. `API_RATE_LIMIT_STORAGE=database`
+  requires the additive `20261102140000_website_api_hardening` migration.
+- `API_CORS_ORIGINS` optionally restricts browser origins; `REQUEST_TIMEOUT_MS`
+  bounds long streaming uploads. New users default to `visitor`; promote the
+  account that owns connected storage before creating the website key.
 - Uploads are routed by the dashboard's routing policy (most available space,
-  round-robin, or priority) unless the folder is pinned to an account.
+  round-robin, or priority) on new keys. Overwrites stay on the recorded account.
+- Object routes enforce API-key scopes and per-user ownership. They no longer
+  require a dashboard admin role, so a valid website key keeps working if its
+  owner is later demoted; API-key creation/rotation still requires an admin
+  dashboard session. Provider failures return safe codes, never raw details.
+- Requirement-by-requirement audit and manual acceptance checklist:
+  [`docs/WEBSITE-API-AUDIT.md`](WEBSITE-API-AUDIT.md).

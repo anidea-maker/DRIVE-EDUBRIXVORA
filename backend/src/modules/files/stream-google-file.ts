@@ -49,8 +49,11 @@ export async function streamGoogleFile(file: FileWithAccount, range: string | un
   })
 
   if (!response.ok) {
-    const message = await response.text().catch(() => response.statusText)
-    return res.status(response.status).json({ code: 'GOOGLE_FILE_STREAM_FAILED', message: message || response.statusText })
+    // Do not echo the provider's body: it can contain internal paths or ids.
+    return res.status(response.status).json({
+      code: 'GOOGLE_FILE_STREAM_FAILED',
+      message: 'The connected Google Drive account could not stream this file. Reconnect the account in Settings and retry.',
+    })
   }
 
   res.status(response.status)
