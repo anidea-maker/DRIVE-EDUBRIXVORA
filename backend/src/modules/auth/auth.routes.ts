@@ -9,6 +9,8 @@ import { encryptText, hashToken, randomToken } from '../../utils/crypto.js'
 import { signAccessToken } from '../../utils/jwt.js'
 import { createOAuthClient, syncGoogleQuota } from '../google/google.service.js'
 import { classifyGoogleError, describeGoogleError, type ConnectFailure } from '../google/google-error.js'
+import { repairStoredRedirectUri, requestOrigin, resolveGoogleRedirectUri } from '../google/redirect-uri.js'
+import { GOOGLE_CALLBACK_PATH, describeConfigProblem } from '../google/config-health.js'
 import { redirectToFrontend } from '../../utils/redirect.js'
 
 export const authRouter = Router()
@@ -68,30 +70,46 @@ authRouter.get('/google/status', async (req, res, next) => {
     const config = await prisma.providerConfig.findFirst({
       where: { userId: null, provider: 'google_drive', status: 'active' },
       orderBy: { createdAt: 'desc' },
-      select: { redirectUri: true },
     })
 
-    // The redirect URI is stored in the database and handed to Google verbatim,
-    // so one saved while running locally (or on an old host) breaks sign-in with
-    // redirect_uri_mismatch on the deployed site. Report it instead of guessing.
-    const origin = `${req.protocol}://${req.get('host')}`
-    const expected = `${origin}/connected-accounts/google/callback`
-    const redirectUri = config?.redirectUri ?? null
-    const matchesOrigin = redirectUri ? redirectUri === expected : false
+    // What the next authorization request will actually send to Google. The stored
+    // value is only a fallback - a placeholder saved from the docs (`https://<new-service>.onrender.com`)
+    // used to be sent verbatim, so Google rejected every attempt before consent.
+    const origin = requestOrigin(req)
+    const expected = origin ? `${origin}${GOOGLE_CALLBACK_PATH}` : null
+    const redirectUri = config ? resolveGoogleRedirectUri(req, config.redirectUri) : null
+    if (config) void repairStoredRedirectUri(config.id, config.redirectUri, redirectUri ?? '')
+    const matchesOrigin = Boolean(redirectUri && expected && redirectUri === expected)
+
+    // Judge the client against the URI that will actually be sent: a stale stored
+    // redirect is ignored (and repaired) rather than reported as a broken client.
+    const configProblem = config
+      ? describeConfigProblem({ ...config, redirectUri: redirectUri ?? config.redirectUri })
+      : 'No Google OAuth client is saved.'
 
     const hint = !config
       ? 'Add your Google OAuth client ID and secret in Settings -> Google Credentials, or set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET and redeploy.'
-      : matchesOrigin
-        ? null
-        : `The saved redirect URI (${redirectUri}) does not match this site (${expected}). Open Settings -> Google OAuth Credentials, leave the Redirect URI field empty and save again to use the current origin.`
+      : configProblem
+        ? `${configProblem} Open Settings -> Google OAuth Credentials and save the Client ID and Secret again (leave the Redirect URI empty to use this site automatically).`
+        : matchesOrigin
+          ? null
+          : `Google will be asked to return to ${redirectUri}, but this page is on ${expected}. Add ${expected} to Google Cloud -> Credentials -> Authorized redirect URIs.`
 
-    return res.json({ configured: Boolean(config), redirectUri, expectedRedirectUri: expected, redirectUriMatchesOrigin: matchesOrigin, hint })
+    return res.json({
+      configured: Boolean(config) && !configProblem,
+      redirectUri,
+      storedRedirectUri: config?.redirectUri ?? null,
+      expectedRedirectUri: expected,
+      redirectUriMatchesOrigin: matchesOrigin,
+      configProblem,
+      hint,
+    })
   } catch (error) {
     return next(error)
   }
 })
 
-authRouter.get('/google/url', async (_req, res, next) => {
+authRouter.get('/google/url', async (req, res, next) => {
   try {
     // findFirst (not findFirstOrThrow): a missing config is a setup problem, and it
     // must not reach the browser as a Prisma stack trace.
@@ -104,13 +122,17 @@ authRouter.get('/google/url', async (_req, res, next) => {
     }
     const state = randomToken()
     await prisma.oauthState.create({ data: { providerConfigId: config.id, flow: 'login', stateHash: hashToken(state), expiresAt: new Date(Date.now() + 10 * 60_000) } })
-    const client = createOAuthClient(config)
+    const redirectUri = resolveGoogleRedirectUri(req, config.redirectUri)
+    void repairStoredRedirectUri(config.id, config.redirectUri, redirectUri)
+
+    const client = createOAuthClient(config, redirectUri)
     const url = client.generateAuthUrl({
       access_type: 'offline',
       prompt: 'consent',
       include_granted_scopes: true,
       scope: config.scopes as string[],
       state,
+      redirect_uri: redirectUri,
     })
     return res.json({ url })
   } catch (error) {
@@ -135,6 +157,7 @@ authRouter.get('/google/callback', async (req, res) => {
         title: 'Google sign-in failed',
         detail: 'Close this tab and try signing in again.',
       },
+      requestOrigin(req),
     )
   }
 
@@ -165,7 +188,9 @@ authRouter.get('/google/callback', async (req, res) => {
       return fail('STATE_EXPIRED')
     }
 
-    const client = createOAuthClient(oauthState.providerConfig)
+    const redirectUri = resolveGoogleRedirectUri(req, oauthState.providerConfig.redirectUri)
+    void repairStoredRedirectUri(oauthState.providerConfig.id, oauthState.providerConfig.redirectUri, redirectUri)
+    const client = createOAuthClient(oauthState.providerConfig, redirectUri)
 
     let tokens: { access_token?: string | null; refresh_token?: string | null; expiry_date?: number | null }
     try {
@@ -242,7 +267,7 @@ authRouter.get('/google/callback', async (req, res) => {
 
     const handoffToken = randomToken()
     await prisma.authHandoff.create({ data: { userId: user.id, tokenHash: hashToken(handoffToken), expiresAt: new Date(Date.now() + 5 * 60_000) } })
-    return redirectToFrontend(res, '/google-auth', { token: handoffToken })
+    return redirectToFrontend(res, '/google-auth', { token: handoffToken }, undefined, requestOrigin(req))
   } catch (error) {
     console.error('[google-auth-callback] unexpected failure:', describeGoogleError(error), error)
     return fail(classifyGoogleError(error))

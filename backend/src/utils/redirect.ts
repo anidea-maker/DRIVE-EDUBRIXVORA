@@ -49,11 +49,26 @@ export function frontendPath(pathname: string, params?: RedirectParams | URLSear
  * on the API host. Falls back to the relative path (or to a bare path) if
  * `FRONTEND_URL` is unusable, instead of throwing.
  */
-export function frontendUrl(pathname: string, params?: RedirectParams | URLSearchParams): string {
+export function frontendUrl(
+  pathname: string,
+  params?: RedirectParams | URLSearchParams,
+  /** Origin the request arrived on, used when FRONTEND_URL is unusable. */
+  requestOrigin?: string | null,
+): string {
   const relative = frontendPath(pathname, params)
   // The SPA is served by this process: the browser resolves the path against the
   // host it is already on, so FRONTEND_URL is not involved at all.
   if (spaEnabled) return relative
+
+  // A production deployment with FRONTEND_URL=http://localhost:5173 would send the
+  // browser to a host it cannot reach. Stay on the origin that served the request.
+  if (!env.FRONTEND_URL_USABLE && requestOrigin && !INVALID_HEADER_CHARS.test(requestOrigin)) {
+    try {
+      return new URL(relative, requestOrigin).toString()
+    } catch {
+      return relative
+    }
+  }
 
   try {
     const absolute = new URL(relative, env.FRONTEND_URL).toString()
@@ -104,8 +119,9 @@ export function redirectToFrontend(
   pathname: string,
   params?: RedirectParams | URLSearchParams,
   fallback?: { title: string; detail: string },
+  requestOrigin?: string | null,
 ): void {
-  const target = frontendUrl(pathname, params)
+  const target = frontendUrl(pathname, params, requestOrigin)
 
   if (res.headersSent) return
 

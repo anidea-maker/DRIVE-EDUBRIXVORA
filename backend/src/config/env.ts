@@ -142,8 +142,23 @@ const FRONTEND_URL_SOURCE: 'configured' | 'platform' | 'default' = process.env.F
     ? 'default'
     : 'platform'
 
+/** A localhost/private origin cannot be reached by a browser on the public site. */
+const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(:\d+)?$/i
+
+const FRONTEND_URL_USABLE =
+  FRONTEND_URL_SOURCE !== 'default' && !(process.env.NODE_ENV === 'production' && LOCAL_ORIGIN.test(parsed.data.FRONTEND_URL))
+
+if (process.env.NODE_ENV === 'production' && LOCAL_ORIGIN.test(parsed.data.FRONTEND_URL)) {
+  console.warn(
+    `[env] FRONTEND_URL is ${parsed.data.FRONTEND_URL} while NODE_ENV=production. A browser on the live site cannot ` +
+      'reach that origin, so it is ignored: redirects stay on the host that served the request. Set FRONTEND_URL to ' +
+      "this service's own URL (or remove it) to silence this warning.",
+  )
+}
+
 export const env = {
   ...parsed.data,
   APP_PORT: parsed.data.PORT ?? parsed.data.APP_PORT,
   FRONTEND_URL_SOURCE,
+  FRONTEND_URL_USABLE,
 }
