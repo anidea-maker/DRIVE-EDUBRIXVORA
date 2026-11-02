@@ -1,5 +1,9 @@
 import type { ProviderConfig } from '@prisma/client'
 import { decryptText } from '../../utils/crypto.js'
+import { looksLikePlaceholder } from '../../utils/placeholder.js'
+
+// Re-exported so existing imports keep working after the check moved to utils.
+export { looksLikePlaceholder }
 
 /**
  * Is a saved Google OAuth client actually usable?
@@ -14,25 +18,6 @@ import { decryptText } from '../../utils/crypto.js'
  * Validation therefore has to be shared: the Settings form, the boot seed and the
  * diagnostics endpoint must all agree on what "configured" means.
  */
-
-/** Values that are documentation text rather than credentials. */
-const PLACEHOLDER_TOKENS = [
-  /<[^<>]*>/, // <client id>, <new-service>
-  /\bclient[ _-]?id\b/i,
-  /\bclient[ _-]?secret\b/i,
-  /\byour[-_.]/i,
-  /\bnew-service\b/i,
-  /\bexample\.(com|org|net)\b/i,
-  /\bchangeme\b/i,
-  /\breplace[-_]?with\b/i,
-  /\bxxxxxxxx/i,
-  /^\s*$/,
-]
-
-export function looksLikePlaceholder(value: string | null | undefined): boolean {
-  if (value === null || value === undefined) return true
-  return PLACEHOLDER_TOKENS.some((pattern) => pattern.test(value))
-}
 
 /** Any OAuth *web* client ID ends in this suffix (Google documents the shape). */
 export const GOOGLE_CLIENT_ID_PATTERN = /^[^\s<>]+\.apps\.googleusercontent\.com$/i

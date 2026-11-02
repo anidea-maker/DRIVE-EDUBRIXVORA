@@ -278,6 +278,23 @@ Either way, the credentials are encrypted and stored in MySQL as one global conf
 | `REFRESH_TOKEN_TTL_DAYS` | Refresh token lifetime (default `30`). |
 | `MAX_UPLOAD_BYTES` | Largest allowed upload (default 5 GB). |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` | Only read by the seed command. The app reads the encrypted copy from the database. |
+| `STORAGE_BACKEND` | Optional. Preselects the storage backend below (`b2`, `idrive_e2`, `dbyte`). Defaults to the only one that is complete. |
+| `B2_KEY_ID` / `B2_APPLICATION_KEY` / `B2_BUCKET` / `B2_REGION` | Optional. Backblaze B2 credentials. The S3 endpoint is derived (`https://s3.<region>.backblazeb2.com`); `B2_ENDPOINT_URL` overrides it and `B2_STORAGE_MAX_MB` sets the account's total quota. |
+| `IDRIVE_E2_KEY_ID` / `IDRIVE_E2_SECRET_KEY` / `IDRIVE_E2_BUCKET` / `IDRIVE_E2_ENDPOINT_URL` | Optional. IDrive E2 credentials. The endpoint is per account, so it is required. |
+| `DBBYTE_API_KEY` / `DBBYTE_BUCKET` / `DBBYTE_ENDPOINT_URL` | Optional. DBBYTE credentials. The endpoint is required; the API key is used as the credential unless `DBBYTE_KEY_ID` / `DBBYTE_SECRET_KEY` are set. |
+
+</details>
+
+<details>
+<summary><b>Connecting a bucket without typing credentials</b></summary>
+
+Set the variables for one or more backends above, redeploy, then open **Settings → S3 Compatible**. The modal lists every backend the deployment can see:
+
+- **Ready** backends are one click: bucket, region, endpoint, path-style and the quota cap are filled in, and the key/secret are read server-side, so the browser never receives them.
+- **Partly configured** backends say exactly which variable is missing (`B2_REGION`, `DBBYTE_ENDPOINT_URL`, …) instead of failing at connect time.
+- **Enter manually** is unchanged: any S3-compatible provider, with your own fields.
+
+`GET /api/connected-accounts/s3/presets` returns the same list (secrets redacted), and `GET /api/diagnostics` reports `storage.presets` with what is missing. A connection failure is described, not dumped: `S3_AUTH_FAILED`, `S3_BUCKET_NOT_FOUND`, `S3_ACCESS_DENIED`, `S3_WRONG_REGION`, `S3_ENDPOINT_UNREACHABLE`.
 
 </details>
 
@@ -392,6 +409,8 @@ Notes:
 | "Continue with Google" fails with `Unexpected token '<'` or `GOOGLE_NOT_CONFIGURED` | Two separate things: (1) a stale frontend build sends the request to the SPA — deploy the single-service image (or delete `VITE_API_URL`); (2) the database has no Google OAuth client yet — add it in **Settings → Google Credentials**, or set `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`GOOGLE_REDIRECT_URI` and run `npm run seed:google-config`. `GET /auth/google/status` reports which it is. |
 | "Connection Failed / Close this window and try again" after **Connect Drive** | The popup now names the cause instead of hiding it, and a failed *quota* read no longer counts as a failed connection. `reason=DRIVE_API_DISABLED` is the common one: enable **Google Drive API** in Google Cloud → APIs & Services → Library. Other codes: `PERMISSION_DENIED`, `INVALID_GRANT` (no refresh token — re-approve), `TOKEN_EXCHANGE_FAILED` (redirect URI mismatch), `STATE_EXPIRED` (retry). Check `GET /api/auth/google/status` and the backend log line `[google-callback] …`. |
 | Connect Drive leaves a **blank page**, or the callback returns HTTP 500 | Both OAuth callbacks now always end on the SPA with a `reason=`, and a redirect that cannot be built falls back to a readable page instead of a 500. Run **`GET /api/diagnostics`** (build, `FRONTEND_URL` + where it came from, redirect mode, database, Google redirect URI, hints) and **`GET /api/diagnostics/oauth`** (calls both callbacks inside the deployed process and prints their status and `Location`). That pair identifies the cause without the Render log. |
+| **Connect S3** fails with an endpoint, key or bucket error | The message names the cause: `S3_ENDPOINT_UNREACHABLE` (endpoint URL wrong, or no outbound internet), `S3_AUTH_FAILED` (key ID/secret mismatch), `S3_BUCKET_NOT_FOUND`, `S3_ACCESS_DENIED` (key lacks permission on that bucket), `S3_WRONG_REGION` (copy the region from the console). Endpoints must be the S3 **API** URL with no bucket name in it - Backblaze B2 is `https://s3.<region>.backblazeb2.com`, and path-style addressing is enabled for you. |
+| S3 variables are set on Render but the form is still empty | Only the backends listed by `GET /api/connected-accounts/s3/presets` are read from the environment. A missing variable is reported as `missing` there; placeholders (`<...>`, `your-...`) are ignored, exactly like the Google credentials. Nothing is read until the service is redeployed with those variables. |
 | **Connect Drive** does nothing, or Google shows `invalid_client` / `Error 401` | Check `GET /api/auth/google/status` → `configProblem`, or open **Settings → Google OAuth Credentials** (an amber banner appears when the saved client is unusable). The usual cause is a *placeholder* saved as a credential: `GOOGLE_CLIENT_ID=<client id>`, `GOOGLE_CLIENT_SECRET=<client secret>` or `GOOGLE_REDIRECT_URI=https://<new-service>.onrender.com/...`. Placeholders are now ignored everywhere - at boot, on save, and in the redirect - so the client saved through Settings stays in charge. Save the real values (or delete the placeholder env vars) and redeploy. |
 | A saved redirect URI like `https://.onrender.com/...` or `https://<new-service>.onrender.com/...` | Those are documentation placeholders, not URLs. The app no longer sends them: every OAuth request derives `redirect_uri` from the host the browser is on and repairs the stored value. Nothing to fix by hand - `GET /api/auth/google/status` shows the URI in use, and the Google Cloud *Authorized redirect URIs* must contain that exact URL. |
 | `/health`, `/api/diagnostics` or `/api/diagnostics/oauth` show the app (login page) instead of JSON | An installed service worker was answering navigation requests with the cached app shell. Fixed by adding `/api/*`, `/health`, `/ready` and `/diagnostics` to `navigateFallbackDenylist`. If a browser still does it, close the tab and reload once (the new worker takes over on the next visit). |

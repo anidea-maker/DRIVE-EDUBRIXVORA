@@ -9,7 +9,42 @@ import { getGravatarUrl } from '@/lib/gravatar'
 import { getStoredUser, getAccessToken, clearAuthSession } from '@/lib/auth'
 import { useNavigate } from 'react-router-dom'
 
+type S3Preset = {
+  id: 'b2' | 'idrive_e2' | 'dbyte'
+  label: string
+  name: string
+  bucket: string | null
+  region: string | null
+  endpoint: string | null
+  forcePathStyle: boolean
+  hasAccessKey: boolean
+  hasSecretKey: boolean
+  quotaBytes: string | null
+  missing: string[]
+  ready: boolean
+  notes: string[]
+}
+
 type ConnectedAccount = { id: string; provider: string; email: string; displayName?: string | null; status: string; storageAccount?: { totalBytes: string | null; usedBytes: string; availableBytes: string | null; lastSyncedAt: string | null } | null }
+
+/**
+ * Fill the S3 form from a backend described by the environment. Bucket/region are
+ * editable, the key fields stay empty and are resolved server-side.
+ */
+function presetForm(preset: S3Preset, form: { name: string; bucket: string; region: string; endpoint: string; accessKeyId: string; secretAccessKey: string; forcePathStyle: boolean; quotaBytes: string; provider: string }) {
+  return {
+    ...form,
+    provider: preset.id,
+    name: preset.name,
+    bucket: preset.bucket ?? '',
+    region: preset.region ?? form.region,
+    endpoint: preset.endpoint ?? '',
+    accessKeyId: '',
+    secretAccessKey: '',
+    forcePathStyle: preset.forcePathStyle,
+    quotaBytes: preset.quotaBytes ?? '',
+  }
+}
 
 function providerLabel(provider: string) {
   if (provider === 's3') return 'S3 Storage'
@@ -34,7 +69,10 @@ export function SettingsPage() {
   const [connecting, setConnecting] = useState(false)
   const [s3Open, setS3Open] = useState(false)
   const [connectingS3, setConnectingS3] = useState(false)
-  const [s3Form, setS3Form] = useState({ name: '', bucket: '', region: 'us-east-1', endpoint: '', accessKeyId: '', secretAccessKey: '', forcePathStyle: false, quotaBytes: '' })
+  const [s3Form, setS3Form] = useState({ provider: '', name: '', bucket: '', region: 'us-east-1', endpoint: '', accessKeyId: '', secretAccessKey: '', forcePathStyle: false, quotaBytes: '' })
+  // Backends this deployment already holds credentials for (`B2_*`, `IDRIVE_E2_*`,
+  // `DBBYTE_*`). Connecting one is a single click: the secrets never reach the browser.
+  const [s3Presets, setS3Presets] = useState<S3Preset[]>([])
   const [syncingAccountId, setSyncingAccountId] = useState<string | null>(null)
   const [disconnectingAccountId, setDisconnectingAccountId] = useState<string | null>(null)
   const [accountToDisconnect, setAccountToDisconnect] = useState<ConnectedAccount | null>(null)
@@ -299,6 +337,18 @@ export function SettingsPage() {
     }
 
     try {
+      const presetData = await apiFetch<{ presets: S3Preset[]; active: string | null }>('/connected-accounts/s3/presets')
+      setS3Presets(presetData.presets ?? [])
+      // Pre-select the deployment's backend so the form is filled in before the
+      // user opens the modal.
+      const ready = (presetData.presets ?? []).filter((preset) => preset.ready)
+      const chosen = ready.find((preset) => preset.id === presetData.active) ?? (ready.length === 1 ? ready[0] : null)
+      if (chosen) setS3Form((form) => (form.bucket || form.provider ? form : presetForm(chosen, form)))
+    } catch (e) {
+      console.error('Failed to load storage backends', e)
+    }
+
+    try {
       const status = await apiFetch<{ configured: boolean; redirectUri: string | null; configProblem: string | null; hint: string | null }>('/auth/google/status', { skipAuth: true })
       setGoogleStatus({ configured: status.configured, redirectUri: status.redirectUri, problem: status.configProblem, hint: status.hint })
     } catch (e) {
@@ -397,9 +447,20 @@ export function SettingsPage() {
     setConnectingS3(true)
     setMessage('')
     try {
-      await apiFetch('/connected-accounts/s3', { method: 'POST', body: JSON.stringify({ ...s3Form, endpoint: s3Form.endpoint || undefined, quotaBytes: s3Form.quotaBytes || null }) })
+      await apiFetch('/connected-accounts/s3', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...s3Form,
+          provider: s3Form.provider || undefined,
+          // Blank means "use the environment" when a preset is selected.
+          accessKeyId: s3Form.accessKeyId || undefined,
+          secretAccessKey: s3Form.secretAccessKey || undefined,
+          endpoint: s3Form.endpoint || undefined,
+          quotaBytes: s3Form.quotaBytes || null,
+        }),
+      })
       setS3Open(false)
-      setS3Form({ name: '', bucket: '', region: 'us-east-1', endpoint: '', accessKeyId: '', secretAccessKey: '', forcePathStyle: false, quotaBytes: '' })
+      setS3Form({ provider: '', name: '', bucket: '', region: 'us-east-1', endpoint: '', accessKeyId: '', secretAccessKey: '', forcePathStyle: false, quotaBytes: '' })
       setMessage('S3 storage connected.')
       await load()
       window.dispatchEvent(new Event('9drive:storage-changed'))
@@ -449,6 +510,11 @@ export function SettingsPage() {
               <div>
                 <div className="flex items-center gap-2.5"><Database className="h-5 w-5 text-blue-600" /><h2 className="text-[16px] font-bold">S3 Compatible</h2></div>
                 <p className="mt-1 text-[13px] text-slate-500">Connect AWS S3, Cloudflare R2, MinIO, Wasabi, Backblaze B2, or custom endpoint storage.</p>
+                {s3Presets.filter((preset) => preset.ready).length > 0 ? (
+                  <p className="mt-1 text-[12px] font-semibold text-emerald-600">
+                    Ready from this deployment's environment: {s3Presets.filter((preset) => preset.ready).map((preset) => preset.label).join(', ')}
+                  </p>
+                ) : null}
               </div>
               <Button className="w-full sm:w-32" size="sm" variant="outline" onClick={() => setS3Open(true)}><Database className="h-4 w-4" />Connect S3</Button>
             </div>
@@ -698,13 +764,57 @@ export function SettingsPage() {
         </div>
       </div>
       <DummyModal open={s3Open} title="Connect S3 Storage" description="Use any S3-compatible provider with custom endpoint support." onClose={() => setS3Open(false)}>
+        {s3Presets.length > 0 ? (
+          <div className="mb-4 grid gap-2 rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900/60">
+            <p className="text-[12px] font-bold text-slate-500">Configured on this deployment</p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setS3Form({ provider: '', name: '', bucket: '', region: 'us-east-1', endpoint: '', accessKeyId: '', secretAccessKey: '', forcePathStyle: false, quotaBytes: '' })}
+                className={!s3Form.provider ? 'rounded-lg border border-blue-600 bg-blue-50 px-2.5 py-1.5 text-[12px] font-bold text-blue-700' : 'rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-slate-600'}
+              >
+                Enter manually
+              </button>
+              {s3Presets.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  disabled={!preset.ready}
+                  onClick={() => setS3Form((form) => presetForm(preset, form))}
+                  title={preset.ready ? `Use ${preset.label} credentials from the environment` : `Missing: ${preset.missing.join(', ')}`}
+                  className={
+                    s3Form.provider === preset.id
+                      ? 'rounded-lg border border-blue-600 bg-blue-50 px-2.5 py-1.5 text-[12px] font-bold text-blue-700'
+                      : preset.ready
+                        ? 'rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-slate-600'
+                        : 'rounded-lg border border-dashed border-slate-300 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-slate-400'
+                  }
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+            {s3Form.provider ? (
+              <p className="text-[11px] leading-relaxed text-slate-500">
+                {s3Presets.find((preset) => preset.id === s3Form.provider)?.notes.join(' ') || null}
+              </p>
+            ) : null}
+            {s3Presets
+              .filter((preset) => !preset.ready && preset.missing.length < 6)
+              .map((preset) => (
+                <p key={preset.id} className="text-[11px] leading-relaxed text-amber-700">
+                  {preset.label} is partly configured - add {preset.missing.join(', ')} on the service, then redeploy.
+                </p>
+              ))}
+          </div>
+        ) : null}
         <form className="grid gap-4" onSubmit={connectS3}>
           <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder="Display name" value={s3Form.name} onChange={(event) => setS3Form({ ...s3Form, name: event.target.value })} required />
           <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder="Bucket" value={s3Form.bucket} onChange={(event) => setS3Form({ ...s3Form, bucket: event.target.value })} required />
           <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder="Region" value={s3Form.region} onChange={(event) => setS3Form({ ...s3Form, region: event.target.value })} required />
           <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder="Endpoint URL (optional)" value={s3Form.endpoint} onChange={(event) => setS3Form({ ...s3Form, endpoint: event.target.value })} />
-          <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder="Access key ID" value={s3Form.accessKeyId} onChange={(event) => setS3Form({ ...s3Form, accessKeyId: event.target.value })} required />
-          <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder="Secret access key" type="password" value={s3Form.secretAccessKey} onChange={(event) => setS3Form({ ...s3Form, secretAccessKey: event.target.value })} required />
+          <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder={s3Form.provider ? 'Access key ID (from environment - leave empty)' : 'Access key ID'} value={s3Form.accessKeyId} onChange={(event) => setS3Form({ ...s3Form, accessKeyId: event.target.value })} required={!s3Form.provider} />
+          <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder={s3Form.provider ? 'Secret access key (from environment - leave empty)' : 'Secret access key'} type="password" value={s3Form.secretAccessKey} onChange={(event) => setS3Form({ ...s3Form, secretAccessKey: event.target.value })} required={!s3Form.provider} />
           <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder="Quota bytes (optional)" inputMode="numeric" value={s3Form.quotaBytes} onChange={(event) => setS3Form({ ...s3Form, quotaBytes: event.target.value })} />
           <label className="flex items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={s3Form.forcePathStyle} onChange={(event) => setS3Form({ ...s3Form, forcePathStyle: event.target.checked })} />Force path style</label>
           <div className="grid gap-3 sm:flex sm:justify-end"><Button variant="outline" type="button" onClick={() => setS3Open(false)} disabled={connectingS3}>Cancel</Button><Button type="submit" disabled={connectingS3}>{connectingS3 ? 'Connecting...' : 'Connect S3'}</Button></div>

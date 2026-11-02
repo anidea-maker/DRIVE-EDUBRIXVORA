@@ -30,6 +30,52 @@ export async function getS3ConfigForAccount(accountId: string, userId?: string) 
   return prisma.s3StorageConfig.findFirstOrThrow({ where: { connectedAccountId: accountId, status: 'active', ...(userId ? { userId } : {}) } })
 }
 
+/**
+ * Turn an S3 SDK failure into something a person can act on.
+ *
+ * A bad bucket name, a wrong region or a key without permission all used to reach
+ * the browser as `500 Client network socket disconnected…`, which says nothing
+ * about the cause. Each branch below names the culprit and the fix.
+ */
+export function describeS3Error(error: unknown, context: { bucket: string; endpoint: string | null; region: string }): { code: string; message: string } {
+  const err = error as { name?: string; Code?: string; code?: string; message?: string; $metadata?: { httpStatusCode?: number } } | null
+  const name = err?.name ?? err?.Code ?? err?.code ?? 'UnknownError'
+  const raw = err?.message ?? String(error)
+  const where = `${context.bucket} at ${context.endpoint ?? `AWS ${context.region}`}`
+
+  if (/InvalidAccessKeyId|SignatureDoesNotMatch|UnauthorizedAccess|InvalidToken/i.test(name)) {
+    return {
+      code: 'S3_AUTH_FAILED',
+      message: `The access key was rejected by ${where}. Check the key ID and secret (a secret cannot be viewed again in most consoles - create a new key if unsure).`,
+    }
+  }
+  if (/NoSuchBucket/i.test(name)) {
+    return { code: 'S3_BUCKET_NOT_FOUND', message: `The bucket "${context.bucket}" does not exist on ${context.endpoint ?? `AWS ${context.region}`}. Create it in the provider's console, then connect again.` }
+  }
+  if (/AccessDenied|Forbidden|403/.test(name) || err?.$metadata?.httpStatusCode === 403) {
+    return {
+      code: 'S3_ACCESS_DENIED',
+      message: `The credentials work but are not allowed to read the bucket "${context.bucket}". Grant the key list/read/write permission on that bucket.`,
+    }
+  }
+  if (/PermanentRedirect|Redirect|301|AuthorizationHeaderMalformed|IllegalLocationConstraint/i.test(name)) {
+    return {
+      code: 'S3_WRONG_REGION',
+      message: `The bucket "${context.bucket}" lives in a different region than "${context.region}". Copy the region from the provider's console and try again.`,
+    }
+  }
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|TimeoutError|net::|socket|EPROTO|CERT/i.test(`${name} ${raw}`)) {
+    return {
+      code: 'S3_ENDPOINT_UNREACHABLE',
+      message: `Could not reach ${context.endpoint ?? `AWS ${context.region}`}. Check the endpoint URL (it must be the S3 API URL, with no bucket name in it) and that this deployment has outbound internet access.`,
+    }
+  }
+  return {
+    code: 'S3_CONNECTION_FAILED',
+    message: `The storage provider rejected the connection to ${where}: ${name}${raw && raw !== name ? ` - ${raw}` : ''}`,
+  }
+}
+
 export async function testS3Connection(config: S3Config) {
   const client = createS3Client(config)
   await client.send(new HeadBucketCommand({ Bucket: config.bucket }))
