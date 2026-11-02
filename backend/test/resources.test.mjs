@@ -282,16 +282,20 @@ test('mocked synchronization marks missing objects without overwriting metadata'
   assert.ok(updates.every((entry) => Object.keys(entry.data).sort().join(',') === 'availability,lastVerifiedAt'))
 })
 
-test('signed object URLs bind method, key and expiry', () => {
+test('signed object URLs bind method, identity, key and expiry', () => {
   const key = 'edvanta/resources/request-12345678/biology.pdf'
+  const keyId = 'api-key:key-1'
   const expiresAt = Math.floor(Date.now() / 1000) + 300
-  const signature = signing.signObjectUrl('GET', 'user-1', key, expiresAt)
-  assert.equal(signing.verifyObjectUrl({ method: 'GET', userId: 'user-1', key, expiresAt, signature }), null)
-  assert.equal(signing.verifyObjectUrl({ method: 'HEAD', userId: 'user-1', key, expiresAt, signature }), null)
-  assert.equal(signing.verifyObjectUrl({ method: 'PUT', userId: 'user-1', key, expiresAt, signature }), 'invalid')
-  assert.equal(signing.verifyObjectUrl({ method: 'GET', userId: 'user-1', key: key + 'x', expiresAt, signature }), 'invalid')
-  assert.equal(signing.verifyObjectUrl({ method: 'GET', userId: 'user-1', key, expiresAt: Math.floor(Date.now() / 1000) - 1, signature }), 'expired')
-  assert.equal(signing.verifyObjectUrl({ method: 'GET', userId: 'user-1', key, expiresAt, signature: undefined }), 'missing')
+  const signature = signing.signObjectUrl('GET', 'user-1', keyId, key, expiresAt)
+  const base = { method: 'GET', userId: 'user-1', keyId, key, expiresAt, signature }
+  assert.equal(signing.verifyObjectUrl(base), null)
+  assert.equal(signing.verifyObjectUrl({ ...base, method: 'HEAD' }), null)
+  assert.equal(signing.verifyObjectUrl({ ...base, method: 'PUT' }), 'invalid')
+  assert.equal(signing.verifyObjectUrl({ ...base, key: key + 'x' }), 'invalid')
+  assert.equal(signing.verifyObjectUrl({ ...base, keyId: 'api-key:other' }), 'invalid')
+  assert.equal(signing.verifyObjectUrl({ ...base, keyId: undefined }), 'identity')
+  assert.equal(signing.verifyObjectUrl({ ...base, expiresAt: Math.floor(Date.now() / 1000) - 1 }), 'expired')
+  assert.equal(signing.verifyObjectUrl({ ...base, signature: undefined }), 'missing')
   assert.equal(signing.signedObjectPath('a/b c.pdf', new URLSearchParams({ m: 'GET' })), '/api/public/objects/a/b%20c.pdf?m=GET')
 })
 
@@ -305,6 +309,7 @@ test('capability URL minting never emits an API key and expires', async () => {
   assert.equal(url.searchParams.get('download'), '1')
   assert.ok(url.searchParams.get('sig'))
   assert.ok(url.searchParams.get('exp'))
+  assert.match(url.searchParams.get('k') ?? '', /^resource:f1$/)
   assert.equal(url.searchParams.get('api_key'), null)
   assert.equal(preview.mechanism, 'signed-object-url')
   assert.ok(new Date(download.expiresAt).getTime() > Date.now())
@@ -362,6 +367,7 @@ test('storage status is always reported, even when a provider is degraded', () =
 })
 
 test('roles come from server-side configuration, never a request body', () => {
+  assert.equal(roles.DEFAULT_USER_ROLE, 'visitor', 'new accounts are least-privileged')
   assert.equal(roles.effectiveRole({ email: 'BOSS@example.com', role: 'student' }), 'super_admin')
   assert.equal(roles.effectiveRole({ email: 'admin@example.com', role: 'admin' }), 'admin')
   assert.equal(roles.effectiveRole({ email: 'student@example.com', role: 'student' }), 'student')

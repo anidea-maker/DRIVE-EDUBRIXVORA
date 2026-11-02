@@ -41,6 +41,24 @@ export function encodeKey(key) {
     .join('/')
 }
 
+function safeFileName(name) {
+  const base = String(name || '').split(/[\\/]/).pop() ?? ''
+  // eslint-disable-next-line no-control-regex
+  const cleaned = base.replace(/[\u0000-\u001f\u007f]/g, '').replace(/[<>:"|?*]/g, '-').trim().slice(0, 180)
+  return cleaned && cleaned !== '.' && cleaned !== '..' ? cleaned : 'resource.bin'
+}
+
+/**
+ * Builds a stable object key that does not use the display name as identity.
+ * Two files named `report.pdf` can coexist because the generated id differs.
+ */
+export function uniqueKey(prefix, fileName) {
+  const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const cleanPrefix = String(prefix ?? '').replace(/^\/+|\/+$/g, '').replace(/\.\./g, '')
+  const safeName = safeFileName(fileName)
+  return cleanPrefix ? `${cleanPrefix}/${id}/${safeName}` : `${id}/${safeName}`
+}
+
 function joinPrefix(prefix, key) {
   const clean = String(prefix ?? '').replace(/^\/+|\/+$/g, '')
   return clean ? `${clean}/${key.replace(/^\/+/, '')}` : key.replace(/^\/+/, '')
@@ -172,15 +190,19 @@ export function createStorage(options = {}) {
      * Lists objects under the configured prefix.
      *
      * `delimiter: '/'` collapses everything below the prefix into `prefixes`,
-     * which is how you render folders.
+     * which is how you render folders. `q` searches name/key/indexed metadata;
+     * `checksum` is an exact content hash for duplicate detection.
      *
-     * @param {{ prefix?: string, delimiter?: string, maxKeys?: number, token?: string }} [query]
+     * @param {{ prefix?: string, delimiter?: string, q?: string, checksum?: string, mimeType?: string, maxKeys?: number, token?: string }} [query]
      */
     async list(query = {}) {
       const params = new URLSearchParams()
       const scoped = joinPrefix(prefix, query.prefix ?? '')
       if (scoped) params.set('prefix', scoped)
       if (query.delimiter) params.set('delimiter', query.delimiter)
+      if (query.q) params.set('q', query.q)
+      if (query.checksum) params.set('checksum', query.checksum)
+      if (query.mimeType) params.set('mimeType', query.mimeType)
       if (query.maxKeys) params.set('max-keys', String(query.maxKeys))
       if (query.token) params.set('continuation-token', query.token)
 
@@ -193,6 +215,11 @@ export function createStorage(options = {}) {
         isTruncated: data.isTruncated,
         nextContinuationToken: data.nextContinuationToken,
       }
+    },
+
+    /** Content-based duplicate lookup: same bytes, any object key. */
+    async findDuplicates(checksum) {
+      return this.list({ checksum })
     },
 
     /**

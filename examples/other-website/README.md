@@ -23,8 +23,11 @@ STORAGE_PREFIX=shop
 
 **Rules that matter**
 
+- Create **one website API key** in 9Drive → API Management with the scopes this site needs. The full key is shown once; only its hash is stored. Rotate it with `POST /api/api-keys/:id/regenerate` (or the dashboard **Rotate** button) if it leaks.
+- Send it only as `Authorization: Bearer …`. `?api_key=…` is rejected with `API_KEY_QUERY_NOT_ALLOWED` because URLs are logged and shared.
 - Keep `STORAGE_API_KEY` on the server. Never in `NEXT_PUBLIC_*`, never in HTML, never in a mobile bundle.
-- Browsers get **signed URLs** (§4) instead.
+- Browsers get **signed URLs** (§4) instead. Those links are bound to the live API-key row; revoking the key or removing a scope invalidates outstanding links.
+- If browser JavaScript calls 9Drive directly, set `API_CORS_ORIGINS` on 9Drive to this site's exact origin. CORS is not authentication.
 - Where to paste: Render → Environment; Vercel → Settings → Environment Variables (then Redeploy); Railway/Fly → `variables set` / `secrets set`; a VPS → the project's `.env`, then restart.
 
 ## 2. The client
@@ -32,7 +35,7 @@ STORAGE_PREFIX=shop
 Copy `drive-storage.mjs` into the project (no dependencies, Node 18+):
 
 ```js
-import { createStorage } from './drive-storage.mjs'
+import { createStorage, uniqueKey } from './drive-storage.mjs'
 
 const storage = createStorage() // reads STORAGE_* from the environment
 ```
@@ -40,24 +43,29 @@ const storage = createStorage() // reads STORAGE_* from the environment
 Then:
 
 ```js
-// write (same key again overwrites - never a second copy)
-const { etag, created } = await storage.put('products/42.png', buffer, { contentType: 'image/png' })
+// A generated key keeps the display name but does not use it as identity.
+// Two different uploads can both be called report.pdf without overwriting.
+const key = uniqueKey('products', file.name)
+const { etag, checksum, created } = await storage.put(key, buffer, { contentType: file.type })
 
 // read (null when there is no such object)
-const file = await storage.get('products/42.png')
+const file = await storage.get(key)
 if (file) fs.writeFileSync('/tmp/x.png', file.body)
 
 // metadata only
-const info = await storage.head('products/42.png')   // { sizeBytes, contentType, etag, lastModified } | null
+const info = await storage.head(key)   // { sizeBytes, contentType, etag, lastModified } | null
+
+// content-based duplicate detection (not filename-based)
+const duplicates = await storage.findDuplicates(checksum)
 
 // delete (idempotent)
-await storage.remove('products/42.png')
+await storage.remove(key)
 
-// list with folder semantics
-const page = await storage.list({ prefix: 'products/', delimiter: '/', maxKeys: 100 })
+// list/search with folder semantics
+const page = await storage.list({ prefix: 'products/', delimiter: '/', q: 'biology', mimeType: 'application/pdf', maxKeys: 100 })
 
 // a link the browser can use
-const { url } = await storage.sign('products/42.png', { expiresInSeconds: 3600 })
+const { url } = await storage.sign(key, { expiresInSeconds: 3600 })
 ```
 
 ## 3. Wiring it into a framework
@@ -94,7 +102,7 @@ app.delete('/api/avatar', async (req, res) => {
 
 ```ts
 // app/api/upload/route.ts
-import { createStorage } from '@/lib/drive-storage'
+import { createStorage, uniqueKey } from '@/lib/drive-storage'
 
 const storage = createStorage()
 
@@ -103,9 +111,9 @@ export async function POST(request: Request) {
   const file = form.get('file') as File
   if (!file) return Response.json({ error: 'file is required' }, { status: 400 })
 
-  const key = `uploads/${crypto.randomUUID()}-${file.name}`
+  const key = uniqueKey('uploads', file.name)
   const meta = await storage.put(key, Buffer.from(await file.arrayBuffer()), { contentType: file.type })
-  return Response.json({ key, etag: meta.etag })
+  return Response.json({ key, etag: meta.etag, checksum: meta.checksum })
 }
 ```
 
@@ -155,11 +163,15 @@ await fetch(uploadUrl, { method: 'PUT', headers: { 'Content-Type': 'image/png' }
 For reads, sign with the default `GET` and put it in `src`:
 
 ```html
-<img src="https://…/api/public/objects/shop/products/42.png?u=…&m=GET&exp=…&sig=…" />
+<img src="https://…/api/public/objects/shop/products/42.png?u=…&k=api-key%3A…&m=GET&exp=…&sig=…" />
 ```
 
 A `GET` link cannot be replayed as a `PUT`, cannot be pointed at another key,
-and stops working at `exp`.
+and stops working at `exp`. The `k` identity is checked against the live key
+row, so a revoked key, an expired key or a removed scope also invalidates it.
+PDF, common images, plain text and common audio/video are rendered inline with
+`nosniff`; SVG, HTML, JavaScript, Office, archives and unknown types are forced
+to `Content-Disposition: attachment`.
 
 ## 5. Errors
 
@@ -168,21 +180,49 @@ carrying `status`, `code`, `message` and `hint`.
 
 | Status | Code | What to do |
 | --- | --- | --- |
-| 401 | `API_KEY_REQUIRED` / `API_KEY_INVALID` / `API_KEY_REVOKED` | Wrong or revoked key - create a new one |
+| 401 | `API_KEY_REQUIRED` / `API_KEY_INVALID` / `API_KEY_REVOKED` / `API_KEY_EXPIRED` | Wrong, revoked or expired key - create a new one |
+| 401 | `API_KEY_QUERY_NOT_ALLOWED` | The key was sent in `?api_key=`; move it to the Authorization header and rotate it |
 | 403 | `API_KEY_SCOPE_MISSING` | Key lacks read/write/delete; the body names the missing scope |
+| 403 | `SIGNED_URL_PERMISSION_REVOKED` / `SIGNED_URL_IDENTITY_REQUIRED` | Mint a new signed link after restoring the key or resource |
+| 409 | `STORAGE_ACCOUNT_UNAVAILABLE` / `OBJECT_PROVIDER_MIGRATION_UNSUPPORTED` | The recorded account is unavailable/full, or an overwrite tried to change providers. Reconnect the account or use a new key. |
 | 404 | `NO_SUCH_KEY` | No object at that key (`get`/`head` return `null` for you) |
 | 411 | `OBJECT_SIZE_REQUIRED` | A `PUT` without `Content-Length` - pass a Buffer, not a stream |
 | 413 | `OBJECT_TOO_LARGE` | Over the deployment's `MAX_UPLOAD_BYTES` |
 | 429 | `RATE_LIMITED` | Slow down; honour `Retry-After` |
 | 507 | `NO_ACCOUNT_WITH_ENOUGH_SPACE` | Every connected bucket is full |
 
-## 6. Tests
+## 6. 9Drive deployment checklist
 
-The client is covered by 13 assertions against a stubbed `fetch` - wire format,
-error mapping, prefixing, signed URLs:
+These changes stay entirely inside the existing 9Drive service. No new platform
+bucket, no provider credential on this website, no new project.
+
+1. Apply the committed additive migration `20261102140000_website_api_hardening`
+   with `npm run db:migrate:deploy` (Render start command already does this).
+   It changes the default role for **new** users to `visitor` and creates the
+   optional shared rate-limit table. Existing rows are not rewritten.
+2. Create one API key with `files:read`, `files:write` and (if needed)
+   `files:delete`. Paste only the key into this website's server environment.
+3. Set `API_CORS_ORIGINS` to this website's exact origin if browser JavaScript
+   calls 9Drive directly. Leave it empty for server-to-server calls.
+4. Set `API_RATE_LIMIT_STORAGE=database` only when 9Drive runs on multiple
+   instances; the default `memory` limiter is enough for one Render service.
+5. Keep `REQUEST_TIMEOUT_MS` long enough for `MAX_UPLOAD_BYTES` (default
+   30 minutes for 5 GiB). Provider errors are returned as stable codes, never
+   raw bucket names, endpoints, emails or tokens.
+
+New 9Drive accounts are `visitor`. Promote the account that owns the connected
+storage through `SUPER_ADMIN_EMAILS` or
+`PATCH /api/admin/users/:id/role` before creating the website key.
+
+## 7. Tests
+
+The client is covered by **15/15** mocked assertions against a stubbed `fetch` -
+wire format, error mapping, prefixing, unique keys, checksum search and signed
+URLs:
 
 ```bash
 node --test examples/other-website/drive-storage.test.mjs
 ```
 
-Full API reference: [`docs/API.md`](../../docs/API.md).
+Full API reference: [`docs/API.md`](../../docs/API.md). Requirement-by-requirement
+audit: [`docs/WEBSITE-API-AUDIT.md`](../../docs/WEBSITE-API-AUDIT.md).

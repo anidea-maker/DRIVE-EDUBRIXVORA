@@ -4,7 +4,8 @@ import { prisma } from '../../config/prisma.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
 import { requireRole } from '../../middleware/role.middleware.js'
 import { hashToken, randomToken } from '../../utils/crypto.js'
-import { ALL_SCOPES, API_SCOPES, selectScopes } from '../public-api/scopes.js'
+import { createAuditLog } from '../../utils/audit.js'
+import { ALL_SCOPES, API_SCOPES, normalizeScopes, selectScopes } from '../public-api/scopes.js'
 
 export const apiKeyRouter = Router()
 apiKeyRouter.use(requireAuth)
@@ -81,7 +82,50 @@ apiKeyRouter.post('/', async (req: AuthRequest, res, next) => {
 apiKeyRouter.delete('/:id', async (req: AuthRequest, res, next) => {
   try {
     await prisma.apiKey.updateMany({ where: { id: String(req.params.id), userId: req.user!.id, revokedAt: null }, data: { status: 'revoked', revokedAt: new Date() } })
+    await createAuditLog(req.user!.id, 'REVOKE_API_KEY', 'api_key', String(req.params.id))
     return res.json({ status: 'ok' })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+/**
+ * Rotate the single website key without leaving two live credentials behind.
+ * The old row is revoked in the same transaction that creates the replacement,
+ * preserving its name, scopes and (if still in the future) expiry. The new full
+ * key is returned once and only its hash is stored.
+ */
+apiKeyRouter.post('/:id/regenerate', async (req: AuthRequest, res, next) => {
+  try {
+    const id = String(req.params.id)
+    const existing = await prisma.apiKey.findFirst({ where: { id, userId: req.user!.id } })
+    if (!existing) return res.status(404).json({ code: 'API_KEY_NOT_FOUND', message: 'That API key does not exist.' })
+    if (existing.status !== 'active' || existing.revokedAt || (existing.expiresAt && existing.expiresAt <= new Date())) {
+      return res.status(409).json({ code: 'API_KEY_NOT_ACTIVE', message: 'Only an active key can be rotated. Create a new key instead.' })
+    }
+
+    const secret = `9d_live_${randomToken(32)}`
+    const scopes = normalizeScopes(existing.scopes)
+    const expiresAt = existing.expiresAt && existing.expiresAt > new Date() ? existing.expiresAt : null
+    const rotated = await prisma.$transaction(async (tx) => {
+      await tx.apiKey.update({ where: { id }, data: { status: 'revoked', revokedAt: new Date() } })
+      return tx.apiKey.create({
+        data: {
+          userId: req.user!.id,
+          name: existing.name,
+          keyPrefix: secret.slice(0, 16),
+          keyHash: hashToken(secret),
+          scopes,
+          expiresAt,
+        },
+      })
+    })
+    await createAuditLog(req.user!.id, 'REGENERATE_API_KEY', 'api_key', rotated.id, { previousKeyId: id })
+    return res.status(201).json({
+      apiKey: serializeApiKey(rotated),
+      secret,
+      note: 'The previous key was revoked. Store this secret now; it is shown once and cannot be retrieved.',
+    })
   } catch (error) {
     return next(error)
   }

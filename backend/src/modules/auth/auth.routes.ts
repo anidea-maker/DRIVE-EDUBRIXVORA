@@ -10,6 +10,7 @@ import { signAccessToken } from '../../utils/jwt.js'
 import { createOAuthClient, syncGoogleQuota } from '../google/google.service.js'
 import { classifyGoogleError, describeGoogleError, type ConnectFailure } from '../google/google-error.js'
 import { repairStoredRedirectUri, requestOrigin, resolveGoogleRedirectUri } from '../google/redirect-uri.js'
+import { DEFAULT_USER_ROLE } from './roles.js'
 import { GOOGLE_CALLBACK_PATH, describeConfigProblem } from '../google/config-health.js'
 import { redirectToFrontend } from '../../utils/redirect.js'
 
@@ -40,7 +41,9 @@ authRouter.post('/register', async (req, res, next) => {
     const body = registerSchema.parse(req.body)
     const existing = await prisma.user.findUnique({ where: { email: body.email } })
     if (existing) return res.status(409).json({ code: 'AUTH_EMAIL_TAKEN', message: 'Email already registered.' })
-    const user = await prisma.user.create({ data: { name: body.name, email: body.email, passwordHash: await hashPassword(body.password) } })
+    // The DB default is `visitor`, but setting it explicitly keeps registration
+    // safe even if a deployment has not applied the latest migration yet.
+    const user = await prisma.user.create({ data: { name: body.name, email: body.email, passwordHash: await hashPassword(body.password), role: DEFAULT_USER_ROLE } })
     const tokens = await createSession(user.id, req)
     return res.status(201).json({ ...tokens, user: { id: user.id, name: user.name, email: user.email } })
   } catch (error) {
@@ -223,7 +226,7 @@ authRouter.get('/google/callback', async (req, res) => {
     const name = profile.data.name || email.split('@')[0] || 'Google User'
     const user = await prisma.user.upsert({
       where: { email },
-      create: { email, name, passwordHash: await hashPassword(randomToken(32)) },
+      create: { email, name, passwordHash: await hashPassword(randomToken(32)), role: DEFAULT_USER_ROLE },
       update: { name },
     })
     const existingAccount = await prisma.connectedAccount.findUnique({ where: { userId_provider_providerAccountId: { userId: user.id, provider: 'google_drive', providerAccountId } } })

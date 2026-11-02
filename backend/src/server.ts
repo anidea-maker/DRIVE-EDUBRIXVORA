@@ -6,6 +6,11 @@ const server = app.listen(env.APP_PORT, () => {
   console.log(`Backend running on http://localhost:${env.APP_PORT} (${process.env.NODE_ENV ?? 'development'})`)
 })
 
+// A 5 GiB upload can legitimately take longer than Node's default 5-minute
+// request timeout. Keep headers bounded by Node's default, but let the body
+// stream for the configured window (30 minutes by default).
+server.requestTimeout = env.REQUEST_TIMEOUT_MS
+
 /**
  * Crash guards.
  *

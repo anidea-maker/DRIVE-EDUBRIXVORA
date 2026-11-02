@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
-import { AlertTriangle, Check, Code2, Copy, Globe, Image as ImageIcon, KeyRound, Layers, Plus, Server, Trash2 } from 'lucide-react'
+import { AlertTriangle, Check, Code2, Copy, Globe, Image as ImageIcon, KeyRound, Layers, Plus, RefreshCw, Server, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { DummyModal } from '@/components/drive/DummyModal'
@@ -158,6 +158,21 @@ export function ApiManagementPage() {
   async function revokeKey(id: string) {
     await apiFetch(`/api-keys/${id}`, { method: 'DELETE' })
     await load()
+  }
+
+  async function regenerateKey(id: string) {
+    setLoading(true)
+    setMessage('')
+    try {
+      const data = await apiFetch<{ apiKey: ApiKey; secret: string }>(`/api-keys/${id}/regenerate`, { method: 'POST' })
+      setSecret(data.secret)
+      setMessage('The previous key was revoked. Copy the new key now and update the website environment.')
+      await load()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to regenerate API key')
+    } finally {
+      setLoading(false)
+    }
   }
 
   function toggleScope(id: string) {
@@ -490,10 +505,16 @@ const { url } = await fetch('${base.absolute}/objects/sign', {
                     {apiKey.expiresAt ? <p className="min-w-0 break-words"><span className="font-semibold text-slate-700">Expires:</span> {formatDate(apiKey.expiresAt)}</p> : null}
                   </div>
                 </div>
-                <Button className="w-full lg:w-auto" variant="danger" onClick={() => revokeKey(apiKey.id)} disabled={apiKey.status !== 'active'}>
-                  <Trash2 className="h-4 w-4" />
-                  Revoke
-                </Button>
+                <div className="flex w-full flex-col gap-2 sm:flex-row lg:w-auto">
+                  <Button className="w-full sm:w-auto" variant="outline" onClick={() => regenerateKey(apiKey.id)} disabled={loading || apiKey.status !== 'active'}>
+                    <RefreshCw className="h-4 w-4" />
+                    Rotate
+                  </Button>
+                  <Button className="w-full sm:w-auto" variant="danger" onClick={() => revokeKey(apiKey.id)} disabled={loading || apiKey.status !== 'active'}>
+                    <Trash2 className="h-4 w-4" />
+                    Revoke
+                  </Button>
+                </div>
               </div>
             ))
           )}

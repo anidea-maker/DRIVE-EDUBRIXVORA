@@ -12,6 +12,9 @@ export const USER_ROLES = ['super_admin', 'admin', 'student', 'visitor'] as cons
 
 export type UserRole = (typeof USER_ROLES)[number]
 
+/** Least-privileged role assigned to new registrations. Promotion is explicit. */
+export const DEFAULT_USER_ROLE: UserRole = 'visitor'
+
 export type RoleSubject = {
   id: string
   email: string

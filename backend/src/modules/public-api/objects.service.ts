@@ -1,40 +1,52 @@
 import { google } from 'googleapis'
 import { randomUUID } from 'node:crypto'
-import type { File } from '@prisma/client'
+import type { File, Prisma } from '@prisma/client'
 import { prisma } from '../../config/prisma.js'
 import { createAuditLog } from '../../utils/audit.js'
 import { ensureGoogleAppFolder, getAuthedGoogleClient } from '../google/google.service.js'
 import { buildS3ObjectKey, getS3ConfigForAccount, syncS3Quota, uploadS3Object } from '../s3/s3.service.js'
-import { deleteProviderFile, verifyProviderFile, type ProviderFileRef, type ProviderMetadata } from '../storage/provider-operations.js'
+import { deleteProviderFile, verifyProviderFile, ProviderOperationError, type Availability, type ProviderFileRef, type ProviderMetadata } from '../storage/provider-operations.js'
 import { selectAccount, syncQuotaInBackground } from '../uploads/upload.routes.js'
 import {
   baseName,
+  buildObjectListWhere,
   encodeContinuation,
   etagOf,
   hashingStream,
   type Continuation,
   type ListEntry,
   type ListResult,
+  type ObjectListFilters,
   type ObjectProblem,
 } from './objects.shared.js'
+import { safeStorageProblem, type SafeProblem } from './safe-errors.js'
 
 // Re-exported so callers keep importing the object surface from one place.
 export {
   MAX_OBJECT_KEY_LENGTH,
   baseName,
+  buildObjectListWhere,
+  buildUniqueObjectKey,
   decodeContinuation,
   encodeContinuation,
   etagOf,
   hashingStream,
   objectKeyMessage,
   objectKeyProblem,
+  safeInlineMimeType,
+  safeObjectFileName,
   type Continuation,
   type ListEntry,
   type ListResult,
+  type ObjectListFilters,
   type ObjectProblem,
 } from './objects.shared.js'
 
 export type ObjectRow = File & { connectedAccount: { id: string; provider: string } }
+
+export type PutObjectResult =
+  | { ok: true; file: File; created: boolean; providerFileId: string }
+  | { ok: false; code: string; message: string }
 
 export function findObject(userId: string, key: string) {
   return prisma.file.findFirst({
@@ -46,7 +58,8 @@ export function findObject(userId: string, key: string) {
 /**
  * A freshly uploaded object is only `active` after the provider confirms it
  * exists. Three short attempts absorb an eventually-consistent S3-compatible
- * provider; an auth/permission failure is reported immediately.
+ * provider; an auth/permission failure is reported immediately. No raw provider
+ * message is stored or returned.
  */
 async function assertProviderFileAvailable(ref: ProviderFileRef): Promise<ProviderMetadata> {
   let last: ProviderMetadata = { availability: 'unknown' }
@@ -56,7 +69,17 @@ async function assertProviderFileAvailable(ref: ProviderFileRef): Promise<Provid
     if (last.availability === 'inaccessible') break
     await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)))
   }
-  throw new Error(`UPLOAD_VERIFICATION_FAILED: ${last.detail ?? 'the provider did not confirm the object exists'}`)
+  throw new ProviderOperationError(
+    'The connected storage provider did not confirm the uploaded object.',
+    'UPLOAD_VERIFICATION_FAILED',
+    last.availability as Availability,
+  )
+}
+
+function drain(body: NodeJS.ReadableStream) {
+  const stream = body as NodeJS.ReadableStream & { resume?: () => void; unpipe?: () => void }
+  stream.unpipe?.()
+  stream.resume?.()
 }
 
 /**
@@ -67,7 +90,8 @@ async function assertProviderFileAvailable(ref: ProviderFileRef): Promise<Provid
  * failed upload leaves the previous version readable instead of losing both.
  * The declared byte count and a provider HEAD/get are checked before success is
  * reported; a retry with the same key replaces the row rather than creating a
- * duplicate.
+ * duplicate. An overwrite stays on the account recorded on that row: there is
+ * no silent provider migration.
  */
 export async function putObject(input: {
   userId: string
@@ -78,28 +102,34 @@ export async function putObject(input: {
   source: 'api' | 'signed-url'
   /** Optional explicit storage provider selection for the resource API. */
   provider?: 'google_drive' | 's3'
-}) {
+}): Promise<PutObjectResult> {
   const { userId, key, body, sizeBytes, mimeType, provider } = input
   const existing = await prisma.file.findFirst({ where: { userId, objectKey: key }, include: { connectedAccount: true } })
   const name = baseName(key)
+  const existingProvider = existing?.connectedAccount?.provider
 
-  // Prefer the account that already holds this key, so an overwrite stays put;
-  // fall back to normal routing when that account is full, gone, or of another
-  // provider than the one explicitly requested.
-  const pinned =
-    existing?.connectedAccount?.status === 'connected' && (!provider || existing.connectedAccount.provider === provider)
-      ? existing.connectedAccountId
-      : undefined
-  const account = (pinned ? await selectAccount(userId, sizeBytes, undefined, pinned, provider) : null)
-    ?? (await selectAccount(userId, sizeBytes, undefined, null, provider))
-  if (!account) {
-    // Drain the request: a router that returns 507 while the client is still
-    // sending a 2 GB body otherwise leaves the socket stuck.
-    ;(body as NodeJS.ReadableStream & { resume?: () => void }).resume?.()
-    return {
-      ok: false as const,
-      code: 'NO_ACCOUNT_WITH_ENOUGH_SPACE' as const,
-      message: 'No connected storage account has room for this object. Connect a bucket in Settings, or free up space.',
+  if (existing && provider && existingProvider !== provider) {
+    drain(body)
+    const problem = safeStorageProblem({ code: 'OBJECT_PROVIDER_MIGRATION_UNSUPPORTED' })
+    return { ok: false as const, code: problem.code, message: problem.message }
+  }
+
+  let account
+  if (existing?.connectedAccountId) {
+    // Overwrite is pinned to the recorded account. A disconnected/full account
+    // returns a clear error instead of silently moving bytes elsewhere.
+    account = await selectAccount(userId, sizeBytes, undefined, existing.connectedAccountId, provider ?? existingProvider)
+    if (!account) {
+      drain(body)
+      const problem = safeStorageProblem({ code: 'STORAGE_ACCOUNT_UNAVAILABLE' })
+      return { ok: false as const, code: problem.code, message: problem.message }
+    }
+  } else {
+    account = await selectAccount(userId, sizeBytes, undefined, null, provider)
+    if (!account) {
+      drain(body)
+      const problem = safeStorageProblem({ code: 'NO_ACCOUNT_WITH_ENOUGH_SPACE' })
+      return { ok: false as const, code: problem.code, message: problem.message }
     }
   }
 
@@ -115,11 +145,11 @@ export async function putObject(input: {
     },
   })
 
-  const fail = async (message: string) => {
+  const fail = async (problem: SafeProblem): Promise<Extract<PutObjectResult, { ok: false }>> => {
     await prisma.uploadSession
-      .update({ where: { id: session.id }, data: { status: 'failed', errorMessage: message } })
+      .update({ where: { id: session.id }, data: { status: 'failed', errorMessage: problem.code } })
       .catch(() => undefined)
-    return { ok: false as const, code: 'UPLOAD_FAILED' as const, message }
+    return { ok: false as const, code: problem.code, message: problem.message }
   }
 
   // The row is created (or reused) first because the S3 object key contains its id.
@@ -197,9 +227,9 @@ export async function putObject(input: {
 
     const { checksum, bytes } = hashing.result()
     if (BigInt(bytes) !== sizeBytes) {
-      throw new Error(`UPLOAD_SIZE_MISMATCH: received ${bytes} bytes, expected ${sizeBytes.toString()}.`)
+      throw new ProviderOperationError('The received byte count did not match Content-Length.', 'UPLOAD_SIZE_MISMATCH')
     }
-    if (!providerFileId) throw new Error('UPLOAD_FAILED: the storage provider did not return a file identifier.')
+    if (!providerFileId) throw new ProviderOperationError('The storage provider returned no file identifier.', 'UPLOAD_FAILED')
 
     const verification = await assertProviderFileAvailable({
       provider: account.provider,
@@ -227,11 +257,12 @@ export async function putObject(input: {
       },
     })
 
-    // Only now is the superseded object safe to remove. A failure here is logged,
-    // not reported as an upload failure: the new file is already readable.
+    // Only now is the superseded object safe to remove. A failure here is logged
+    // as a code, not reported as an upload failure: the new file is readable.
     if (existing && existing.providerFileId && existing.providerFileId !== providerFileId) {
       await removeProviderObject(existing.connectedAccount.provider, existing).catch((error) => {
-        console.error('[objects] could not remove the superseded object:', error instanceof Error ? error.message : error)
+        const problem = safeStorageProblem(error, 'DELETE_FAILED')
+        console.error(`[objects] could not remove the superseded object: ${problem.code}`)
       })
     }
     createdProviderRef = null
@@ -242,14 +273,12 @@ export async function putObject(input: {
     else syncQuotaInBackground(account.id, session.id)
     return { ok: true as const, file, created: !existing, providerFileId }
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'The storage provider refused the upload.'
-    // Stop reading the request body so the socket can be released cleanly.
-    const drainable = source as NodeJS.ReadableStream & { unpipe?: () => void; resume?: () => void }
-    drainable.unpipe?.()
-    drainable.resume?.()
+    const problem = safeStorageProblem(error, 'UPLOAD_FAILED')
+    drain(source)
     if (createdProviderRef) {
       await deleteProviderFile(createdProviderRef).catch((cleanupError) => {
-        console.error('[objects] could not clean up a failed upload:', cleanupError instanceof Error ? cleanupError.message : cleanupError)
+        const cleanupProblem = safeStorageProblem(cleanupError, 'DELETE_FAILED')
+        console.error(`[objects] could not clean up a failed upload: ${cleanupProblem.code}`)
       })
     }
     // A brand-new row has nothing behind it; mark it gone so the key stays usable.
@@ -258,7 +287,7 @@ export async function putObject(input: {
     } else {
       await prisma.file.update({ where: { id: row.id }, data: { status: existing.status } }).catch(() => undefined)
     }
-    return fail(message)
+    return fail(problem)
   }
 }
 
@@ -297,7 +326,8 @@ export async function deleteObject(userId: string, key: string) {
   } catch (error) {
     // A trashed row still occupies the key, so the object would come back on the
     // next GET. Report instead of pretending the delete worked.
-    return { deleted: false as const, message: error instanceof Error ? error.message : 'The storage provider refused the delete.' }
+    const problem = safeStorageProblem(error, 'DELETE_FAILED')
+    return { deleted: false as const, code: problem.code, message: problem.message }
   }
   await prisma.file.delete({ where: { id: file.id } })
   await createAuditLog(userId, 'DELETE_OBJECT', 'file', key, { key }).catch(() => undefined)
@@ -312,9 +342,8 @@ export async function deleteObject(userId: string, key: string) {
 /**
  * Lists objects the way S3 does: `prefix` narrows, `delimiter` collapses the rest
  * of the path into common prefixes (this is how a console renders "folders").
- *
- * Pagination is by the last raw row consumed, plus the one common prefix that may
- * have been partially read. Anything more elaborate would have to re-scan.
+ * `q` searches name/key and indexed metadata; `checksum` supports content-based
+ * duplicate detection. Pagination is keyset-style by object key.
  */
 export async function listObjects(input: {
   userId: string
@@ -322,20 +351,37 @@ export async function listObjects(input: {
   delimiter: string | null
   maxKeys: number
   continuation: Continuation | null
+  q?: string
+  checksum?: string
+  mimeType?: string
+  where?: Record<string, unknown>
 }): Promise<ListResult> {
   const { userId, prefix, delimiter, maxKeys, continuation } = input
+  const where = (input.where ?? buildObjectListWhere({
+    userId,
+    prefix,
+    continuation,
+    q: input.q,
+    checksum: input.checksum,
+    mimeType: input.mimeType,
+  })) as Prisma.FileWhereInput
   // A page of `maxKeys` can be filled by fewer rows (a delimiter collapses many
   // keys into one prefix), so read a multiple and stop when the page is full.
   const scanLimit = maxKeys * 4 + 1
   const rows = await prisma.file.findMany({
-    where: {
-      userId,
-      status: 'active',
-      objectKey: { not: null, ...(prefix ? { startsWith: prefix } : {}), ...(continuation ? { gt: continuation.after } : {}) },
-    },
+    where,
     orderBy: { objectKey: 'asc' },
     take: scanLimit,
-    select: { objectKey: true, sizeBytes: true, updatedAt: true, checksum: true, mimeType: true },
+    select: {
+      objectKey: true,
+      name: true,
+      sizeBytes: true,
+      mimeType: true,
+      checksum: true,
+      createdAt: true,
+      updatedAt: true,
+      resourceMetadata: true,
+    },
   })
 
   const objects: ListEntry[] = []
@@ -364,10 +410,14 @@ export async function listObjects(input: {
     } else {
       objects.push({
         key,
+        name: row.name,
         sizeBytes: row.sizeBytes.toString(),
+        mimeType: row.mimeType,
+        checksum: row.checksum,
+        createdAt: row.createdAt.toISOString(),
         lastModified: row.updatedAt.toISOString(),
         etag: row.checksum ? `"${row.checksum}"` : null,
-        mimeType: row.mimeType,
+        metadata: row.resourceMetadata ?? null,
       })
     }
     lastKey = key

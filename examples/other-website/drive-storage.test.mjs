@@ -6,7 +6,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createStorage, encodeKey, StorageError } from './drive-storage.mjs'
+import { createStorage, encodeKey, uniqueKey, StorageError } from './drive-storage.mjs'
 
 const ENDPOINT = 'https://drive.example.com/api/v1'
 
@@ -25,6 +25,16 @@ test('keys are path-encoded per segment', () => {
   assert.equal(encodeKey('a b/c+d.png'), 'a%20b/c%2Bd.png')
   assert.equal(encodeKey('/leading/slash.txt'), 'leading/slash.txt')
   assert.equal(encodeKey('deep/nested/key.json'), 'deep/nested/key.json')
+})
+
+test('unique keys keep the display name but not as identity', () => {
+  const first = uniqueKey('uploads', '../../report.pdf')
+  const second = uniqueKey('uploads', '../../report.pdf')
+  assert.notEqual(first, second)
+  assert.match(first, /^uploads\/.+\/report\.pdf$/)
+  assert.match(second, /^uploads\/.+\/report\.pdf$/)
+  assert.ok(!first.includes('..'))
+  assert.ok(!second.includes('..'))
 })
 
 test('a prefix namespaces every call, replacing the need for a bucket', async () => {
@@ -80,22 +90,41 @@ test('remove treats 204 and 404 as success', async () => {
   assert.equal(await storage.remove('a.png'), true)
 })
 
-test('list sends prefix, delimiter, max-keys and the continuation token', async () => {
+test('list sends prefix, delimiter, search, checksum, max-keys and continuation', async () => {
   const { calls, fetchImpl } = recorder(() => json({ objects: [], prefixes: ['shop/icons/'], isTruncated: false, nextContinuationToken: null }))
   const storage = createStorage({ endpoint: ENDPOINT, apiKey: 'k', prefix: 'shop', fetchImpl })
-  const page = await storage.list({ prefix: 'icons/', delimiter: '/', maxKeys: 50, token: 'abc' })
+  const page = await storage.list({
+    prefix: 'icons/',
+    delimiter: '/',
+    q: 'biology',
+    checksum: 'a'.repeat(32),
+    mimeType: 'application/pdf',
+    maxKeys: 50,
+    token: 'abc',
+  })
 
   const url = new URL(calls[0].url)
   assert.equal(url.pathname, '/api/v1/objects')
   assert.equal(url.searchParams.get('prefix'), 'shop/icons/')
   assert.equal(url.searchParams.get('delimiter'), '/')
+  assert.equal(url.searchParams.get('q'), 'biology')
+  assert.equal(url.searchParams.get('checksum'), 'a'.repeat(32))
+  assert.equal(url.searchParams.get('mimeType'), 'application/pdf')
   assert.equal(url.searchParams.get('max-keys'), '50')
   assert.equal(url.searchParams.get('continuation-token'), 'abc')
   assert.deepEqual(page.prefixes, ['shop/icons/'])
 })
 
+test('findDuplicates uses the exact checksum filter', async () => {
+  const { calls, fetchImpl } = recorder(() => json({ objects: [], prefixes: [], isTruncated: false, nextContinuationToken: null }))
+  const storage = createStorage({ endpoint: ENDPOINT, apiKey: 'k', prefix: 'shop', fetchImpl })
+  await storage.findDuplicates('b'.repeat(32))
+  const url = new URL(calls[0].url)
+  assert.equal(url.searchParams.get('checksum'), 'b'.repeat(32))
+})
+
 test('sign posts the scoped key and returns an absolute URL', async () => {
-  const { calls, fetchImpl } = recorder(() => json({ key: 'shop/a.png', method: 'GET', url: 'https://drive.example.com/api/public/objects/shop/a.png?u=1&m=GET&exp=9&sig=s', expiresAt: '2026-01-01T00:00:00.000Z' }, { status: 201 }))
+  const { calls, fetchImpl } = recorder(() => json({ key: 'shop/a.png', method: 'GET', url: 'https://drive.example.com/api/public/objects/shop/a.png?u=1&k=api-key%3A1&m=GET&exp=9&sig=s', expiresAt: '2026-01-01T00:00:00.000Z' }, { status: 201 }))
   const storage = createStorage({ endpoint: ENDPOINT, apiKey: 'k', prefix: 'shop', fetchImpl })
   const link = await storage.sign('a.png', { expiresInSeconds: 600 })
 
@@ -104,6 +133,7 @@ test('sign posts the scoped key and returns an absolute URL', async () => {
   assert.equal(body.method, 'GET')
   assert.equal(body.expiresInSeconds, 600)
   assert.match(link.url, /^https:\/\/drive\.example\.com\/api\/public\/objects\/shop\/a\.png\?/)
+  assert.equal(new URL(link.url).searchParams.get('k'), 'api-key:1')
 })
 
 test('API errors keep the code, message and hint', async () => {

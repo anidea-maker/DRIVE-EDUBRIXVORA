@@ -73,14 +73,14 @@ publicApiRouter.get(['/v1', '/v1/'], async (req, res) => {
     auth: {
       type: 'bearer',
       header: 'Authorization: Bearer 9d_live_...',
-      queryParam: 'api_key',
-      note: 'Keys are created in the dashboard under API Management. They are shown once and stored hashed.',
+      headerOnly: true,
+      note: 'Keys are created in the dashboard under API Management. They are shown once, stored hashed, and must never be sent in a query string. Rotate with POST /api/api-keys/:id/regenerate.',
       scopes: API_SCOPES,
     },
     cors: {
-      origins: '*',
+      origins: env.API_CORS_ORIGINS.length ? env.API_CORS_ORIGINS : '*',
       credentials: false,
-      note: 'Any origin may call this API with a key. The key is a bearer token, so a browser never sends it automatically.',
+      note: 'A server-to-server bearer key is not attached automatically by a browser. Set API_CORS_ORIGINS to exact origins when browser JavaScript calls this API directly; CORS is not authentication.',
     },
     limits: {
       maxUploadBytes: String(env.MAX_UPLOAD_BYTES),
@@ -107,8 +107,8 @@ publicApiRouter.get(['/v1', '/v1/'], async (req, res) => {
       { method: 'GET', path: '/api/v1/objects/:key', scope: 'files:read', description: 'Object bytes. Range, ETag and If-None-Match supported.' },
       { method: 'HEAD', path: '/api/v1/objects/:key', scope: 'files:read', description: 'Object headers only: Content-Type, Content-Length, ETag, Last-Modified.' },
       { method: 'DELETE', path: '/api/v1/objects/:key', scope: 'files:delete', description: 'Deletes the object. Always 204, like S3.' },
-      { method: 'GET', path: '/api/v1/objects', scope: 'files:read', description: 'List objects. Query: prefix, delimiter, max-keys, continuation-token.' },
-      { method: 'POST', path: '/api/v1/objects/sign', scope: 'files:read', description: 'Expiring signed URL for GET/HEAD/PUT, so a browser can read or upload without a key.' },
+      { method: 'GET', path: '/api/v1/objects', scope: 'files:read', description: 'List/search objects. Query: prefix, delimiter, q, checksum, mimeType, max-keys, continuation-token. Checksum supports content-based duplicate detection.' },
+      { method: 'POST', path: '/api/v1/objects/sign', scope: 'files:read', description: 'Expiring signed URL for GET/HEAD/PUT, bound to the live API key row; revocation or scope removal invalidates it.' },
       { method: 'GET', path: '/api/v1/resources', scope: 'files:read', description: 'Paginated educational resource discovery. Query: q, category, subject, academicLevel, examType, provider, visibility, audience, limit, cursor, order.' },
       { method: 'POST', path: '/api/v1/resources', scope: 'files:write', description: 'Admin multipart upload with resourceMeta or plain metadata fields (title, category, subject, provider, clientRequestId). Retry-safe.' },
       { method: 'POST', path: '/api/v1/resources/upload', scope: 'files:write', description: 'Alias of POST /api/v1/resources for consumers that append /upload.' },
@@ -128,6 +128,7 @@ publicApiRouter.get(['/v1', '/v1/'], async (req, res) => {
       { method: 'GET', path: '/api/v1/resources/health', scope: 'files:read', description: 'Database, provider and resource availability health; includes a `storage` status report (no credentials).' },
       { method: 'GET', path: '/api/v1/resources/counts', scope: 'files:read', description: 'Fast cached live counts for the Edvanta landing page; no provider calls, 30s cache.' },
       { method: 'GET', path: '/api/v1/storage-status', scope: 'public', description: 'Redacted 9Drive storage status for admin panels; always includes `storage` and `reported: true`.' },
+      { method: 'POST', path: '/api/api-keys/:id/regenerate', scope: 'dashboard session', description: 'Rotate the website key: revoke the old row and return a new secret once, preserving name/scopes/expiry.' },
     ],
   })
 })

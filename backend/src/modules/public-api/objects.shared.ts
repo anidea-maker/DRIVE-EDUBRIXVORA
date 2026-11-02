@@ -59,6 +59,97 @@ export function baseName(key: string) {
   return parts[parts.length - 1] ?? key
 }
 
+/**
+ * Content types a browser may render inline without turning storage into a
+ * script host. SVG, HTML, XML, JavaScript and unknown/Office/archive types are
+ * forced to `attachment` with `nosniff`.
+ */
+const SAFE_INLINE_MIME_TYPES = new Set([
+  'application/pdf',
+  'text/plain',
+  'text/markdown',
+  'text/csv',
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+  'image/bmp',
+  'image/heic',
+  'audio/mpeg',
+  'audio/ogg',
+  'audio/wav',
+  'video/mp4',
+  'video/webm',
+])
+
+export function safeInlineMimeType(mimeType: string | null | undefined) {
+  return SAFE_INLINE_MIME_TYPES.has(String(mimeType ?? '').split(';')[0]!.trim().toLowerCase())
+}
+
+/** Path-safe display name for a generated unique object key. */
+export function safeObjectFileName(name: string) {
+  const base = String(name || '').split(/[\\/]/).pop() ?? ''
+  // eslint-disable-next-line no-control-regex
+  const cleaned = base.replace(/[\u0000-\u001f\u007f]/g, '').replace(/[<>:"|?*]/g, '-').trim().slice(0, 180)
+  return cleaned && cleaned !== '.' && cleaned !== '..' ? cleaned : 'resource.bin'
+}
+
+/**
+ * A stable object key that does not use the display name as identity. Two files
+ * named `report.pdf` can coexist because the generated UUID segment differs.
+ */
+export function buildUniqueObjectKey(prefix: string, fileName: string, id: string = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`) {
+  const cleanPrefix = String(prefix ?? '').replace(/^\/+|\/+$/g, '').replace(/\.\./g, '')
+  const safeName = safeObjectFileName(fileName)
+  const key = cleanPrefix ? `${cleanPrefix}/${id}/${safeName}` : `${id}/${safeName}`
+  return objectKeyProblem(key) ? `${id}/resource.bin` : key
+}
+
+export type ObjectListFilters = {
+  userId: string
+  prefix: string
+  continuation: Continuation | null
+  q?: string
+  checksum?: string
+  mimeType?: string
+}
+
+/**
+ * Search by name/key or indexed metadata, plus exact checksum lookup for
+ * content-based duplicate detection. Kept pure so the wire contract is testable
+ * without MySQL.
+ */
+export function buildObjectListWhere(input: ObjectListFilters): Record<string, unknown> {
+  const filters: Record<string, unknown>[] = []
+  if (input.q) {
+    filters.push({
+      OR: [
+        { name: { contains: input.q } },
+        { objectKey: { contains: input.q } },
+        { mimeType: { contains: input.q } },
+        { checksum: { contains: input.q } },
+        { title: { contains: input.q } },
+        { description: { contains: input.q } },
+        { category: { contains: input.q } },
+        { subject: { contains: input.q } },
+      ],
+    })
+  }
+  if (input.checksum) filters.push({ checksum: input.checksum })
+  if (input.mimeType) filters.push({ mimeType: input.mimeType })
+  return {
+    userId: input.userId,
+    status: 'active',
+    objectKey: {
+      not: null,
+      ...(input.prefix ? { startsWith: input.prefix } : {}),
+      ...(input.continuation ? { gt: input.continuation.after } : {}),
+    },
+    ...(filters.length ? { AND: filters } : {}),
+  }
+}
+
 export function etagOf(file: Pick<File, 'checksum'>) {
   // S3 quotes its ETags; a client that stores the header should get the quotes back.
   return file.checksum ? `"${file.checksum}"` : null
@@ -82,7 +173,17 @@ export function hashingStream() {
 }
 
 
-export type ListEntry = { key: string; sizeBytes: string; lastModified: string; etag: string | null; mimeType: string }
+export type ListEntry = {
+  key: string
+  name: string
+  sizeBytes: string
+  mimeType: string
+  checksum: string | null
+  createdAt: string
+  lastModified: string
+  etag: string | null
+  metadata: unknown
+}
 export type ListResult = { objects: ListEntry[]; prefixes: string[]; isTruncated: boolean; nextContinuationToken: string | null; scanned: number }
 
 export type Continuation = { after: string; skippedPrefix: string | null }

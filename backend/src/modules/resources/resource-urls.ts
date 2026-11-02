@@ -35,18 +35,23 @@ export async function mintResourceUrl(
 
   if (file.objectKey) {
     const epoch = Math.floor(expiresAt.getTime() / 1000)
+    // A resource capability is bound to the stable row, not to an API key. The
+    // public-link handler checks that this row still exists, is active and still
+    // owns the object key before streaming anything.
+    const keyId = `resource:${file.id}`
     const query = new URLSearchParams({
       u: file.userId,
+      k: keyId,
       m: 'GET',
       exp: String(epoch),
-      sig: signObjectUrl('GET', file.userId, file.objectKey, epoch),
+      sig: signObjectUrl('GET', file.userId, keyId, file.objectKey, epoch),
       ...(download ? { download: '1' } : {}),
     })
     return {
       url: absoluteUrl(req, signedObjectPath(file.objectKey, query)),
       expiresAt: expiresAt.toISOString(),
       mechanism: 'signed-object-url',
-      note: 'Bound to this object and GET method; expires at expiresAt. Mint it only after verifying the end user on Edvanta.',
+      note: 'Bound to this resource row, its object key and GET method; expires at expiresAt. Mint it only after verifying the end user on Edvanta.',
     }
   }
 
