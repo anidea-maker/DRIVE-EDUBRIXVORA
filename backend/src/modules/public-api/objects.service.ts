@@ -281,9 +281,17 @@ export async function putObject(input: {
         console.error(`[objects] could not clean up a failed upload: ${cleanupProblem.code}`)
       })
     }
-    // A brand-new row has nothing behind it; mark it gone so the key stays usable.
+    // A brand-new row has nothing behind it: remove it so the key stays usable.
+    // Deleting rather than trashing matters twice over - a failed first upload
+    // should not appear in the owner's trash, and a later retry at the same key
+    // is then a genuine create (`created: true`) instead of an overwrite of a
+    // row that never held an object. Marking it gone is the fallback, so a
+    // delete that fails can never strand an `uploading` row on the key.
     if (!existing) {
-      await prisma.file.update({ where: { id: row.id }, data: { status: 'deleted', deletedAt: new Date() } }).catch(() => undefined)
+      const removed = await prisma.file.delete({ where: { id: row.id } }).catch(() => null)
+      if (!removed) {
+        await prisma.file.update({ where: { id: row.id }, data: { status: 'deleted', deletedAt: new Date() } }).catch(() => undefined)
+      }
     } else {
       await prisma.file.update({ where: { id: row.id }, data: { status: existing.status } }).catch(() => undefined)
     }

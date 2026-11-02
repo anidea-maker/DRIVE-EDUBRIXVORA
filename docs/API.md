@@ -499,14 +499,14 @@ curl https://drive-edubrixvora-1.onrender.com/api/v1/storage-status
       "maxBytes": "5368709120",
       "reason": null
     },
-    "appRecords": "Turso — accounts, document metadata & registry, not file bytes",
+    "appRecords": "MySQL — accounts, file metadata & registry, not file bytes",
     "display": {
       "storageProvider": "9drive",
       "storageProviderNote": "9drive is the only destination for new file bytes",
       "configured": "9drive",
       "fileCapRemaining": "Capacity not reported",
       "persistence": "Persistent",
-      "appRecords": "Turso — accounts, document metadata & registry, not file bytes",
+      "appRecords": "MySQL — accounts, file metadata & registry, not file bytes",
       "uploadEndpoint": "/api/v1/resources",
       "uploadAvailable": true
     },

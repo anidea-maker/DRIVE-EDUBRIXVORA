@@ -36,7 +36,7 @@ test('storage status is always reported, even when capacity is unknown', () => {
   assert.equal(report.upload.requiredScope, 'files:write')
   assert.match(report.upload.reason, /No connected storage account/)
   assert.match(report.display.storageProviderNote, /only destination/)
-  assert.match(report.display.appRecords, /Turso/)
+  assert.match(report.display.appRecords, /MySQL/)
   assert.match(report.note, /configured/)
 
   const wrapped = status.storageStatusResponse(report)

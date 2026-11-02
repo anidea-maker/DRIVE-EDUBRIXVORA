@@ -565,7 +565,10 @@ Edvanta's **server** holds the API key and authenticates its own students and
 administrators before calling these endpoints. A tested copy-paste kit is in
 [`examples/edvanta/`](examples/edvanta/); the exact contract, roles, Render
 variables and manual cloud checklist are in
-[docs/EDVANTA-INTEGRATION.md](docs/EDVANTA-INTEGRATION.md). The Edvanta
+[docs/EDVANTA-INTEGRATION.md](docs/EDVANTA-INTEGRATION.md). For the short
+version — base URL, endpoint request/response examples, authentication, the exact
+environment variables, Render steps, provider selection and what has been tested
+— see [docs/EDVANTA-API.md](docs/EDVANTA-API.md). The Edvanta
 repository itself is a separate project and is not modified here.
 
 ```txt
