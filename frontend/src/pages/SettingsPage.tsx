@@ -557,7 +557,9 @@ export function SettingsPage() {
         body: JSON.stringify({
           ...s3Form,
           provider: s3Form.provider || undefined,
-          // Blank means "use the environment" when a preset is selected.
+          // Blank means "use the environment" when a preset is selected, and an
+          // empty string is not a bucket - it must not be sent as one.
+          bucket: s3Form.bucket || undefined,
           accessKeyId: s3Form.accessKeyId || undefined,
           secretAccessKey: s3Form.secretAccessKey || undefined,
           endpoint: s3Form.endpoint || undefined,
@@ -976,7 +978,15 @@ export function SettingsPage() {
             <p className="-mt-2 text-[11px] text-slate-500">{MANUAL_TEMPLATES.find((entry) => entry.id === s3Form.template)?.hint}</p>
           ) : null}
           <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder="Display name" value={s3Form.name} onChange={(event) => setS3Form({ ...s3Form, name: event.target.value })} required />
-          <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder="Bucket" value={s3Form.bucket} onChange={(event) => setS3Form({ ...s3Form, bucket: event.target.value })} required />
+          <input
+            className="h-11 rounded-xl border border-slate-200 px-3 text-sm"
+            placeholder={s3Form.provider ? 'Bucket (blank = the only bucket on the account)' : 'Bucket'}
+            value={s3Form.bucket}
+            onChange={(event) => setS3Form({ ...s3Form, bucket: event.target.value })}
+            // A preset may name an endpoint and keys without a bucket; the server
+            // then asks the account which bucket it holds, so the field is optional.
+            required={!s3Form.provider}
+          />
           <input
             className="h-11 rounded-xl border border-slate-200 px-3 text-sm"
             placeholder="Region"

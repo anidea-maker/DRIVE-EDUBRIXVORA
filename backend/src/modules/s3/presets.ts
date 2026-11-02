@@ -317,20 +317,25 @@ const PROVIDER_HOSTS: Array<[RegExp, string]> = [
   [/backblazeb2\.com$/i, 'Backblaze B2'],
   [/idrivee2(-[0-9]+)?\.com$/i, 'IDrive E2'],
   [/filebase\.(io|com)$/i, 'Filebase'],
-  [/s3\.amazonaws\.com$/i, 'Amazon S3'],
+  [/amazonaws\.com$/i, 'Amazon S3'],
   [/storage\.googleapis\.com$/i, 'Google Cloud Storage'],
 ]
 
 export function inferProviderLabel(endpoint: string | null): string | null {
   if (!endpoint) return null
+  let host: string
   try {
-    const host = new URL(endpoint).host
-    for (const [pattern, label] of PROVIDER_HOSTS) {
-      if (pattern.test(host)) return label
-    }
+    host = new URL(endpoint).host
   } catch {
     return null
   }
+  for (const [pattern, label] of PROVIDER_HOSTS) {
+    if (pattern.test(host)) return label
+  }
+  // `s3.<brand>.<tld>` is the usual shape for a smaller provider's S3 host
+  // (`s3.dbrij.com`), so the brand is a better chip name than "S3 compatible".
+  const brand = /^s3\.([a-z0-9-]{2,})\.[a-z]{2,}$/i.exec(host)
+  if (brand) return brand[1].replace(/[-_]+/g, ' ').replace(/\b[a-z]/g, (letter) => letter.toUpperCase())
   return null
 }
 
@@ -420,7 +425,7 @@ function resolveCustom(): Resolved {
   if (!endpoint) notes.push('S3_ENDPOINT_URL (or AWS_ENDPOINT_URL_S3) is required: the SDK needs the S3 API host of the provider.')
   if (pathStyle.note) notes.push(pathStyle.note)
   if (quota.note) notes.push(quota.note)
-  if (!bucket) notes.push('Set S3_BUCKET (or AWS_S3_BUCKET) to the bucket name exactly as the provider lists it.')
+  if (!bucket) notes.push('No bucket named: the server will list the buckets these credentials can see and use the only one (several are reported by name). Set S3_BUCKET to pin it.')
 
   return {
     bucket,
@@ -451,6 +456,12 @@ type Definition = {
   hideWhenUnconfigured?: boolean
   /** Variables that count as "this backend was configured at all". */
   presenceVars?: string[]
+  /**
+   * Variables that may stay unset because they can be worked out at connect time.
+   * The generic backend discovers the bucket from the account, so its absence must
+   * not disable the chip.
+   */
+  optionalVars?: string[]
   resolve: () => Resolved
 }
 
@@ -496,6 +507,7 @@ const DEFINITIONS: Definition[] = [
     pathStyle: true,
     credentialsHint: 'Generic: S3_ENDPOINT_URL, S3_REGION, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY (+ S3_FORCE_PATH_STYLE, S3_LABEL, S3_STORAGE_MAX_MB). Use for Storj, Hetzner, Tigris, DigitalOcean, Linode, Scaleway, MinIO, AWS.',
     hideWhenUnconfigured: true,
+    optionalVars: ['S3_BUCKET'],
     presenceVars: [
       'S3_ENDPOINT_URL', 'S3_BUCKET', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_LABEL',
       'AWS_ENDPOINT_URL_S3', 'AWS_ENDPOINT_URL', 'AWS_S3_BUCKET', 'DBRIJ_STORAGE_URL', 'DBRIJ_STORAGE_BUCKET',
@@ -508,7 +520,8 @@ const DEFINITIONS: Definition[] = [
 export function listStoragePresets(): StoragePreset[] {
   return DEFINITIONS.filter((definition) => !definition.hideWhenUnconfigured || isConfigured(definition)).map((definition) => {
     const resolved = definition.resolve()
-    const missing = resolved.required.filter(([, value]) => !value).map(([name]) => name)
+    const optional = new Set(definition.optionalVars ?? [])
+    const missing = resolved.required.filter(([, value]) => !value).map(([name]) => name).filter((name) => !optional.has(name))
     // A value supplied under an accepted alias counts as configured.
     const env = resolved.required.map(([name, value]) => ({ name, state: value ? 'ok' : envState(name) }))
     const emptyVars = env.filter((entry) => entry.state === 'empty' || entry.state === 'placeholder').map((entry) => entry.name)
