@@ -284,11 +284,14 @@ export function SettingsPage() {
     setAccounts(data.accounts)
 
     try {
-      const configData = await apiFetch<{ exists: boolean; clientId: string; redirectUri: string; hasSecret: boolean; defaultRedirectUri: string }>('/system/google-config')
+      const configData = await apiFetch<{ exists: boolean; clientId: string; redirectUri: string; storedRedirectUri?: string; problem?: string | null; hasSecret: boolean; defaultRedirectUri: string }>('/system/google-config')
       if (configData.exists) {
         setGoogleClientId(configData.clientId || '')
         setGoogleRedirectUri(configData.redirectUri || '')
-        setHasSecret(configData.hasSecret || false)
+        // A stored placeholder secret is not a secret: require the real one, or the
+        // form happily re-saves the placeholder and the connection stays broken.
+        const secretUnusable = Boolean(configData.problem && /secret/i.test(configData.problem))
+        setHasSecret(Boolean(configData.hasSecret) && !secretUnusable)
       }
       setDefaultRedirectUri(configData.defaultRedirectUri || '')
     } catch (e) {
@@ -530,7 +533,12 @@ export function SettingsPage() {
               </label>
 
               <label className="grid gap-1.5 text-xs font-bold text-slate-500">
-                Client Secret {hasSecret && <span className="font-normal text-emerald-600">(Already Configured)</span>}
+                Client Secret{' '}
+                {hasSecret ? (
+                  <span className="font-normal text-emerald-600">(Already Configured - leave empty to keep it)</span>
+                ) : (
+                  <span className="font-normal text-amber-600">(paste the real secret from Google Cloud)</span>
+                )}
                 <input
                   className="h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 text-sm focus:border-blue-600 focus:outline-none"
                   type="password"

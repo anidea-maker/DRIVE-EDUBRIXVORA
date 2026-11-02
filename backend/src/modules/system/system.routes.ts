@@ -5,8 +5,8 @@ import fs from 'fs'
 import { requireAuth } from '../../middleware/auth.middleware.js'
 import { prisma } from '../../config/prisma.js'
 import { decryptText, encryptText } from '../../utils/crypto.js'
-import { describeConfigProblem } from '../google/config-health.js'
-import { repairStoredRedirectUri, resolveGoogleRedirectUri } from '../google/redirect-uri.js'
+import { describeConfigProblem, looksLikePlaceholder, GOOGLE_CALLBACK_PATH } from '../google/config-health.js'
+import { repairStoredRedirectUri, requestOrigin, resolveGoogleRedirectUri } from '../google/redirect-uri.js'
 import Busboy from 'busboy'
 
 export const systemRouter = Router()
@@ -157,6 +157,11 @@ systemRouter.get('/google-config', requireAuth, async (req, res, next) => {
 // values that clearly are not one (a project number, an API key, a URL).
 const googleClientIdPattern = /^[^\s]+\.apps\.googleusercontent\.com$/i
 
+/** Placeholder detection, ignoring surrounding whitespace so `<client secret>` matches. */
+function rawSecretLooksLikePlaceholder(secret: string): boolean {
+  return looksLikePlaceholder(secret)
+}
+
 function readGoogleBody(body: unknown, request: { protocol: string; host: string }) {
   const input = (body ?? {}) as { clientId?: unknown; clientSecret?: unknown; redirectUri?: unknown }
 
@@ -166,6 +171,14 @@ function readGoogleBody(body: unknown, request: { protocol: string; host: string
 
   if (!clientId) {
     return { error: { code: 'BAD_REQUEST', message: 'Client ID is required. Copy it from Google Cloud -> APIs & Services -> Credentials.' } } as const
+  }
+  if (looksLikePlaceholder(clientId)) {
+    return {
+      error: {
+        code: 'BAD_REQUEST',
+        message: 'That Client ID is documentation text, not a real value. Copy the ID ending in ".apps.googleusercontent.com" from Google Cloud -> APIs & Services -> Credentials.',
+      },
+    } as const
   }
   if (/\s/.test(clientId)) {
     return { error: { code: 'BAD_REQUEST', message: 'Client ID contains a space or line break. Copy just the ID, with no surrounding whitespace.' } } as const
@@ -181,16 +194,27 @@ function readGoogleBody(body: unknown, request: { protocol: string; host: string
       },
     } as const
   }
+  // An empty secret is "not provided" (the stored one may be reused) - only a
+  // non-empty placeholder is an error.
+  if (clientSecret && rawSecretLooksLikePlaceholder(clientSecret)) {
+    return {
+      error: {
+        code: 'BAD_REQUEST',
+        message: 'That Client Secret is documentation text, not a real value. Copy it from Google Cloud -> APIs & Services -> Credentials -> your OAuth 2.0 Client IDs -> "Client secret".',
+      },
+    } as const
+  }
   if (/\s/.test(clientSecret)) {
     return { error: { code: 'BAD_REQUEST', message: 'Client Secret contains a space or line break. Copy it again without surrounding whitespace.' } } as const
   }
 
   // The default has to be reachable over https: Google rejects http redirect URIs
   // for anything except localhost, and behind a proxy req.protocol can be http.
-  const host = request.host || 'localhost:4000'
-  const isLocalHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(host)
-  const scheme = request.protocol === 'http' && !isLocalHost ? 'https' : request.protocol || 'http'
-  const defaultRedirect = `${scheme}://${host}/connected-accounts/google/callback`
+  const origin = requestOrigin({
+    protocol: request.protocol,
+    get: (name: string) => (name === 'host' ? request.host : undefined),
+  })
+  const defaultRedirect = `${origin ?? `https://${request.host || 'localhost:4000'}`}${GOOGLE_CALLBACK_PATH}`
 
   let redirectUri = defaultRedirect
   if (rawRedirect) {
@@ -238,8 +262,25 @@ systemRouter.post('/google-config', requireAuth, async (req, res, next) => {
       'https://www.googleapis.com/auth/userinfo.profile',
     ]
 
+    // A placeholder is not a credential. Saving one "succeeds" and leaves Connect
+    // Drive broken with a green message, which is how `<client secret>` ended up in
+    // the live database.
+    if (clientSecret && looksLikePlaceholder(clientSecret)) {
+      return res.status(400).json({
+        code: 'BAD_REQUEST',
+        message: 'That Client Secret is documentation text, not a real value. Copy it from Google Cloud -> APIs & Services -> Credentials -> your OAuth 2.0 Client IDs -> "Client secret".',
+      })
+    }
+    if (looksLikePlaceholder(clientId)) {
+      return res.status(400).json({
+        code: 'BAD_REQUEST',
+        message: 'That Client ID is documentation text, not a real value. Copy the ID ending in ".apps.googleusercontent.com" from Google Cloud -> Credentials.',
+      })
+    }
+
     // Reuse the stored secret when the form only changes the client ID.
     let finalSecret = clientSecret
+    let reusedPlaceholderSecret = false
     if (!finalSecret) {
       const previous = await prisma.providerConfig.findFirst({
         where: { userId: null, provider: 'google_drive' },
@@ -247,14 +288,23 @@ systemRouter.post('/google-config', requireAuth, async (req, res, next) => {
       })
       if (previous) {
         try {
-          finalSecret = decryptText(previous.clientSecretEncrypted)
+          const stored = decryptText(previous.clientSecretEncrypted)
+          // Only reuse a secret that is actually usable - reusing a placeholder is
+          // what kept the deployment broken after a "successful" save.
+          if (looksLikePlaceholder(stored)) reusedPlaceholderSecret = true
+          else finalSecret = stored
         } catch {
           // Stored with a different TOKEN_ENCRYPTION_KEY; ask for the secret again.
         }
       }
     }
     if (!finalSecret) {
-      return res.status(400).json({ code: 'BAD_REQUEST', message: 'Client Secret is required for first-time setup. Paste it from Google Cloud -> Credentials.' })
+      return res.status(400).json({
+        code: 'BAD_REQUEST',
+        message: reusedPlaceholderSecret
+          ? 'The Client Secret currently stored is a placeholder, so it cannot be reused. Paste the real Client Secret from Google Cloud -> APIs & Services -> Credentials -> your OAuth 2.0 Client IDs.'
+          : 'Client Secret is required. Paste it from Google Cloud -> APIs & Services -> Credentials -> your OAuth 2.0 Client IDs.',
+      })
     }
 
     const clientIdEncrypted = encryptText(clientId)
