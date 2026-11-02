@@ -1,8 +1,8 @@
 import { useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { HardDrive } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
+import { BrandLogo } from '@/components/drive/BrandLogo'
+import { AuthShell } from '@/components/auth/AuthShell'
 import { GoogleLogo } from '@/components/auth/GoogleLogo'
 import { Input } from '@/components/ui/input'
 import { apiFetch } from '@/lib/api'
@@ -46,25 +46,43 @@ export function RegisterPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-50 p-5">
-      <Card className="w-full max-w-md p-6">
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-white"><HardDrive className="h-6 w-6" /></div>
-          <div><h1 className="text-2xl font-extrabold">Register</h1><p className="text-sm text-slate-500">Create your storage gateway account.</p></div>
-        </div>
-        <form onSubmit={submit} className="mt-6 grid gap-4">
-          <label className="grid gap-2 text-sm font-semibold">Name<Input value={name} onChange={(e) => setName(e.target.value)} required /></label>
-          <label className="grid gap-2 text-sm font-semibold">Email<Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></label>
-          <label className="grid gap-2 text-sm font-semibold">Password<Input type="password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} required /></label>
-          {error ? <p className="rounded-xl bg-red-50 p-3 text-sm text-red-600">{error}</p> : null}
-          <Button disabled={loading}>{loading ? 'Creating...' : 'Create Account'}</Button>
-        </form>
-        <div className="mt-4 grid gap-3">
-          <div className="flex items-center gap-3 text-xs font-semibold uppercase tracking-wide text-slate-400"><span className="h-px flex-1 bg-slate-200" />or<span className="h-px flex-1 bg-slate-200" /></div>
-          <Button variant="outline" disabled={googleLoading} onClick={continueWithGoogle}><GoogleLogo />{googleLoading ? 'Redirecting...' : 'Continue with Google and connect Drive'}</Button>
-        </div>
-        <p className="mt-5 text-center text-sm text-slate-500">Already registered? <Link className="font-bold text-blue-600" to="/login">Login</Link></p>
-      </Card>
-    </main>
+    <AuthShell>
+      <div className="mb-8 flex items-center gap-3 lg:hidden">
+        <BrandLogo className="h-10 w-10 brand-mark" />
+        <span className="text-lg font-extrabold tracking-tight">9Drive</span>
+      </div>
+
+      <h1 className="text-[26px] font-extrabold leading-tight tracking-tight">Create your account</h1>
+      <p className="mt-1.5 text-sm text-slate-500">One workspace for every bucket you own.</p>
+
+      <form onSubmit={submit} className="mt-7 grid gap-4">
+        <label className="grid gap-1.5 text-[13px] font-semibold text-slate-600">
+          Name
+          <Input autoComplete="name" placeholder="Ada Lovelace" value={name} onChange={(e) => setName(e.target.value)} required />
+        </label>
+        <label className="grid gap-1.5 text-[13px] font-semibold text-slate-600">
+          Email
+          <Input type="email" autoComplete="email" placeholder="you@company.com" value={email} onChange={(e) => setEmail(e.target.value)} required />
+        </label>
+        <label className="grid gap-1.5 text-[13px] font-semibold text-slate-600">
+          Password
+          <Input type="password" autoComplete="new-password" placeholder="At least 8 characters" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} required />
+        </label>
+        {error ? <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-600 dark:border-red-500/30">{error}</p> : null}
+        <Button className="mt-1 h-11 w-full" disabled={loading}>{loading ? 'Creating account...' : 'Create account'}</Button>
+      </form>
+
+      <div className="my-6 flex items-center gap-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+        <span className="h-px flex-1 bg-slate-200" />or<span className="h-px flex-1 bg-slate-200" />
+      </div>
+
+      <Button variant="outline" className="h-11 w-full" disabled={googleLoading} onClick={continueWithGoogle}>
+        <GoogleLogo />{googleLoading ? 'Redirecting...' : 'Continue with Google'}
+      </Button>
+
+      <p className="mt-7 text-center text-sm text-slate-500">
+        Already registered? <Link className="font-bold text-[var(--accent)] hover:underline" to="/login">Sign in</Link>
+      </p>
+    </AuthShell>
   )
 }

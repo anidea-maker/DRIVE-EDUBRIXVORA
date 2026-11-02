@@ -112,7 +112,7 @@ export function AccountMenu({
           // `bg-white` is forced transparent by the global stylesheet
           // (`div.bg-white:not(button)`), which made the menu open invisibly. Use the
           // themed card surface so it is opaque in both light and dark mode.
-          className="absolute left-0 right-0 top-full z-[60] mt-1 overflow-hidden rounded-xl border border-[var(--card-border)] bg-[var(--card-bg)] py-1 shadow-xl backdrop-blur-xl"
+          className="absolute left-0 right-0 top-full z-[60] mt-1 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] py-1 shadow-[var(--shadow-raised)]"
         >
           <NavLink
             to="/settings"

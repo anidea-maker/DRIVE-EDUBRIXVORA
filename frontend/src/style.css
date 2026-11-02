@@ -2,96 +2,159 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-:root, :root.light {
+/*
+ * 9Drive design system - "Signal"
+ *
+ * Replaces the earlier glassmorphic layer. The trade: glass looked interesting on
+ * a hero and turned into mud everywhere else - text over blurred gradients loses
+ * contrast, every card hover moved, and the palette changed with what was behind
+ * it. This is a flat, high-contrast system:
+ *
+ *   canvas   subtle tinted paper, one soft accent wash at the top
+ *   surface  solid, 1px border, radius 20, shadow only on hover
+ *   accent   indigo 600 (light) / 500 (dark) - one accent, used for action only
+ *   type     same Manrope, tighter headings, tabular numbers for storage figures
+ *
+ * The theme is driven by these variables, and a set of mappings below keeps the
+ * Tailwind utilities already used throughout the app (`bg-slate-50`, `text-slate-500`,
+ * …) pointing at them instead of the raw palette - that is what makes every page
+ * follow the theme without touching 6,000 lines of markup.
+ */
+
+:root,
+:root.light {
+  /* Canvas: flat, one accent wash so the page does not read as dead grey. */
   --bg-gradient:
-    radial-gradient(at 0% 0%, rgba(224, 231, 255, 0.45) 0px, transparent 50%),
-    radial-gradient(at 50% 0%, rgba(245, 243, 255, 0.5) 0px, transparent 50%),
-    radial-gradient(at 100% 0%, rgba(254, 244, 244, 0.45) 0px, transparent 50%),
-    radial-gradient(at 50% 100%, rgba(240, 253, 250, 0.3) 0px, transparent 50%),
-    #fafcfd;
-  --text-primary: #0f172a;
-  --text-secondary: #475569;
-  --text-bold: #0f172a;
-  --card-bg: rgba(255, 255, 255, 0.45);
-  --card-border: rgba(255, 255, 255, 0.6);
-  --sidebar-bg: rgba(255, 255, 255, 0.4);
-  --sidebar-border: rgba(255, 255, 255, 0.5);
-  --input-bg: rgba(255, 255, 255, 0.5);
-  --input-border: rgba(255, 255, 255, 0.6);
-  --input-focus-bg: rgba(255, 255, 255, 0.85);
-  --shadow-color: rgba(0, 0, 0, 0.02);
-  --shadow-hover: rgba(0, 0, 0, 0.04);
-  --active-nav-bg: linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, rgba(99, 102, 241, 0.08) 100%);
-  --active-nav-text: #1d4ed8;
-  --active-nav-border: #3b82f6;
-  --button-shadow: rgba(59, 130, 246, 0.25);
-  --button-hover-shadow: rgba(59, 130, 246, 0.35);
-  --outline-btn-bg: rgba(255, 255, 255, 0.02);
-  --outline-btn-border: rgba(255, 255, 255, 0.2);
+    radial-gradient(1100px 520px at 12% -10%, rgba(99, 102, 241, 0.1), transparent 70%),
+    radial-gradient(900px 460px at 100% 0%, rgba(14, 165, 233, 0.08), transparent 65%),
+    #f6f7fb;
 
-  /* Overrides for Tailwind Slate Utilities */
-  --slate-50-override: #f8fafc;
-  --slate-100-override: #f1f5f9;
-  --slate-200-override: #e2e8f0;
+  --surface: #ffffff;
+  --surface-muted: #f8f9fc;
+  --surface-inset: #f3f5fa;
+  --border: #e6e8f0;
+  --border-strong: #d4d8e4;
 
-  /* Overrides for Alerts/Status messages */
-  --blue-bg-override: #eff6ff;
-  --blue-text-override: #1e40af;
-  --emerald-bg-override: #ecfdf5;
-  --emerald-text-override: #065f46;
-  --red-bg-override: #fef2f2;
+  --text-primary: #0d1425;
+  --text-secondary: #5b6478;
+  --text-muted: #8a93a6;
+
+  --accent: #4f46e5;
+  --accent-strong: #4338ca;
+  --accent-soft: rgba(79, 70, 229, 0.09);
+  --accent-border: rgba(79, 70, 229, 0.22);
+  --accent-contrast: #ffffff;
+
+  --success: #0f9d63;
+  --warning: #b45309;
+  --danger: #dc2626;
+
+  /* Legacy variable names the existing CSS layer reads. */
+  --card-bg: var(--surface);
+  --card-border: var(--border);
+  --sidebar-bg: var(--surface);
+  --sidebar-border: var(--border);
+  --input-bg: var(--surface);
+  --input-border: var(--border);
+  --input-focus-bg: var(--surface);
+  --shadow-color: rgba(16, 24, 40, 0.05);
+  --shadow-hover: rgba(16, 24, 40, 0.1);
+  --active-nav-bg: var(--accent-soft);
+  --active-nav-text: var(--accent-strong);
+  --active-nav-border: var(--accent);
+  --button-shadow: rgba(79, 70, 229, 0.28);
+  --button-hover-shadow: rgba(79, 70, 229, 0.38);
+  --outline-btn-bg: var(--surface);
+  --outline-btn-border: var(--border-strong);
+
+  /* Tailwind slate mappings (light). */
+  --slate-50-override: #f8f9fc;
+  --slate-100-override: #f1f3f9;
+  --slate-200-override: #e6e8f0;
+  --slate-300-override: #d4d8e4;
+
+  /* Status surfaces. */
+  --blue-bg-override: #eef1fe;
+  --blue-text-override: #3730a3;
+  --emerald-bg-override: #e8f7f0;
+  --emerald-text-override: #06674a;
+  --red-bg-override: #fdeeee;
   --red-text-override: #991b1b;
+  --amber-bg-override: #fdf3e3;
+  --amber-text-override: #8a4b09;
+
+  --radius-control: 12px;
+  --radius-surface: 20px;
+  --shadow-surface: 0 1px 2px rgba(16, 24, 40, 0.04), 0 12px 32px -12px rgba(16, 24, 40, 0.12);
+  --shadow-raised: 0 2px 4px rgba(16, 24, 40, 0.05), 0 22px 48px -16px rgba(16, 24, 40, 0.22);
+  color-scheme: light;
 }
 
 :root.dark {
   --bg-gradient:
-    radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.18) 0px, transparent 55%),
-    radial-gradient(at 100% 0%, rgba(244, 63, 94, 0.12) 0px, transparent 50%),
-    radial-gradient(at 50% 100%, rgba(16, 185, 129, 0.1) 0px, transparent 55%),
-    #090d16;
-  --text-primary: #f1f5f9;
-  --text-secondary: #94a3b8;
-  --text-bold: #f8fafc;
-  --card-bg: rgba(18, 24, 43, 0.55);
-  --card-border: rgba(255, 255, 255, 0.08);
-  --sidebar-bg: rgba(10, 15, 28, 0.65);
-  --sidebar-border: rgba(255, 255, 255, 0.08);
-  --input-bg: rgba(255, 255, 255, 0.04);
-  --input-border: rgba(255, 255, 255, 0.08);
-  --input-focus-bg: rgba(255, 255, 255, 0.08);
-  --shadow-color: rgba(0, 0, 0, 0.3);
-  --shadow-hover: rgba(0, 0, 0, 0.4);
-  --active-nav-bg: linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(244, 63, 94, 0.05) 100%);
-  --active-nav-text: #f8fafc;
-  --active-nav-border: #6366f1;
-  --button-shadow: rgba(99, 102, 241, 0.35);
-  --button-hover-shadow: rgba(99, 102, 241, 0.5);
-  --outline-btn-bg: rgba(255, 255, 255, 0.02);
-  --outline-btn-border: rgba(255, 255, 255, 0.1);
+    radial-gradient(1100px 520px at 10% -12%, rgba(99, 102, 241, 0.16), transparent 70%),
+    radial-gradient(900px 460px at 100% 0%, rgba(56, 189, 248, 0.09), transparent 65%),
+    #080b12;
 
-  /* Overrides for Tailwind Slate Utilities in Dark Mode */
-  --slate-50-override: rgba(255, 255, 255, 0.03);
-  --slate-100-override: rgba(255, 255, 255, 0.08);
-  --slate-200-override: rgba(255, 255, 255, 0.15);
+  --surface: #111726;
+  --surface-muted: #0e1420;
+  --surface-inset: #161e2f;
+  --border: #232c3f;
+  --border-strong: #33405a;
 
-  /* Overrides for Alerts/Status messages in Dark Mode */
-  --blue-bg-override: rgba(59, 130, 246, 0.15);
-  --blue-text-override: #93c5fd;
-  --emerald-bg-override: rgba(16, 185, 129, 0.15);
+  --text-primary: #eaeefb;
+  --text-secondary: #9aa6bd;
+  --text-muted: #6f7c94;
+
+  --accent: #6366f1;
+  --accent-strong: #a5b4fc;
+  --accent-soft: rgba(99, 102, 241, 0.16);
+  --accent-border: rgba(129, 140, 248, 0.32);
+  --accent-contrast: #ffffff;
+
+  --success: #34d399;
+  --warning: #fbbf24;
+  --danger: #f87171;
+
+  --shadow-color: rgba(0, 0, 0, 0.4);
+  --shadow-hover: rgba(0, 0, 0, 0.55);
+  --active-nav-bg: var(--accent-soft);
+  --active-nav-text: #e7eaff;
+  --active-nav-border: var(--accent);
+  --button-shadow: rgba(99, 102, 241, 0.4);
+  --button-hover-shadow: rgba(99, 102, 241, 0.55);
+  --outline-btn-bg: rgba(255, 255, 255, 0.03);
+  --outline-btn-border: #2b3549;
+
+  --slate-50-override: rgba(255, 255, 255, 0.035);
+  --slate-100-override: rgba(255, 255, 255, 0.07);
+  --slate-200-override: rgba(255, 255, 255, 0.12);
+  --slate-300-override: rgba(255, 255, 255, 0.18);
+
+  --blue-bg-override: rgba(99, 102, 241, 0.16);
+  --blue-text-override: #c7d2fe;
+  --emerald-bg-override: rgba(16, 185, 129, 0.16);
   --emerald-text-override: #6ee7b7;
-  --red-bg-override: rgba(239, 68, 68, 0.15);
+  --red-bg-override: rgba(248, 113, 113, 0.14);
   --red-text-override: #fca5a5;
+  --amber-bg-override: rgba(251, 191, 36, 0.14);
+  --amber-text-override: #fcd34d;
+
+  --shadow-surface: 0 1px 2px rgba(0, 0, 0, 0.4), 0 18px 40px -18px rgba(0, 0, 0, 0.8);
+  --shadow-raised: 0 2px 6px rgba(0, 0, 0, 0.5), 0 28px 56px -20px rgba(0, 0, 0, 0.9);
+  color-scheme: dark;
 }
 
 :root {
   font-family: Manrope, ui-sans-serif, system-ui, sans-serif;
   color: var(--text-primary);
   background: var(--bg-gradient);
+  background-attachment: fixed;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  transition: background 0.5s ease, color 0.5s ease;
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 * {
@@ -106,11 +169,61 @@ body {
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
-/* Force layout transparency to let background gradients shine through */
+/* Headings: tighter tracking, no gradient text. */
+h1,
+h2,
+h3 {
+  letter-spacing: -0.02em;
+}
+
+/* Storage figures line up when they are the same width. */
+.tabular,
+[data-stats] p {
+  font-variant-numeric: tabular-nums;
+}
+
+/* One visible focus style, for keyboards only. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+/* Slim scrollbars, themed. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+  background-clip: content-box;
+}
+
+/* Layout elements let the canvas show through. */
 main,
 main.bg-white,
 main div.bg-white,
@@ -120,13 +233,51 @@ section.min-w-0 {
   background-color: transparent !important;
 }
 
-/* Override solid bg-white on containers to keep glass effect */
-div.bg-white:not(button),
-section.bg-white:not(button) {
-  background-color: transparent !important;
+/*
+ * Surfaces.
+ *
+ * `div.bg-white` used to be forced transparent for the glass effect; a transparent
+ * card over a flat canvas is just a border, so surfaces now paint themselves.
+ * Anything that draws a card in this app carries `border-slate-200` + a rounded
+ * corner, which is what the two rules below key off.
+ */
+.rounded-xl.border-slate-200,
+.rounded-2xl.border-slate-200,
+div.border.border-slate-200,
+.card {
+  background: var(--surface) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: var(--shadow-surface) !important;
 }
 
-/* Map Tailwind Slate background utilities to theme variables */
+/* Cards lift a little on hover; controls must not move under the pointer. */
+.card:hover,
+div.card:hover {
+  border-color: var(--border-strong) !important;
+  box-shadow: var(--shadow-raised) !important;
+  transform: translateY(-1px);
+}
+
+.card,
+.rounded-xl.border-slate-200,
+.rounded-2xl.border-slate-200 {
+  transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---------------------------------------------------------------- utilities */
+
+/* Tailwind slate backgrounds follow the theme. */
 .bg-slate-50 {
   background-color: var(--slate-50-override) !important;
 }
@@ -136,248 +287,298 @@ section.bg-white:not(button) {
 .bg-slate-200 {
   background-color: var(--slate-200-override) !important;
 }
-
-/*
- * Opacity variants need their own rules.
- *
- * `.bg-slate-50` is remapped to a theme variable, but `.bg-slate-50/95`
- * compiles to a *different* selector (`.bg-slate-50\/95`) that Tailwind resolves
- * with color-mix() against the raw palette. Forgetting this is how a light
- * `#f8fafc` band appeared inside the dark sidebar.
- */
 .bg-slate-50\/95,
-.bg-slate-50\/80 {
-  background-color: var(--slate-50-override) !important;
+.bg-slate-50\/80,
+.bg-slate-50\/60,
+.bg-slate-50\/50,
+.bg-slate-50\/40 {
+  background-color: var(--surface-muted) !important;
 }
-.bg-slate-100\/80 {
+.bg-slate-100\/80,
+.bg-slate-100\/60 {
   background-color: var(--slate-100-override) !important;
 }
 .bg-slate-200\/60,
-.bg-slate-200\/70 {
+.bg-slate-200\/70,
+.bg-slate-200\/50 {
   background-color: var(--slate-200-override) !important;
 }
+.bg-white,
+.bg-white\/95,
+.bg-white\/80 {
+  background-color: var(--surface) !important;
+}
 
-/* Text shades used by the UI but missing from the mapping above, so they render
-   dark-slate-on-dark instead of following the theme. */
+/* Text. */
+p,
+span,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+label,
+div,
+td,
+th {
+  color: var(--text-primary);
+  transition: color 0.2s ease;
+}
+
+.text-slate-400 {
+  color: var(--text-muted) !important;
+}
+.text-slate-500,
+.text-slate-600 {
+  color: var(--text-secondary) !important;
+}
 .text-slate-700,
 .text-slate-800 {
   color: var(--text-secondary) !important;
 }
+.text-slate-900,
+.text-slate-950,
+.font-extrabold {
+  color: var(--text-primary) !important;
+}
 
-/* Map Tailwind Alert background and text utilities to theme variables */
+/* Borders. */
+.border-slate-100,
+.border-slate-200,
+.border-slate-300,
+.border-slate-200\/60,
+.border-slate-200\/50 {
+  border-color: var(--border) !important;
+}
+
+/* Status surfaces. */
 .bg-blue-50 {
   background-color: var(--blue-bg-override) !important;
 }
-.text-blue-700 {
-  color: var(--blue-text-override) !important;
+.text-blue-700,
+.text-blue-600 {
+  color: var(--accent-strong) !important;
 }
 .bg-emerald-50 {
   background-color: var(--emerald-bg-override) !important;
 }
-.text-emerald-700 {
+.text-emerald-700,
+.text-emerald-600 {
   color: var(--emerald-text-override) !important;
 }
 .bg-red-50 {
   background-color: var(--red-bg-override) !important;
 }
-.text-red-700 {
+.text-red-700,
+.text-red-600 {
   color: var(--red-text-override) !important;
 }
+.bg-amber-50 {
+  background-color: var(--amber-bg-override) !important;
+}
+.text-amber-700,
+.text-amber-800,
+.text-amber-600 {
+  color: var(--amber-text-override) !important;
+}
 
-/* Hover effects for background classes */
 .hover\:bg-slate-100:hover {
   background-color: var(--slate-100-override) !important;
-  opacity: 0.9;
 }
-.hover\:bg-slate-200:hover {
+.hover\:bg-slate-200:hover,
+.hover\:bg-slate-200\/50:hover {
   background-color: var(--slate-200-override) !important;
-  opacity: 0.95;
+}
+.hover\:bg-slate-50:hover {
+  background-color: var(--surface-muted) !important;
 }
 
-/* Base Text Color Overrides */
-p, span, h1, h2, h3, h4, h5, h6, label, div, td, th {
-  color: var(--text-primary);
-  transition: color 0.3s ease;
-}
+/* ------------------------------------------------------------------ sidebar */
 
-/* Subtitles / Secondary Text */
-.text-slate-500,
-.text-slate-600,
-.text-slate-400 {
-  color: var(--text-secondary) !important;
-  transition: color 0.3s ease;
-}
-
-/* Bold / Primary Text */
-.text-slate-950,
-.text-slate-900,
-.font-extrabold {
-  color: var(--text-bold) !important;
-  transition: color 0.3s ease;
-}
-
-/* Futuristic Glass Sidebar */
 aside {
-  background: var(--sidebar-bg) !important;
-  backdrop-filter: blur(25px) saturate(180%);
-  -webkit-backdrop-filter: blur(25px) saturate(180%);
-  border-right: 1px solid var(--sidebar-border) !important;
-  box-shadow: 4px 0 30px var(--shadow-color) !important;
-  transition: background 0.5s ease, border-color 0.5s ease, box-shadow 0.5s ease;
+  background: var(--surface) !important;
+  backdrop-filter: none !important;
+  border-right: 1px solid var(--border) !important;
+  box-shadow: none !important;
+  transition: background-color 0.3s ease, border-color 0.3s ease;
 }
 
-/* Profile divider inside sidebar */
 .border-y.border-slate-200 {
-  border-color: var(--sidebar-border) !important;
-  transition: border-color 0.3s ease;
+  border-color: var(--border) !important;
 }
 
-/* Glass Cards and Info Panels */
-.rounded-xl.border-slate-200,
-.rounded-2xl.border-slate-200,
-div.border.border-slate-200,
-.card {
-  background: var(--card-bg) !important;
-  backdrop-filter: blur(20px) saturate(130%);
-  -webkit-backdrop-filter: blur(20px) saturate(130%);
-  border: 1px solid var(--card-border) !important;
-  box-shadow:
-    0 10px 30px var(--shadow-color),
-    0 1px 3px rgba(0, 0, 0, 0.05) !important;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+/* Navigation: a filled pill, not a coloured bar. */
+nav a,
+aside a {
+  color: var(--text-secondary) !important;
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
 }
 
-.rounded-xl.border-slate-200:hover,
-.rounded-2xl.border-slate-200:hover {
-  background: var(--card-bg) !important;
-  filter: brightness(1.05);
-  border-color: var(--outline-btn-border) !important;
-  box-shadow:
-    0 15px 35px var(--shadow-hover),
-    0 1px 10px rgba(0, 0, 0, 0.08) !important;
-  transform: translateY(-2px);
+nav a.active,
+aside a.active {
+  background: var(--active-nav-bg) !important;
+  border-left: none !important;
+  padding-left: 1rem !important;
+  color: var(--active-nav-text) !important;
+  font-weight: 700 !important;
+  box-shadow: inset 0 0 0 1px var(--accent-border) !important;
 }
 
-/* Inputs and Select Boxes */
-input:not([type="checkbox"]):not([type="radio"]), select, textarea {
-  background: var(--input-bg) !important;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid var(--input-border) !important;
+nav a:not(.active):hover,
+aside a:not(.active):hover {
+  background: var(--slate-100-override) !important;
   color: var(--text-primary) !important;
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.05) !important;
-  transition: all 0.3s ease !important;
+  transform: none;
 }
 
-input:not([type="checkbox"]):not([type="radio"]):focus, select:focus, textarea:focus {
-  background: var(--input-focus-bg) !important;
-  border-color: var(--active-nav-border) !important;
-  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.15) !important;
+/* Storage card in the sidebar. */
+aside .card {
+  background: var(--surface-muted) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: none !important;
+  padding: 1rem !important;
+}
+
+aside .card span.flex.items-center span.rounded {
+  border-radius: 9999px !important;
+  box-shadow: none !important;
+  transform: none;
+}
+
+aside .card .bg-slate-100,
+aside .card .bg-slate-200 {
+  background-color: var(--slate-200-override) !important;
+  border: none !important;
+  overflow: hidden;
+}
+
+aside .card .bg-slate-100 > .bg-blue-600,
+aside .card .bg-slate-200 > .bg-blue-600,
+aside .card .bg-slate-100 > .bg-indigo-600,
+aside .card .bg-slate-200 > .bg-indigo-600 {
+  background: linear-gradient(90deg, var(--accent) 0%, #38bdf8 100%) !important;
+  box-shadow: none !important;
+  border-radius: 9999px !important;
+}
+
+aside .card button.text-orange-600 {
+  color: var(--danger) !important;
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  width: 100% !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 0.5rem !important;
+  font-weight: 600 !important;
+  transition: background-color 0.15s ease, border-color 0.15s ease !important;
+}
+
+aside .card button.text-orange-600:hover {
+  background: var(--red-bg-override) !important;
+  border-color: transparent !important;
+  color: var(--danger) !important;
+  transform: none;
+}
+
+/* ------------------------------------------------------------------ controls */
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+select,
+textarea {
+  background: var(--surface) !important;
+  backdrop-filter: none !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-control) !important;
+  color: var(--text-primary) !important;
+  box-shadow: none !important;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease !important;
+}
+
+input:not([type="checkbox"]):not([type="radio"]):focus,
+select:focus,
+textarea:focus {
+  background: var(--surface) !important;
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px var(--accent-soft) !important;
   outline: none;
 }
 
-/* File/Folder Selection Highlight */
-.file-selected {
-  background: rgba(249, 115, 22, 0.08) !important;
-  border-color: rgba(249, 115, 22, 0.2) !important;
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-muted) !important;
 }
 
-/* Option tags inside select */
 select option {
-  background-color: var(--sidebar-bg) !important;
+  background-color: var(--surface) !important;
   color: var(--text-primary);
 }
 
-/* Sidebar navigation links */
-nav a, aside a {
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  color: var(--text-secondary) !important;
-}
+/* ------------------------------------------------------------------- buttons */
 
-nav a.active, aside a.active {
-  background: var(--active-nav-bg) !important;
-  border-left: 4px solid var(--active-nav-border) !important;
-  padding-left: calc(1rem - 4px) !important;
-  color: var(--active-nav-text) !important;
-  font-weight: 700 !important;
-  box-shadow: inset 2px 0 10px rgba(99, 102, 241, 0.02);
-}
-
-nav a:not(.active):hover, aside a:not(.active):hover {
-  background: var(--slate-100-override) !important;
-  color: var(--text-primary) !important;
-  transform: translateX(3px);
-}
-
-/* Glowing Modern Buttons */
 button.bg-blue-600,
-.bg-blue-600 {
-  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%) !important;
-  border: none !important;
-  color: white !important;
-  box-shadow: 0 4px 20px var(--button-shadow) !important;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+.bg-blue-600:not(.bg-blue-600\/10) {
+  background: var(--accent) !important;
+  border: 1px solid transparent !important;
+  color: var(--accent-contrast) !important;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08), 0 8px 20px -8px var(--button-shadow) !important;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease !important;
 }
 
 button.bg-blue-600:hover,
-.bg-blue-600:hover {
-  background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%) !important;
-  box-shadow: 0 6px 25px var(--button-hover-shadow) !important;
-  transform: translateY(-1px);
+.bg-blue-600:not(.bg-blue-600\/10):hover {
+  background: var(--accent-strong) !important;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.1), 0 12px 26px -10px var(--button-hover-shadow) !important;
 }
 
 button.bg-blue-600:active,
-.bg-blue-600:active {
+.bg-blue-600:not(.bg-blue-600\/10):active {
   transform: translateY(1px);
 }
 
-/* Secondary outline buttons */
 button.border-slate-200:not([style*="background-color"]),
 .border-slate-200:not([style*="background-color"]) {
-  border-color: var(--outline-btn-border) !important;
-  background: var(--outline-btn-bg) !important;
+  border-color: var(--border) !important;
+  background: var(--surface) !important;
   color: var(--text-primary) !important;
-  transition: all 0.3s ease;
 }
-
 
 button.border-slate-200:not([style*="background-color"]):hover,
 .border-slate-200:not([style*="background-color"]):hover {
-  background: var(--slate-100-override) !important;
-  border-color: var(--outline-btn-border) !important;
+  background: var(--surface-inset) !important;
+  border-color: var(--border-strong) !important;
 }
 
+/* ------------------------------------------------------------- misc surfaces */
 
-/* Video Shell elements */
-.shared-video-shell {
-  align-items: center;
-  background: #000;
-  display: flex;
-  height: 100%;
-  justify-content: center;
-  width: 100%;
+.file-selected {
+  background: var(--accent-soft) !important;
+  border-color: var(--accent-border) !important;
+  box-shadow: inset 0 0 0 1px var(--accent-border) !important;
 }
 
-.shared-video-shell .plyr,
-.shared-video-shell .plyr__video-wrapper,
-.shared-video-shell video {
-  height: 100%;
-  width: 100%;
-}
-
-.shared-video-shell video {
-  object-fit: contain;
-}
-
+/* Media shells keep a black stage - it is a video, not a surface. */
+.shared-video-shell,
 .drive-preview-video-shell {
   align-items: center;
   background: #000;
   display: flex;
-  height: 70vh;
   justify-content: center;
   width: 100%;
 }
 
+.shared-video-shell {
+  height: 100%;
+}
+
+.drive-preview-video-shell {
+  height: 70vh;
+}
+
+.shared-video-shell .plyr,
+.shared-video-shell .plyr__video-wrapper,
+.shared-video-shell video,
 .drive-preview-video-shell .plyr,
 .drive-preview-video-shell .plyr__video-wrapper,
 .drive-preview-video-shell video {
@@ -385,55 +586,86 @@ button.border-slate-200:not([style*="background-color"]):hover,
   width: 100%;
 }
 
+.shared-video-shell video,
 .drive-preview-video-shell video {
   object-fit: contain;
 }
 
-/* Sidebar Storage Card Redesign */
-aside .card {
-  background: var(--card-bg) !important;
-  border: 1px solid var(--card-border) !important;
-  box-shadow: 0 4px 20px var(--shadow-color) !important;
-  padding: 1.25rem !important;
+/* ------------------------------------------------------------------- brand */
+
+.brand-mark {
+  background: linear-gradient(140deg, var(--accent) 0%, #7c3aed 55%, #38bdf8 130%);
+  box-shadow: 0 6px 16px -6px var(--button-shadow);
 }
 
-/* Status Indicator Dots */
-aside .card span.flex.items-center span.rounded {
-  border-radius: 9999px !important;
-  box-shadow: 0 0 10px currentColor !important;
-  transform: scale(0.95);
+.brand-wordmark {
+  color: var(--text-primary);
+  letter-spacing: -0.03em;
 }
 
-/* Glowing Gradient Progress Bar */
-aside .card .bg-slate-100 {
-  background-color: var(--slate-100-override) !important;
-  border: 1px solid rgba(255, 255, 255, 0.05);
+/* --------------------------------------------------------------- auth pages */
+
+.auth-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 1024px) {
+  .auth-shell {
+    grid-template-columns: 1.05fr 1fr;
+  }
+}
+
+.auth-aside {
+  position: relative;
+  display: none;
   overflow: hidden;
+  padding: 3rem;
+  color: #fff;
+  background:
+    radial-gradient(600px 400px at 15% 10%, rgba(129, 140, 248, 0.5), transparent 70%),
+    radial-gradient(500px 360px at 90% 90%, rgba(56, 189, 248, 0.35), transparent 70%),
+    linear-gradient(160deg, #312e81 0%, #1e1b4b 55%, #0b1020 100%);
 }
 
-aside .card .bg-slate-100 > .bg-blue-600 {
-  background: linear-gradient(90deg, #6366f1 0%, #3b82f6 100%) !important;
-  box-shadow: 0 0 8px rgba(99, 102, 241, 0.6) !important;
-  border-radius: 9999px !important;
+@media (min-width: 1024px) {
+  .auth-aside {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
 }
 
-/* Log Out Button Contrast Override */
-aside .card button.text-orange-600 {
-  color: #ff6b6b !important;
-  background: rgba(239, 68, 68, 0.06) !important;
-  border: 1px solid rgba(239, 68, 68, 0.15) !important;
-  width: 100% !important;
-  transition: all 0.2s ease-in-out !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: flex-start !important;
-  gap: 0.5rem !important;
-  font-weight: 600 !important;
+/* The aside paints its own dark stage, so its text must not follow the theme. */
+.auth-aside * {
+  color: #fff;
 }
 
-aside .card button.text-orange-600:hover {
-  background: rgba(239, 68, 68, 0.15) !important;
-  border-color: rgba(239, 68, 68, 0.3) !important;
-  color: #ff8787 !important;
-  transform: translateY(-1px);
+.auth-aside .auth-muted {
+  color: rgba(226, 232, 240, 0.72);
+}
+
+.auth-aside .auth-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.4rem 0.8rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  backdrop-filter: blur(6px);
+}
+
+.auth-grid-lines {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(70% 60% at 40% 40%, #000 30%, transparent 100%);
+  pointer-events: none;
 }

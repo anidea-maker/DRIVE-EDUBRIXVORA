@@ -118,13 +118,16 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
   ]
 
   return (
-    <aside className="flex h-full w-64 flex-col border-slate-200/60 bg-slate-50/40 backdrop-blur-xl lg:border-r">
+    <aside className="flex h-full w-[17rem] flex-col border-slate-200/60 bg-[var(--surface)] lg:border-r">
       {/* Scrolls on its own: at ~800px of nav + storage the log-out control used to
           fall below the fold with no way to reach it. */}
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
       <div className="flex items-center gap-2.5 pb-3 pt-1">
-        <BrandLogo className="h-8 w-8" />
-        <span className="text-xl font-extrabold tracking-tight bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">9Drive</span>
+        <BrandLogo className="h-9 w-9 brand-mark" />
+        <div className="min-w-0">
+          <span className="brand-wordmark block text-[17px] font-extrabold leading-none">9Drive</span>
+          <span className="mt-1 block text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">Storage gateway</span>
+        </div>
       </div>
 
       <div className="border-y border-slate-200/60 py-2 my-3">
@@ -133,35 +136,42 @@ function Sidebar({ onNavigate, user, storage, breakdown, onLogout }: { onNavigat
 
       <nav className="grid gap-1">
         {menu.map((item) => item.disabled ? (
-          <button key={item.label} type="button" disabled className="inline-flex h-10 cursor-not-allowed items-center gap-2 rounded-xl px-3.5 text-[13px] font-bold text-slate-400 opacity-60">
+          <button key={item.label} type="button" disabled className="inline-flex h-10 cursor-not-allowed items-center gap-2 rounded-xl px-3 text-[13px] font-semibold text-slate-400/70">
             <item.icon className="h-4 w-4" />
             {item.label}
+            <span className="ml-auto rounded-md border border-slate-200 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-slate-400">Soon</span>
           </button>
         ) : (
-          <NavLink key={item.label} to={item.href} onClick={onNavigate} className={({ isActive }) => cn('inline-flex h-10 items-center gap-2.5 rounded-xl px-3.5 text-[13px] font-bold transition-all border border-transparent', isActive ? 'bg-blue-600/10 text-blue-600 border-blue-600/10 shadow-sm' : 'text-slate-600 hover:bg-slate-200/50 hover:text-slate-900')}>
-            <item.icon className="h-4 w-4" />
-            {item.label}
+          <NavLink key={item.label} to={item.href} onClick={onNavigate} className={({ isActive }) => cn('group inline-flex h-10 items-center gap-2.5 rounded-xl px-3 text-[13px] font-semibold transition-colors', isActive ? 'bg-[var(--accent-soft)] text-[var(--accent-strong)]' : 'text-slate-600 hover:bg-[var(--slate-100-override)] hover:text-[var(--text-primary)]')}>
+            {({ isActive }) => (
+              <>
+                <item.icon className={cn('h-4 w-4 transition-colors', isActive ? 'text-[var(--accent)]' : 'text-slate-400 group-hover:text-slate-600')} />
+                {item.label}
+              </>
+            )}
           </NavLink>
         ))}
       </nav>
 
-      <div className="sticky bottom-0 mt-4 border-t border-[var(--sidebar-border)] bg-[var(--sidebar-bg)] pt-4 pb-1 text-[13px] backdrop-blur-xl">
-        <div className="mb-3 space-y-1.5">
+      <div className="sticky bottom-0 mt-4 border-t border-[var(--sidebar-border)] bg-[var(--surface)] pt-3.5 pb-1 text-[13px]" data-stats>
+        <div className="mb-3 grid grid-cols-2 gap-1.5">
           {items.map(([label, value, color]) => (
-            <div key={label} className="flex items-center justify-between text-slate-500 font-medium">
-              <span className="flex items-center gap-1.5"><span className={cn('h-1.5 w-1.5 rounded-full', color)} />{label}</span>
-              <span className="font-semibold text-slate-600">{value}</span>
+            <div key={label} className="flex items-center justify-between rounded-lg bg-[var(--surface-muted)] px-2 py-1.5 text-slate-500">
+              <span className="flex items-center gap-1.5 text-[11px] font-medium">
+                <span className={cn('h-1.5 w-1.5 rounded-full', color)} />{label}
+              </span>
+              <span className="text-[11px] font-bold text-slate-600">{value}</span>
             </div>
           ))}
         </div>
-        <div className="flex justify-between text-sm font-bold text-slate-600">
-          <span>{formatBytes(storage?.usedBytes)} used</span>
-          <span className="text-slate-400">{formatBytes(storage?.totalBytes)}</span>
+        <div className="flex items-baseline justify-between">
+          <span className="text-[13px] font-bold text-[var(--text-primary)]">{formatBytes(storage?.usedBytes)} <span className="font-medium text-slate-400">of</span> {formatBytes(storage?.totalBytes)}</span>
+          <span className="text-[11px] font-bold text-slate-400">{Math.round(progress)}%</span>
         </div>
-        <div className="my-2 h-1.5 rounded-full bg-slate-200 overflow-hidden">
-          <div className="h-full rounded-full bg-blue-600 transition-all duration-300" style={{ width: `${progress}%` }} />
+        <div className="my-2 h-1.5 rounded-full bg-[var(--slate-200-override)] overflow-hidden">
+          <div className="h-full rounded-full bg-[var(--accent)] transition-all duration-300" style={{ width: `${progress}%` }} />
         </div>
-        <Button variant="ghost" size="sm" className="mt-3 w-full justify-start h-10 px-3 text-[13px] font-bold text-slate-600 hover:text-red-500" onClick={onLogout}>
+        <Button variant="ghost" size="sm" className="mt-2 w-full justify-start h-9 px-2 text-[13px] font-semibold text-slate-500 hover:text-[var(--danger)]" onClick={onLogout}>
           <LogOut className="h-4 w-4" />Log Out
         </Button>
       </div>
@@ -377,12 +387,12 @@ export function DriveLayout() {
 
   return (
     <main className="min-h-screen w-full overflow-x-hidden bg-white">
-      <div className="flex min-h-screen w-full flex-col bg-white lg:h-screen lg:overflow-hidden lg:flex-row">
+      <div className="flex min-h-screen w-full flex-col bg-transparent lg:h-screen lg:overflow-hidden lg:flex-row">
         <div className="hidden lg:block lg:h-screen lg:shrink-0">
           <Sidebar user={user} storage={storage} breakdown={breakdown} onLogout={logout} />
         </div>
         <div className={cn('fixed inset-0 z-40 bg-slate-950/40 transition-opacity lg:hidden', sidebarOpen ? 'opacity-100' : 'pointer-events-none opacity-0')} onClick={() => setSidebarOpen(false)} />
-        <div className={cn('fixed inset-y-0 left-0 z-50 transform bg-white shadow-2xl transition-transform duration-300 ease-out lg:hidden', sidebarOpen ? 'translate-x-0' : '-translate-x-full')}>
+        <div className={cn('fixed inset-y-0 left-0 z-50 transform bg-[var(--surface)] shadow-2xl transition-transform duration-300 ease-out lg:hidden', sidebarOpen ? 'translate-x-0' : '-translate-x-full')}>
           <div className="absolute right-4 top-4 z-10">
             <Button variant="outline" size="icon" aria-label="Close sidebar" onClick={() => setSidebarOpen(false)}>
               <X className="h-5 w-5" />
@@ -391,7 +401,7 @@ export function DriveLayout() {
           <Sidebar user={user} storage={storage} breakdown={breakdown} onLogout={logout} onNavigate={() => setSidebarOpen(false)} />
         </div>
         <section className="min-w-0 flex-1 p-4 sm:p-6 lg:h-screen lg:overflow-y-auto lg:p-8">
-          <header className="flex w-full min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <header className="sticky top-0 z-30 -mx-4 mb-4 flex w-[calc(100%+2rem)] min-w-0 flex-col gap-3 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_82%,transparent)] px-4 py-3 backdrop-blur-md sm:-mx-6 sm:w-[calc(100%+3rem)] sm:px-6 lg:mx-0 lg:w-auto lg:flex-row lg:items-center lg:justify-between lg:rounded-2xl lg:border lg:px-4">
             <div className="flex items-center justify-between gap-3 lg:hidden">
               <div className="flex min-w-0 items-center gap-3">
                 <Button variant="outline" size="icon" aria-label="Open sidebar" onClick={() => setSidebarOpen(true)}>
@@ -428,7 +438,7 @@ export function DriveLayout() {
               </form>
 
               {filtersOpen && (
-                <div className="absolute left-0 right-0 top-12 z-50 rounded-2xl border border-slate-200 bg-white/95 p-5 shadow-2xl backdrop-blur-xl animate-in fade-in slide-in-from-top-2 duration-150">
+                <div className="absolute left-0 right-0 top-12 z-50 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-raised)]">
                   <div className="flex items-center justify-between border-b border-slate-100 pb-3">
                     <span className="text-sm font-extrabold text-slate-950">Advanced Search Filters</span>
                     <button type="button" onClick={clearFilters} className="text-xs font-bold text-blue-600 hover:text-blue-700">Clear All</button>
