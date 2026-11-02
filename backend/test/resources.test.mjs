@@ -251,6 +251,56 @@ test('capability URL minting never emits an API key and expires', async () => {
   assert.ok(!download.url.includes('u1@'))
 })
 
+test('fast live counts use a safe student filter and never invent categories', () => {
+  const student = service.resourceCountsWhere('student', false)
+  assert.deepEqual(student.visibility, { in: ['students', 'public'] })
+  assert.equal(student.availability, 'available')
+  assert.equal(student.isResource, true)
+  assert.equal(student.status, 'active')
+  const studentWithUnavailable = service.resourceCountsWhere('student', true)
+  assert.equal(studentWithUnavailable.availability, undefined)
+  const admin = service.resourceCountsWhere('admin', false)
+  assert.equal(admin.visibility, undefined)
+  assert.equal(admin.availability, undefined)
+
+  assert.equal(service.resourceCountsCacheKey('u1', 'student', false), 'u1|student|0')
+  assert.notEqual(service.resourceCountsCacheKey('u1', 'student', false), service.resourceCountsCacheKey('u1', 'admin', false))
+  assert.deepEqual(service.emptyResourceCounts().byCategory, {})
+  assert.deepEqual(
+    service.normalizeCountGroups(
+      [
+        { category: 'Science', _count: { _all: 2 } },
+        { category: null, _count: { _all: 3 } },
+        { category: 'Science', _count: { _all: 1n } },
+      ],
+      'category',
+    ),
+    { Science: 3, Uncategorised: 3 },
+  )
+})
+
+test('storage status is always reported, even when a provider is degraded', () => {
+  const healthy = service.buildStorageStatus({
+    databaseOk: true,
+    accounts: [{ ok: true, provider: 's3' }, { ok: true, provider: 'google_drive' }],
+    resources: { available: 10, missing: 0, inaccessible: 0, unknown: 0 },
+    checkedAt: '2026-11-02T12:00:00.000Z',
+  })
+  assert.equal(healthy.status, 'connected')
+  assert.equal(healthy.provider, '9Drive')
+  assert.equal(healthy.reported, true)
+  assert.deepEqual(healthy.database, { ok: true })
+
+  const degraded = service.buildStorageStatus({
+    databaseOk: true,
+    accounts: [{ ok: true, provider: 's3' }, { ok: false, provider: 'google_drive', detail: 'auth expired' }],
+    resources: { available: 9, missing: 1, inaccessible: 0, unknown: 0 },
+    checkedAt: '2026-11-02T12:00:01.000Z',
+  })
+  assert.equal(degraded.status, 'degraded')
+  assert.equal(degraded.reported, true)
+})
+
 test('roles come from server-side configuration, never a request body', () => {
   assert.equal(roles.effectiveRole({ email: 'BOSS@example.com', role: 'student' }), 'super_admin')
   assert.equal(roles.effectiveRole({ email: 'admin@example.com', role: 'admin' }), 'admin')

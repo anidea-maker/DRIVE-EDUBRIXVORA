@@ -16,11 +16,16 @@ import { getStorageAdapter } from '../storage/adapters.js'
 import { ProviderOperationError } from '../storage/provider-operations.js'
 import { mintResourceUrl } from './resource-urls.js'
 import {
+  buildStorageStatus,
   checkBulkLimits,
   createResourceRecord,
   decodeResourceCursor,
+  emptyResourceCounts,
   encodeResourceCursor,
+  normalizeCountGroups,
   previewFor,
+  resourceCountsCacheKey,
+  resourceCountsWhere,
   resolveZipNames,
   resourcePatchSchema,
   resourceUploadSchema,
@@ -28,6 +33,7 @@ import {
   serializeResource,
   syncResourceBatch,
   VISIBILITIES,
+  type ResourceCounts,
   type ResourceRow,
   type ResourceUploadMeta,
 } from './resource.service.js'
@@ -319,20 +325,122 @@ resourceRouter.get(
     } catch {
       databaseOk = false
     }
+    const healthy = databaseOk && health.every((entry) => entry.ok)
+    const resources = {
+      available: counts[0],
+      missing: counts[1],
+      inaccessible: counts[2],
+      unknown: counts[3],
+    }
+    const checkedAt = new Date().toISOString()
+    const storage = buildStorageStatus({ databaseOk, accounts: health, resources, checkedAt })
     noStore(res)
-    return res.status(databaseOk && health.every((entry) => entry.ok) ? 200 : 503).json({
-      status: databaseOk && health.every((entry) => entry.ok) ? 'ok' : 'degraded',
+    return res.status(healthy ? 200 : 503).json({
+      status: healthy ? 'ok' : 'degraded',
+      storage,
+      storageStatus: storage.status,
+      reported: true,
       database: { ok: databaseOk },
       accounts: health,
-      resources: {
-        available: counts[0],
-        missing: counts[1],
-        inaccessible: counts[2],
-        unknown: counts[3],
-      },
-      checkedAt: new Date().toISOString(),
-      note: 'Provider credentials are never returned. A degraded provider does not make metadata records available to students.',
+      resources,
+      checkedAt,
+      note: 'Provider credentials are never returned. A degraded provider does not make metadata records available to students. `storage.reported` is always true so consumers never show "not reported yet".',
     })
+  }),
+)
+
+/* ----------------------------- fast live counts --------------------------- */
+
+/**
+ * The public "live counts" widget should never wait for a Render cold start or
+ * a provider HEAD request. This is a 30-second in-process cache over a few
+ * cheap MySQL counts/groups; Edvanta's server also keeps a stale fallback.
+ */
+const COUNTS_TTL_MS = 30_000
+const COUNTS_TTL_SECONDS = COUNTS_TTL_MS / 1000
+
+type CountsResponse = {
+  counts: ResourceCounts
+  audience: 'student' | 'admin'
+  includeUnavailable: boolean
+  generatedAt: string
+  ttlSeconds: number
+  cached: boolean
+}
+
+const countsCache = new Map<string, { expiresAt: number; value: CountsResponse }>()
+const countsQuerySchema = z.object({
+  audience: z.enum(['student', 'admin']).default('student'),
+  includeUnavailable: z.enum(['0', '1']).optional(),
+})
+
+async function computeResourceCounts(
+  userId: string,
+  audience: 'student' | 'admin',
+  includeUnavailable: boolean,
+): Promise<ResourceCounts> {
+  const where = {
+    userId,
+    ...resourceCountsWhere(audience, includeUnavailable),
+  } as Prisma.FileWhereInput
+
+  const [total, availabilityRows, categoryRows, subjectRows, providerRows] = await Promise.all([
+    prisma.file.count({ where }),
+    prisma.file.groupBy({ by: ['availability'], where, _count: { _all: true } }),
+    prisma.file.groupBy({ by: ['category'], where, _count: { _all: true } }),
+    prisma.file.groupBy({ by: ['subject'], where, _count: { _all: true } }),
+    prisma.file.groupBy({ by: ['provider'], where, _count: { _all: true } }),
+  ])
+
+  const counts = emptyResourceCounts()
+  counts.total = Number(total)
+  type AvailabilityKey = 'available' | 'missing' | 'inaccessible' | 'unknown'
+  for (const row of availabilityRows as unknown as Array<{ availability: string; _count?: { _all?: number } }>) {
+    const key = row.availability as AvailabilityKey
+    if (key === 'available' || key === 'missing' || key === 'inaccessible' || key === 'unknown') {
+      counts[key] = Number(row._count?._all ?? 0)
+    }
+  }
+  type GroupRow = Array<Record<string, unknown> & { _count?: { _all?: number | bigint } }>
+  counts.byCategory = normalizeCountGroups(categoryRows as unknown as GroupRow, 'category')
+  counts.bySubject = normalizeCountGroups(subjectRows as unknown as GroupRow, 'subject')
+  counts.byProvider = normalizeCountGroups(providerRows as unknown as GroupRow, 'provider')
+  return counts
+}
+
+resourceRouter.get(
+  '/counts',
+  requireApiKey('files:read'),
+  route(async (req, res) => {
+    const query = countsQuerySchema.parse(req.query)
+    if (!(await assertAdminAudience(req, res, query.audience))) return
+    const includeUnavailable = query.includeUnavailable === '1'
+    const key = resourceCountsCacheKey(req.user!.id, query.audience, includeUnavailable)
+    const now = Date.now()
+    for (const [cacheKey, entry] of countsCache) {
+      if (entry.expiresAt <= now) countsCache.delete(cacheKey)
+    }
+    const cached = countsCache.get(key)
+    let body: CountsResponse
+    if (cached && cached.expiresAt > now) {
+      body = { ...cached.value, cached: true }
+    } else {
+      const counts = await computeResourceCounts(req.user!.id, query.audience, includeUnavailable)
+      body = {
+        counts,
+        audience: query.audience,
+        includeUnavailable,
+        generatedAt: new Date().toISOString(),
+        ttlSeconds: COUNTS_TTL_SECONDS,
+        cached: false,
+      }
+      countsCache.set(key, { expiresAt: now + COUNTS_TTL_MS, value: body })
+    }
+    res.setHeader('Cache-Control', `private, max-age=${COUNTS_TTL_SECONDS}`)
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.setHeader('Referrer-Policy', 'no-referrer')
+    res.setHeader('X-Counts-Cache', body.cached ? 'hit' : 'miss')
+    return res.json(body)
   }),
 )
 

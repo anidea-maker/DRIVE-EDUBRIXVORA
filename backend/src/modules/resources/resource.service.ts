@@ -391,3 +391,101 @@ export async function syncResourceBatch(deps: SyncDeps, input: { userId: string;
     : null
   return { checked: rows.length, changed, missing, inaccessible, problems, nextCursor }
 }
+
+/* --------------------------- fast live counts ----------------------------- */
+
+export type ResourceCounts = {
+  total: number
+  available: number
+  missing: number
+  inaccessible: number
+  unknown: number
+  byCategory: Record<string, number>
+  bySubject: Record<string, number>
+  byProvider: Record<string, number>
+}
+
+export function emptyResourceCounts(): ResourceCounts {
+  return {
+    total: 0,
+    available: 0,
+    missing: 0,
+    inaccessible: 0,
+    unknown: 0,
+    byCategory: {},
+    bySubject: {},
+    byProvider: {},
+  }
+}
+
+/**
+ * The live-counts endpoint must never call a cloud provider. It only reads the
+ * registry, so a Render cold start costs one cheap MySQL query group instead of
+ * waiting for Drive/S3 HEAD requests or a full resource listing.
+ */
+export function resourceCountsWhere(audience: 'student' | 'admin', includeUnavailable: boolean) {
+  return {
+    isResource: true,
+    status: 'active',
+    ...(audience === 'student'
+      ? {
+          visibility: { in: ['students', 'public'] },
+          ...(includeUnavailable ? {} : { availability: 'available' }),
+        }
+      : {}),
+  }
+}
+
+export function resourceCountsCacheKey(userId: string, audience: 'student' | 'admin', includeUnavailable: boolean) {
+  return `${userId}|${audience}|${includeUnavailable ? 1 : 0}`
+}
+
+/** Turns Prisma groupBy rows into a safe JSON object; null becomes "Uncategorised". */
+export function normalizeCountGroups(
+  rows: Array<Record<string, unknown> & { _count?: { _all?: number | bigint } }>,
+  key: string,
+): Record<string, number> {
+  const result: Record<string, number> = {}
+  for (const row of rows) {
+    const raw = row[key]
+    const label = typeof raw === 'string' && raw.trim() ? raw.trim() : 'Uncategorised'
+    const count = row._count?._all ?? 0
+    result[label] = (result[label] ?? 0) + Number(count)
+  }
+  return result
+}
+
+/* --------------------------- storage status report ------------------------ */
+
+export type StorageStatusReport = {
+  status: 'connected' | 'degraded' | 'unavailable'
+  provider: '9Drive'
+  database: { ok: boolean }
+  accounts: Array<Record<string, unknown>>
+  resources: { available: number; missing: number; inaccessible: number; unknown: number }
+  checkedAt: string
+  reported: true
+}
+
+/**
+ * A consumer admin panel shows "Storage status has not been reported by the API
+ * yet" when this object is absent. `/resources/health` now always includes it,
+ * even when a provider is degraded - `status` changes, `reported` stays true.
+ */
+export function buildStorageStatus(input: {
+  databaseOk: boolean
+  accounts: Array<Record<string, unknown>>
+  resources: { available: number; missing: number; inaccessible: number; unknown: number }
+  checkedAt: string
+}): StorageStatusReport {
+  const healthy = input.databaseOk && input.accounts.every((account) => account.ok !== false)
+  return {
+    status: healthy ? 'connected' : 'degraded',
+    provider: '9Drive',
+    database: { ok: input.databaseOk },
+    accounts: input.accounts,
+    resources: input.resources,
+    checkedAt: input.checkedAt,
+    reported: true,
+  }
+}

@@ -16,6 +16,9 @@ import { Readable } from 'node:stream'
  *   const storage = createStorage()
  *   mountEdvantaResourceRoutes(app, { storage, requireStudent, requireAdmin })
  *
+ * If Edvanta already has /api/admin/overview, use mergeStorageStatus() inside
+ * that handler so its status panel always receives a `storage` object.
+ *
  * The upload route expects Edvanta's existing multipart middleware (multer or
  * equivalent) to have populated `req.file` / `req.files` with buffers.
  */
@@ -46,6 +49,22 @@ function wrap(handler) {
   }
 }
 
+/**
+ * Merge a 9Drive status report into Edvanta's existing admin overview response.
+ * The panel shows "Storage status has not been reported by the API yet" when
+ * `storage` is missing; this guarantees the field is present even if 9Drive is
+ * unreachable (`status: unavailable`).
+ */
+export function mergeStorageStatus(overview, status) {
+  return {
+    ...(overview ?? {}),
+    storage: status.storage,
+    storageStatus: status.storageStatus,
+    storageReported: status.reported,
+    reported: true,
+  }
+}
+
 function parseMeta(req) {
   const raw = req.body?.resourceMeta ?? req.body?.meta
   if (typeof raw === 'string') {
@@ -63,6 +82,38 @@ export function mountEdvantaResourceRoutes(app, { storage, requireStudent, requi
   if (typeof requireStudent !== 'function' || typeof requireAdmin !== 'function') {
     throw new Error('mountEdvantaResourceRoutes needs Edvanta server-side requireStudent and requireAdmin middlewares.')
   }
+
+  /* ------------------------------ public counts ---------------------------- */
+
+  /**
+   * Landing-page counts are public metadata. Edvanta's server still holds the
+   * storage API key; `audience` is hardcoded so a browser cannot ask for admin
+   * counts. A stale response is still HTTP 200: the page must not show a
+   * minute-long "loading the live counts" notice while Render wakes up.
+   */
+  app.get('/api/resources/counts', wrap(async (req, res) => {
+    const counts = await storage.getLiveCounts({
+      audience: 'student',
+      includeUnavailable: req.query.includeUnavailable === '1',
+    })
+    res.setHeader('Cache-Control', counts.stale ? 'private, max-age=5' : 'private, max-age=30')
+    return res.json(counts)
+  }))
+
+  /* Redacted public status for a status widget. No account details or keys. */
+  app.get('/api/storage-status', wrap(async (_req, res) => {
+    const status = await storage.getStorageStatus()
+    return res.json({
+      storage: {
+        status: status.storage.status,
+        provider: status.storage.provider,
+        checkedAt: status.storage.checkedAt,
+        reported: true,
+      },
+      storageStatus: status.storageStatus,
+      reported: true,
+    })
+  }))
 
   /* ------------------------------ student side ----------------------------- */
 
@@ -182,4 +233,11 @@ export function mountEdvantaResourceRoutes(app, { storage, requireStudent, requi
   app.get('/api/admin/resources/health', requireAdmin, wrap(async (_req, res) => {
     return res.json(await storage.health())
   }))
+
+  /* Admin storage status: always contains `storage`, `storageStatus` and
+   * `reported: true`. Use mergeStorageStatus() in Edvanta's own
+   * `/api/admin/overview` handler if that route already exists. */
+  const statusHandler = wrap(async (_req, res) => res.json(await storage.getStorageStatus()))
+  app.get('/api/admin/storage-status', requireAdmin, statusHandler)
+  app.get('/api/admin/9drive/status', requireAdmin, statusHandler)
 }

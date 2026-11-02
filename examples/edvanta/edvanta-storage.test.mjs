@@ -7,7 +7,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createStorage, StorageError } from './edvanta-storage.mjs'
+import { createStorage, normalizeStorageEndpoint, StorageError } from './edvanta-storage.mjs'
 
 const ENDPOINT = 'https://drive.example.com/api/v1'
 const API_KEY = '9d_live_test'
@@ -130,6 +130,142 @@ test('upstream JSON errors keep status, code and hint; network errors map to 502
     () => offline.storage.health(),
     (error) => error instanceof StorageError && error.code === 'STORAGE_UPSTREAM_UNAVAILABLE' && error.status === 502,
   )
+})
+
+test('getLiveCounts never blocks the page: fresh, then stale fallback', async () => {
+  let healthy = true
+  const calls = []
+  const storage = createStorage({
+    endpoint: ENDPOINT,
+    apiKey: API_KEY,
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init })
+      if (!healthy) throw new TypeError('fetch failed')
+      return jsonResponse({
+        counts: { total: 12, available: 11, missing: 1, inaccessible: 0, unknown: 0, byCategory: { Science: 12 }, bySubject: {}, byProvider: {} },
+        audience: 'student',
+        includeUnavailable: false,
+        generatedAt: '2026-11-02T12:00:00.000Z',
+        ttlSeconds: 30,
+        cached: false,
+      })
+    },
+  })
+  const fresh = await storage.getLiveCounts({ timeoutMs: 50 })
+  assert.equal(fresh.stale, false)
+  assert.equal(fresh.counts.total, 12)
+  assert.equal(new URL(calls[0].url).pathname, '/api/v1/resources/counts')
+  assert.equal(new URL(calls[0].url).searchParams.get('audience'), 'student')
+
+  healthy = false
+  const stale = await storage.getLiveCounts({ timeoutMs: 50 })
+  assert.equal(stale.stale, true)
+  assert.equal(stale.counts.total, 12)
+  assert.match(stale.note, /waking up/i)
+})
+
+test('getLiveCounts returns an empty stale shape when there is no cached answer', async () => {
+  const storage = createStorage({
+    endpoint: ENDPOINT,
+    apiKey: API_KEY,
+    fetchImpl: async () => {
+      throw new TypeError('fetch failed')
+    },
+  })
+  const result = await storage.getLiveCounts({ timeoutMs: 50, includeUnavailable: true })
+  assert.equal(result.stale, true)
+  assert.equal(result.generatedAt, null)
+  assert.equal(result.counts.total, 0)
+  assert.deepEqual(result.counts.byCategory, {})
+  assert.equal(result.error, 'STORAGE_UPSTREAM_UNAVAILABLE')
+})
+
+test('normalizeStorageEndpoint turns bare origins and /api into /api/v1', () => {
+  const expected = 'https://drive-edubrixvora-1.onrender.com/api/v1'
+  assert.equal(normalizeStorageEndpoint('https://drive-edubrixvora-1.onrender.com/'), expected)
+  assert.equal(normalizeStorageEndpoint('https://drive-edubrixvora-1.onrender.com/api'), expected)
+  assert.equal(normalizeStorageEndpoint('https://drive-edubrixvora-1.onrender.com/api/v1'), expected)
+  assert.equal(normalizeStorageEndpoint('drive-edubrixvora-1.onrender.com'), expected)
+  assert.equal(normalizeStorageEndpoint('https://drive.example.com/v1'), 'https://drive.example.com/api/v1')
+  // A pasted credential/query must never survive normalisation.
+  assert.equal(normalizeStorageEndpoint('https://user:pass@drive.example.com/api?key=secret'), 'https://drive.example.com/api/v1')
+  assert.equal(normalizeStorageEndpoint(''), '')
+})
+
+test('existing NINE_DRIVE_API_URL and NINE_DRIVE_API_KEY are used without renaming', async () => {
+  const keys = [
+    'STORAGE_ENDPOINT', 'STORAGE_API_KEY', 'STORAGE_TIMEOUT_MS',
+    'NINE_DRIVE_API_URL', 'NINE_DRIVE_URL', 'NINE_DRIVE_BASE_URL',
+    'NINE_DRIVE_API_KEY', 'NINE_DRIVE_TIMEOUT_MS',
+  ]
+  const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
+  for (const key of keys) delete process.env[key]
+  try {
+    process.env.NINE_DRIVE_API_URL = 'https://drive-edubrixvora-1.onrender.com/api'
+    process.env.NINE_DRIVE_API_KEY = '9d_live_from_nine_drive_vars'
+    const calls = []
+    const storage = createStorage({
+      fetchImpl: async (url, init) => {
+        calls.push({ url, init })
+        return jsonResponse({ status: 'ok' })
+      },
+    })
+    assert.equal(storage.endpoint, 'https://drive-edubrixvora-1.onrender.com/api/v1')
+    await storage.health()
+    assert.equal(new URL(calls[0].url).pathname, '/api/v1/resources/health')
+    assert.equal(calls[0].init.headers.get('authorization'), 'Bearer 9d_live_from_nine_drive_vars')
+  } finally {
+    for (const key of keys) {
+      if (saved[key] === undefined) delete process.env[key]
+      else process.env[key] = saved[key]
+    }
+  }
+})
+
+test('getStorageStatus always reports a storage object, connected or unavailable', async () => {
+  const healthy = {
+    status: 'ok',
+    storage: {
+      status: 'connected',
+      provider: '9Drive',
+      database: { ok: true },
+      accounts: [{ ok: true, provider: 's3' }],
+      resources: { available: 5, missing: 0, inaccessible: 0, unknown: 0 },
+      checkedAt: '2026-11-02T12:00:00.000Z',
+      reported: true,
+    },
+    storageStatus: 'connected',
+    reported: true,
+  }
+  const { storage, calls } = storageWith(async () => jsonResponse(healthy))
+  const ok = await storage.getStorageStatus({ timeoutMs: 50 })
+  assert.equal(ok.reported, true)
+  assert.equal(ok.storage.status, 'connected')
+  assert.equal(ok.storage.endpoint, ENDPOINT)
+  assert.equal(new URL(calls[0].url).pathname, '/api/v1/resources/health')
+
+  const degraded = storageWith(async () => jsonResponse({
+    status: 'degraded',
+    storage: { ...healthy.storage, status: 'degraded' },
+    storageStatus: 'degraded',
+    reported: true,
+  }, { status: 503 }))
+  const bad = await degraded.storage.getStorageStatus({ timeoutMs: 50 })
+  assert.equal(bad.reported, true)
+  assert.equal(bad.storage.status, 'degraded')
+
+  const offline = createStorage({
+    endpoint: ENDPOINT,
+    apiKey: API_KEY,
+    fetchImpl: async () => {
+      throw new TypeError('fetch failed')
+    },
+  })
+  const unavailable = await offline.getStorageStatus({ timeoutMs: 50 })
+  assert.equal(unavailable.reported, true)
+  assert.equal(unavailable.storage.status, 'unavailable')
+  assert.equal(unavailable.storage.endpoint, ENDPOINT)
+  assert.equal(unavailable.storage.error, 'STORAGE_UPSTREAM_UNAVAILABLE')
 })
 
 test('patch, delete, verify, sync and health use the documented verbs and paths', async () => {

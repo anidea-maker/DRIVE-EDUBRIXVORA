@@ -266,6 +266,51 @@ collisions resolved (`notes.pdf`, `notes (2).pdf`). Limits:
 `RESOURCE_BULK_MAX_FILES` (25) and `RESOURCE_BULK_MAX_BYTES` (512 MiB). The ZIP is
 streamed with `archiver`; no whole archive is held in memory.
 
+### Fast live counts / cold-start banner
+
+```http
+GET /api/v1/resources/counts?audience=student&includeUnavailable=0
+```
+
+The Edvanta landing page previously showed “Loading the live counts — the first
+answer after the server wakes takes about a minute. Everything below works while
+you wait.” That happened because the widget waited on a cold Render instance.
+
+This endpoint fixes the *cause*: it runs only cheap MySQL `count` / `groupBy`
+queries, never a Drive/S3 HEAD request or a full listing, and caches the result
+in-process for 30 seconds per owner/audience. Responses carry
+`Cache-Control: private, max-age=30` and `X-Counts-Cache: hit|miss`.
+
+```json
+{
+  "counts": {
+    "total": 124,
+    "available": 121,
+    "missing": 2,
+    "inaccessible": 1,
+    "unknown": 0,
+    "byCategory": { "Science": 60 },
+    "bySubject": { "Biology": 30 },
+    "byProvider": { "google_drive": 40, "s3": 84 }
+  },
+  "audience": "student",
+  "includeUnavailable": false,
+  "generatedAt": "2026-11-02T12:00:00.000Z",
+  "ttlSeconds": 30,
+  "cached": false
+}
+```
+
+`examples/edvanta/edvanta-storage.mjs` adds `getLiveCounts()` with a 3-second
+timeout and a stale fallback: if the storage service is still waking up, it
+returns the last known counts (or an empty shape) with `stale: true` instead of
+throwing. `express-routes.mjs` exposes a public `GET /api/resources/counts`
+that hardcodes `audience=student` and returns HTTP 200 even when stale, so the
+page never needs a minute-long loading notice. The banner text itself is in
+Edvanta's frontend and can only be removed/reworded there; with this API it no
+longer has to wait. Render free-tier cold starts can additionally be reduced by
+a scheduled `/health` ping or a paid always-on instance.
+
 ### Health
 
 ```http
@@ -276,6 +321,31 @@ Returns database reachability, per-provider account health (`HeadBucket` or Driv
 `about.get`), and counts of available/missing/inaccessible/unknown records. It
 returns `503` when degraded and never includes a credential. `/health` is
 Render's liveness probe; `/ready` checks MySQL and migrations.
+
+The response now always includes `storage`, `storageStatus` and
+`reported: true`:
+
+```json
+{
+  "status": "ok",
+  "storage": {
+    "status": "connected",
+    "provider": "9Drive",
+    "database": { "ok": true },
+    "accounts": [{ "ok": true, "provider": "s3" }],
+    "resources": { "available": 10, "missing": 0, "inaccessible": 0, "unknown": 0 },
+    "checkedAt": "2026-11-02T12:00:00.000Z",
+    "reported": true
+  },
+  "storageStatus": "connected",
+  "reported": true
+}
+```
+
+A degraded provider changes `storage.status` to `degraded`; it does **not**
+remove the field. This is what fixes an Edvanta admin panel that says
+“Storage status has not been reported by the API yet.” The client helpers also
+report `unavailable` if 9Drive is cold/offline, so the field is never absent.
 
 ## 5. Storage abstraction
 
@@ -397,6 +467,23 @@ STORAGE_API_KEY=9d_live_…              # EduBrixVora → API Management, serve
 STORAGE_TIMEOUT_MS=15000               # upstream request timeout
 ```
 
+**Already configured `NINE_DRIVE_API_KEY` / `NINE_DRIVE_API_URL`?** The kit now
+accepts those names directly; no renaming is needed:
+
+```env
+NINE_DRIVE_API_URL=https://drive-edubrixvora-1.onrender.com/api/v1
+NINE_DRIVE_API_KEY=9d_live_…
+NINE_DRIVE_TIMEOUT_MS=15000            # optional
+```
+
+`NINE_DRIVE_URL` / `NINE_DRIVE_BASE_URL` are also accepted. Set the URL to the
+exact **`/api/v1`** base. A bare `https://drive-edubrixvora-1.onrender.com/` or
+`.../api` is normalised to `/api/v1` by both helpers, but using `/api` alone in
+an older client would hit the SPA instead of the storage API. Credentials and
+query strings are stripped from the URL during normalisation so a pasted key is
+never echoed. `STORAGE_*` wins if both pairs are set; do not point them at
+different services.
+
 Mount the routes behind Edvanta's real auth middleware:
 
 ```js
@@ -412,6 +499,40 @@ Do not put the storage service URL or API key in `VITE_*`, `NEXT_PUBLIC_*`, HTML
 or client JavaScript. Edvanta's own `DATABASE_URL`, JWT secret and app settings
 remain unchanged; the two applications do not share a database.
 
+### Make the admin panel report storage status
+
+`mountEdvantaResourceRoutes` now adds `GET /api/admin/storage-status`,
+`GET /api/admin/9drive/status` and a redacted public `GET /api/storage-status`.
+All of them always return `storage`, `storageStatus` and `reported: true`.
+If Edvanta already has its own `/api/admin/overview`, do **not** replace it:
+merge the report into its existing response so the “Storage status has not been
+reported by the API yet” text disappears.
+
+```js
+import { mergeStorageStatus } from './express-routes.mjs'
+// inside Edvanta's existing /api/admin/overview handler:
+const overview = await buildYourExistingOverview(req)
+return res.json(mergeStorageStatus(overview, await storage.getStorageStatus()))
+```
+
+The live Edvanta API answers `{"detail": "Not Found"}` / `{"detail":
+"Sign in required"}`, which is FastAPI-shaped. For a Python backend,
+`examples/edvanta/fastapi_9drive.py` is a dependency-free equivalent:
+
+```python
+from fastapi_9drive import install_9drive_routes, merge_storage_status, get_storage_status
+
+install_9drive_routes(app, require_admin)  # adds the two admin status routes
+# or in the existing overview route:
+return merge_storage_status(overview, await get_storage_status())
+```
+
+It reads the same `NINE_DRIVE_API_URL` / `NINE_DRIVE_API_KEY` variables. If
+9Drive is cold, offline or misconfigured, the status is `unavailable` with
+`reported: true` — never a missing field. The public route omits the upstream
+URL and account details; admin routes must stay behind Edvanta's real admin
+session middleware.
+
 CORS: `/api/v1/*` and `/api/public/*` accept any origin because they require a
 bearer key or a signed URL (credentials are off). Dashboard routes remain
 restricted to `FRONTEND_URL`. Both services must use HTTPS. Set reasonable
@@ -422,9 +543,10 @@ timeouts on Edvanta's proxy (`STORAGE_TIMEOUT_MS`) for large uploads/ZIPs.
 Mocked/automated (no cloud credentials, no MySQL):
 
 ```bash
-cd backend && npm test                                 # 13/13 pass
+cd backend && npm test                                 # 15/15 pass
 cd frontend && npm run build                            # typecheck + Vite + nginx template pass
-node --test examples/edvanta/*.test.mjs                 # 13/13 pass
+node --test examples/edvanta/*.test.mjs                 # 21/21 pass
+python3 -m unittest discover -s examples/edvanta -p 'test_*.py'  # 5/5 pass (FastAPI helper)
 node --test examples/other-website/drive-storage.test.mjs  # 13/13 pass (existing kit)
 ```
 
@@ -444,7 +566,8 @@ network access and produce the full engine.
 Manual acceptance checklist after deploying both services:
 
 1. `GET /health` and `GET /ready` on EduBrixVora; `GET /api/v1/resources/health`
-   with a read key returns database + provider status.
+   with a read key returns database + provider status **and a `storage` object
+   with `reported: true`**.
 2. Register/log in as an admin; set `SUPER_ADMIN_EMAILS` or promote via
    `/api/admin/users/:id/role`; create an API key with read/write/delete scopes.
 3. Connect at least one Google Drive account and one S3-compatible bucket in
@@ -460,7 +583,15 @@ Manual acceptance checklist after deploying both services:
    call `/sync`, and confirm the row becomes `missing` and is excluded.
 9. Confirm an unauthenticated browser and a key without `files:write` cannot
    upload/delete; confirm a `student`-role owner cannot manage resources.
-10. Confirm no Drive file has an `anyone` permission and no bucket is public.
+10. Call `GET /api/v1/resources/counts` twice; the second response should carry
+   `X-Counts-Cache: hit`. Stop/wake the service and confirm Edvanta's
+   `/api/resources/counts` still returns HTTP 200 with `stale: true` instead of
+   showing the minute-long loading banner.
+11. Call Edvanta's `/api/admin/storage-status` (or merge the report into
+   `/api/admin/overview`); confirm the admin panel shows `connected` / `degraded`
+   instead of “Storage status has not been reported by the API yet.” Stop 9Drive
+   and confirm the panel reports `unavailable`, still with `reported: true`.
+12. Confirm no Drive file has an `anyone` permission and no bucket is public.
 
 ## 9. Known limitations
 
@@ -476,3 +607,12 @@ Manual acceptance checklist after deploying both services:
   user-management UI.
 - Edvanta's repository was not writable from this session; the integration kit
   must be copied into it and its own frontend routes pointed at the new API.
+- Edvanta's existing `/api/admin/overview` handler was not edited here; it must
+  call `mergeStorageStatus()` (JS) or `merge_storage_status()` (Python) for the
+  admin panel to stop showing “Storage status has not been reported by the API
+  yet.” The standalone `/api/admin/storage-status` routes work as soon as the
+  kit is mounted.
+- The literal “Loading the live counts …” banner is rendered by Edvanta's own
+  frontend. The cached `/resources/counts` API and `getLiveCounts()` fallback
+  remove the slow wait, but deleting/replacing that exact text still requires
+  Edvanta repo access or a frontend patch.
