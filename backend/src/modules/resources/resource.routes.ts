@@ -13,6 +13,7 @@ import { createAuditLog } from '../../utils/audit.js'
 import { putObject } from '../public-api/objects.service.js'
 import { publicBaseUrl } from '../public-api/serialize.js'
 import { getStorageAdapter } from '../storage/adapters.js'
+import { buildStorageReport } from '../storage/storage-status.js'
 import { ProviderOperationError } from '../storage/provider-operations.js'
 import { mintResourceUrl } from './resource-urls.js'
 import {
@@ -333,7 +334,25 @@ resourceRouter.get(
       unknown: counts[3],
     }
     const checkedAt = new Date().toISOString()
-    const storage = buildStorageStatus({ databaseOk, accounts: health, resources, checkedAt })
+    const detailed = buildStorageStatus({ databaseOk, accounts: health, resources, checkedAt })
+    const declaration = buildStorageReport({
+      connectedAccounts: health.length,
+      googleDriveAccounts: health.filter((entry) => entry.provider === 'google_drive').length,
+      s3Accounts: health.filter((entry) => entry.provider === 's3').length,
+      degraded: !healthy,
+      unavailable: !databaseOk,
+      checkedAt,
+    })
+    const storage = {
+      ...detailed,
+      ...declaration,
+      // Preserve the detailed provider checks while adopting the shared
+      // display/capacity fields used by /api/v1/storage-status.
+      database: detailed.database,
+      accounts: detailed.accounts,
+      resources: detailed.resources,
+      reported: true,
+    }
     noStore(res)
     return res.status(healthy ? 200 : 503).json({
       status: healthy ? 'ok' : 'degraded',

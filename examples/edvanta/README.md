@@ -122,9 +122,13 @@ for 30 seconds and never calls Drive/S3.
 
 ### “Storage status has not been reported by the API yet”
 
-`GET /api/v1/resources/health` now returns a `storage` object with
-`reported: true` even when a provider is degraded. The kit wraps it in
-`storage.getStorageStatus()` and exposes:
+9Drive now reports a redacted `storage` object on **every** status endpoint:
+`GET /api/v1`, `/api/v1/storage-status`, `/health`, `/ready`, `/api/diagnostics`,
+`/api/v1/me`, `/api/v1/usage` and `/api/v1/resources/health`. All include
+`reported: true`; degraded/unavailable changes `storage.status`, never removes
+the field. `GET ${NINE_DRIVE_API_URL}/storage-status` is the simplest direct
+call for an Edvanta backend that does not use this kit. The kit calls that same
+endpoint from `storage.getStorageStatus()` and exposes:
 
 ```text
 GET /api/admin/storage-status   → full report (admin only)
@@ -138,6 +142,16 @@ existing response instead of replacing the route:
 ```js
 import { mergeStorageStatus } from './server/storage/express-routes.mjs'
 return res.json(mergeStorageStatus(overview, await storage.getStorageStatus()))
+```
+
+Without the kit, proxy the public 9Drive endpoint directly (server-side only):
+
+```js
+const upstream = await fetch(`${process.env.NINE_DRIVE_API_URL}/storage-status`, {
+  signal: AbortSignal.timeout(3000),
+})
+const { storage, storageStatus, reported } = await upstream.json()
+return res.json({ ...overview, storage, storageStatus, reported })
 ```
 
 For a Python/FastAPI Edvanta backend, use `fastapi_9drive.py`:

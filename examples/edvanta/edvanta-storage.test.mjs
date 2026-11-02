@@ -242,7 +242,7 @@ test('getStorageStatus always reports a storage object, connected or unavailable
   assert.equal(ok.reported, true)
   assert.equal(ok.storage.status, 'connected')
   assert.equal(ok.storage.endpoint, ENDPOINT)
-  assert.equal(new URL(calls[0].url).pathname, '/api/v1/resources/health')
+  assert.equal(new URL(calls[0].url).pathname, '/api/v1/storage-status')
 
   const degraded = storageWith(async () => jsonResponse({
     status: 'degraded',
