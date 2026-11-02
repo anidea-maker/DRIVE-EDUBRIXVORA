@@ -74,6 +74,21 @@ function readEnv(name: string): string | null {
 }
 
 /**
+ * The first of several acceptable names.
+ *
+ * Dashboards and tutorials disagree about names (`FILEBASE_KEY_ID` vs
+ * `FILEBASE_ACCESS_KEY`), and a value typed under the "wrong" name looked exactly
+ * like nothing configured. Both work; the canonical name is what diagnostics lists.
+ */
+function readAny(...names: string[]): string | null {
+  for (const name of names) {
+    const value = readEnv(name)
+    if (value) return value
+  }
+  return null
+}
+
+/**
  * An S3 endpoint as the SDK needs it: absolute, https, no trailing slash.
  *
  * `B2_ENDPOINT_URL=s3.ca-east-006.backblazeb2.com` (no scheme) is what the live
@@ -226,18 +241,22 @@ function resolveFilebase(): Resolved {
   if (endpoint === 'https://s3.filebase.com') {
     notes.push('Using the IPFS tier endpoint (s3.filebase.com). Region must be us-east-1 there - set FILEBASE_REGION=us-east-1.')
   }
+  const accessKeyId = readAny('FILEBASE_KEY_ID', 'FILEBASE_ACCESS_KEY', 'FILEBASE_ACCESS_KEY_ID')
+  const secretAccessKey = readAny('FILEBASE_SECRET_KEY', 'FILEBASE_SECRET_ACCESS_KEY', 'FILEBASE_SECRET')
+  const bucket = readAny('FILEBASE_BUCKET', 'FILEBASE_BUCKET_NAME')
+
   return {
-    bucket: readEnv('FILEBASE_BUCKET'),
+    bucket,
     region,
     endpoint,
-    accessKeyId: readEnv('FILEBASE_KEY_ID'),
-    secretAccessKey: readEnv('FILEBASE_SECRET_KEY'),
+    accessKeyId,
+    secretAccessKey,
     quotaBytes: quota.value,
     notes,
     required: [
-      ['FILEBASE_KEY_ID', readEnv('FILEBASE_KEY_ID')],
-      ['FILEBASE_SECRET_KEY', readEnv('FILEBASE_SECRET_KEY')],
-      ['FILEBASE_BUCKET', readEnv('FILEBASE_BUCKET')],
+      ['FILEBASE_KEY_ID', accessKeyId],
+      ['FILEBASE_SECRET_KEY', secretAccessKey],
+      ['FILEBASE_BUCKET', bucket],
     ],
   }
 }
@@ -356,7 +375,8 @@ export function listStoragePresets(): StoragePreset[] {
   return DEFINITIONS.filter((definition) => !definition.hideWhenUnconfigured || isConfigured(definition)).map((definition) => {
     const resolved = definition.resolve()
     const missing = resolved.required.filter(([, value]) => !value).map(([name]) => name)
-    const env = resolved.required.map(([name]) => ({ name, state: envState(name) }))
+    // A value supplied under an accepted alias counts as configured.
+    const env = resolved.required.map(([name, value]) => ({ name, state: value ? 'ok' : envState(name) }))
     const emptyVars = env.filter((entry) => entry.state === 'empty' || entry.state === 'placeholder').map((entry) => entry.name)
     const unsetVars = env.filter((entry) => entry.state === 'unset').map((entry) => entry.name)
     return {
