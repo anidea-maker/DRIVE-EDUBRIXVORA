@@ -68,6 +68,38 @@ function readEnv(name: string): string | null {
   return raw
 }
 
+/**
+ * An S3 endpoint as the SDK needs it: absolute, https, no trailing slash.
+ *
+ * `B2_ENDPOINT_URL=s3.ca-east-006.backblazeb2.com` (no scheme) is what the live
+ * deployment had - the AWS SDK rejects that as an invalid URL, so the connect
+ * attempt failed for a reason that looked like a credential problem. Accepting the
+ * bare host is both friendlier and unambiguous.
+ */
+export function normalizeEndpoint(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  const trimmed = raw.trim().replace(/\/+$/, '')
+  if (!trimmed) return null
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+  try {
+    const url = new URL(withScheme)
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null
+    if (!url.hostname || url.hostname.startsWith('.') || url.hostname.endsWith('.')) return null
+    // A path is kept (some providers serve S3 under one); a bare "/" is not.
+    const path = url.pathname === '/' ? '' : url.pathname.replace(/\/+$/, '')
+    return `${url.protocol}//${url.host}${path}`
+  } catch {
+    return null
+  }
+}
+
+/** Region encoded in a Backblaze endpoint (`s3.<region>.backblazeb2.com`). */
+function b2RegionFromEndpoint(endpoint: string | null): string | null {
+  if (!endpoint) return null
+  const match = /^https?:\/\/s3\.([a-z0-9-]+)\.backblazeb2\.com/i.exec(endpoint)
+  return match?.[1] ?? null
+}
+
 const MEGABYTE = 1024n * 1024n
 
 function megabytesToBytes(name: string): { value: string | null; note?: string } {
@@ -94,15 +126,33 @@ type Resolved = {
  * Backblaze B2. The S3-compatible endpoint is derivable from the region
  * (`s3.<region>.backblazeb2.com`), and `B2_ENDPOINT_URL` wins when set.
  */
+/** Note when a typed endpoint had to be repaired, so the console value gets fixed. */
+function exploratoryNote(raw: string | null, normalized: string | null): string | null {
+  if (!raw) return null
+  if (!normalized) return `The endpoint "${raw}" is not a usable URL - use something like s3.<region>.backblazeb2.com.`
+  if (raw.trim().replace(/\/+$/, '') !== normalized) return `Endpoint normalised to ${normalized} (from "${raw}").`
+  return null
+}
+
 function resolveB2(): Resolved {
   const bucket = readEnv('B2_BUCKET')
   const region = readEnv('B2_REGION')
   const explicitEndpoint = readEnv('B2_ENDPOINT_URL')
-  const endpoint = explicitEndpoint ?? (region ? `https://s3.${region}.backblazeb2.com` : null)
+  const endpoint = normalizeEndpoint(explicitEndpoint) ?? (region ? normalizeEndpoint(`s3.${region}.backblazeb2.com`) : null)
   const quota = megabytesToBytes('B2_STORAGE_MAX_MB')
   const notes: string[] = ['Backblaze B2 needs path-style addressing; it is enabled for you.']
   if (quota.note) notes.push(quota.note)
-  if (explicitEndpoint) notes.push('Endpoint came from B2_ENDPOINT_URL.')
+  if (exploratoryNote(explicitEndpoint, endpoint)) notes.push(exploratoryNote(explicitEndpoint, endpoint)!)
+
+  // Backblaze signs requests with the bucket's region. A region that disagrees with
+  // the endpoint produces SignatureDoesNotMatch on every upload.
+  const endpointRegion = b2RegionFromEndpoint(endpoint)
+  if (endpointRegion && region && endpointRegion !== region) {
+    notes.push(`B2_REGION is "${region}" but the endpoint is for "${endpointRegion}". Use B2_REGION=${endpointRegion}, or clear B2_ENDPOINT_URL to derive it.`)
+  }
+  if (bucket && /[A-Z]/.test(bucket)) {
+    notes.push(`B2_BUCKET "${bucket}" contains capitals. Backblaze bucket names are lowercase - use the exact name from the B2 console.`)
+  }
 
   return {
     bucket,
@@ -126,7 +176,7 @@ function resolveB2(): Resolved {
  * (`IDRIVE_E2_ENDPOINT_URL`, copied from the IDrive console).
  */
 function resolveIdriveE2(): Resolved {
-  const endpoint = readEnv('IDRIVE_E2_ENDPOINT_URL')
+  const endpoint = normalizeEndpoint(readEnv('IDRIVE_E2_ENDPOINT_URL'))
   const notes: string[] = []
   if (!endpoint) {
     notes.push('Copy the endpoint from the IDrive E2 console into IDRIVE_E2_ENDPOINT_URL (it looks like https://abc12.va.idrivee2-18.com).')
@@ -155,7 +205,7 @@ function resolveIdriveE2(): Resolved {
  */
 function resolveDbyte(): Resolved {
   const apiKey = readEnv('DBBYTE_API_KEY')
-  const endpoint = readEnv('DBBYTE_ENDPOINT_URL')
+  const endpoint = normalizeEndpoint(readEnv('DBBYTE_ENDPOINT_URL'))
   const notes: string[] = []
   if (!endpoint) {
     notes.push('DBBYTE_ENDPOINT_URL is required: paste the S3 endpoint from the DBBYTE dashboard.')
@@ -219,19 +269,51 @@ export function getStoragePreset(id: string): StoragePreset | undefined {
 }
 
 /**
- * The backend `STORAGE_BACKEND` names. Falls back to the only ready backend, so a
- * deployment that forgot to set it still works when exactly one is complete.
+ * Names people actually type in `STORAGE_BACKEND`, beyond the canonical ids. The
+ * live deployment set `s3`, which matched nothing and silently disabled the
+ * selection.
+ */
+const BACKEND_ALIASES: Record<string, StorageBackendId> = {
+  b2: 'b2',
+  backblaze: 'b2',
+  backblaze_b2: 'b2',
+  'backblaze-b2': 'b2',
+  idrive: 'idrive_e2',
+  idrive_e2: 'idrive_e2',
+  'idrive-e2': 'idrive_e2',
+  idrivee2: 'idrive_e2',
+  dbyte: 'dbyte',
+  dbbyte: 'dbyte',
+  dbytes: 'dbyte',
+}
+
+/**
+ * The backend `STORAGE_BACKEND` names, in preference order (a comma-separated list
+ * is accepted). Without a usable value the first ready backend is used, so a
+ * deployment with two configured backends still preselects one instead of none.
  */
 export function resolveActivePreset(): StoragePreset | null {
   const presets = listStoragePresets()
   const requested = process.env.STORAGE_BACKEND?.trim().toLowerCase()
+
   if (requested) {
-    const named = presets.find((preset) => preset.id === requested)
-    if (named) return named
-    console.warn(`[storage] STORAGE_BACKEND="${requested}" is not a known backend. Use one of: ${presets.map((p) => p.id).join(', ')}.`)
+    const wanted = requested.split(',').map((entry) => entry.trim()).filter(Boolean)
+    for (const name of wanted) {
+      const id = BACKEND_ALIASES[name]
+      const named = id ? presets.find((preset) => preset.id === id) : undefined
+      if (named && named.ready) return named
+      if (named) {
+        console.warn(`[storage] STORAGE_BACKEND names ${named.label}, but it is incomplete: ${named.missing.join(', ')}.`)
+        continue
+      }
+      // "s3" is a family, not a backend - treat it as "whatever is ready".
+      if (name !== 's3' && name !== 'auto' && name !== 's3_compatible') {
+        console.warn(`[storage] STORAGE_BACKEND="${name}" is not a known backend. Use one of: ${presets.map((p) => p.id).join(', ')}, or a comma-separated preference list.`)
+      }
+    }
   }
-  const ready = presets.filter((preset) => preset.ready)
-  return ready.length === 1 ? ready[0]! : null
+
+  return presets.find((preset) => preset.ready) ?? null
 }
 
 /** Credentials for a backend, for the server side only. Never serialise this. */
@@ -260,6 +342,9 @@ export function describeStorageEnvironment() {
       env: preset.env,
       bucket: preset.bucket,
       endpoint: preset.endpoint,
+      // Normalisation and region/bucket warnings travel with the report, so a
+      // pasted /api/diagnostics explains the problem on its own.
+      notes: preset.notes,
     })),
   }
 }
