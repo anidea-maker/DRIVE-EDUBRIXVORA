@@ -10,7 +10,8 @@ import { getStoredUser, getAccessToken, clearAuthSession } from '@/lib/auth'
 import { useNavigate } from 'react-router-dom'
 
 type S3Preset = {
-  id: 'b2' | 'idrive_e2' | 'dbyte'
+  /** Backend id from the server's preset registry (`b2`, `idrive_e2`, `filebase`, `custom`, …). */
+  id: string
   label: string
   name: string
   bucket: string | null
