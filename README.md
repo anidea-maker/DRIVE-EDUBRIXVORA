@@ -549,6 +549,33 @@ curl -X POST "http://localhost:4000/api/v1/files/<id>/share" \
 
 Keys are scoped: `files:read`, `files:write`, `files:delete`. Uploads are routed to whichever connected account has room, using the same policy as the dashboard. `GET /api/v1` describes the API, and [docs/API.md](docs/API.md) is the full reference.
 
+## Edvanta resource registry
+
+The same `files` table now also serves the main Edvanta educational site through
+`/api/v1/resources`: paginated discovery, retry-safe admin uploads, stable
+visibility, provider verification, short-lived preview/download URLs, streaming
+ZIPs, reconciliation and health. One stable `id` per resource; a Google Drive
+file ID and an S3 object key are kept distinct. No file bytes pass through
+Edvanta's database or this app's local disk.
+
+Edvanta's **server** holds the API key and authenticates its own students and
+administrators before calling these endpoints. A tested copy-paste kit is in
+[`examples/edvanta/`](examples/edvanta/); the exact contract, roles, Render
+variables and manual cloud checklist are in
+[docs/EDVANTA-INTEGRATION.md](docs/EDVANTA-INTEGRATION.md). The Edvanta
+repository itself is a separate project and is not modified here.
+
+```txt
+Resources   GET  /api/v1/resources · POST /api/v1/resources (admin, retry-safe)
+            GET  /api/v1/resources/:id · PATCH / DELETE (admin)
+            GET  /api/v1/resources/:id/access · /preview-url · /preview
+                 /download-url · /download · /content (Range)
+            POST /api/v1/resources/bulk-download (streaming ZIP)
+            POST /api/v1/resources/:id/verify · POST /api/v1/resources/sync (admin)
+            GET  /api/v1/resources/health
+Admin       GET  /api/admin/users · PATCH /api/admin/users/:id/role (super_admin)
+```
+
 <details>
 <summary><b>Full REST API overview</b></summary>
 
@@ -594,6 +621,10 @@ Storage API   GET  /api/v1 · GET /api/v1/me · GET /api/v1/usage      (API key,
               POST /api/v1/objects/sign  (expiring URL for GET/HEAD/PUT)
               GET  /api/public/objects/:key  (signed, no API key)
               POST /api/v1/uploads   (legacy alias for POST /api/v1/files)
+              GET/POST/PATCH/DELETE /api/v1/resources  (educational registry)
+              /api/v1/resources/:id/preview-url · /download-url · /content · /access
+              /api/v1/resources/bulk-download · /sync · /health
+Admin roles    GET  /api/admin/users · PATCH /api/admin/users/:id/role
 ```
 
 </details>
@@ -652,8 +683,10 @@ Vite bakes `VITE_API_URL` into the build. Rebuild the frontend, or with Docker r
 
 - Uploads stream through the backend straight to Google Drive or S3. **Nothing is stored on the server's disk.**
 - Google tokens and S3 credentials are encrypted in MySQL. App refresh tokens, API keys, preview tokens, and auth-handoff tokens are stored only as hashes.
-- CORS only allows `FRONTEND_URL`.
-- Never commit `.env` files or share `TOKEN_ENCRYPTION_KEY`, `JWT_ACCESS_SECRET`, OAuth client secrets, or raw share links you want to keep private.
+- Dashboard/session routes allow only `FRONTEND_URL`. `/api/v1/*` and `/api/public/*` accept any origin because they require a bearer API key or an expiring signed URL; credentials are off.
+- Google Drive files are **not** made public: preview/download use authenticated streams or short-lived capability URLs. S3 buckets stay private.
+- Protected writes verify the key owner's role in the database; a frontend-supplied role is never trusted. `SUPER_ADMIN_EMAILS` bootstraps role management.
+- Never commit `.env` files or share `TOKEN_ENCRYPTION_KEY`, `JWT_ACCESS_SECRET`, `OBJECT_URL_SIGNING_SECRET`, OAuth client secrets, or raw share links you want to keep private.
 
 ## Project structure
 

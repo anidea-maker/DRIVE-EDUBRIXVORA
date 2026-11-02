@@ -268,6 +268,16 @@ Before finishing schema changes:
 - `cd backend && npm run prisma:migrate`
 - `cd backend && npm run build`
 
+Before finishing resource API changes:
+- `cd backend && npm test` (builds + mocked registry/role/URL tests)
+- `node --test examples/edvanta/*.test.mjs` (mocked Edvanta server kit)
+- `node --test examples/other-website/drive-storage.test.mjs` (legacy kit)
+
+Resource endpoints live in `backend/src/modules/resources/` and are mounted at
+`/api/v1/resources`; role middleware is in `backend/src/middleware/role.middleware.ts`.
+Never make a Drive file public or return an API key to a browser. See
+`docs/EDVANTA-INTEGRATION.md`.
+
 Manual smoke test:
 - Register/login.
 - Open Settings.

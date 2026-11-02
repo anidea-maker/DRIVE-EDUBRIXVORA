@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { prisma } from '../../config/prisma.js'
 import { env } from '../../config/env.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
+import { requireRole } from '../../middleware/role.middleware.js'
 import { hashToken, randomToken } from '../../utils/crypto.js'
 import { getAuthedGoogleClient, syncGoogleAppFolderFiles, syncGoogleQuota } from '../google/google.service.js'
 import { deleteS3Object, syncS3Quota, createS3Client, getS3ConfigForAccount } from '../s3/s3.service.js'
@@ -13,6 +14,9 @@ import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { Readable } from 'node:stream'
 import { ZipArchive } from 'archiver'
 import { createAuditLog } from '../../utils/audit.js'
+import { mintResourceUrl } from '../resources/resource-urls.js'
+import { checkBulkLimits, resolveZipNames, safeResourceFileName } from '../resources/resource.service.js'
+import { verifyProviderFile } from '../storage/provider-operations.js'
 
 
 
@@ -33,6 +37,10 @@ fileRouter.get('/preview/:token', async (req, res, next) => {
 })
 
 fileRouter.use(requireAuth)
+// The dashboard is the storage-management site: only server-verified admins
+// may list, share, rename, delete or download from it. Public token routes above
+// this line are deliberately excluded.
+fileRouter.use(requireRole('manage_resources'))
 
 fileRouter.get('/', async (req: AuthRequest, res, next) => {
   try {
@@ -301,26 +309,26 @@ fileRouter.post('/:id/share', async (req: AuthRequest, res, next) => {
   }
 })
 
+/**
+ * Kept for compatibility with the dashboard's "copy a link" button, but it no
+ * longer changes Google Drive permissions. Making a private educational file
+ * `anyone/writer` was a security hole: previewing must use an authenticated
+ * stream or a short-lived capability URL instead.
+ */
 fileRouter.post('/:id/public-permission', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const fileId = String(req.params.id)
-    const file = await prisma.file.findFirstOrThrow({ where: { id: fileId, userId: req.user!.id }, include: { connectedAccount: true } })
-    if (file.provider !== 'google_drive') {
-      return res.status(400).json({ code: 'UNSUPPORTED_PROVIDER', message: 'Only Google Drive files can be made public.' })
-    }
-    const auth = await getAuthedGoogleClient(file.connectedAccount)
-    const drive = google.drive({ version: 'v3', auth })
-    await drive.permissions.create({
-      fileId: file.providerFileId,
-      requestBody: {
-        role: 'writer',
-        type: 'anyone'
-      }
+    const file = await prisma.file.findFirstOrThrow({ where: { id: fileId, userId: req.user!.id, status: 'active' } })
+    const minted = await mintResourceUrl(req, { id: file.id, userId: file.userId, objectKey: file.objectKey }, { download: false })
+    return res.json({
+      status: 'ok',
+      url: minted.url,
+      expiresAt: minted.expiresAt,
+      mechanism: minted.mechanism,
+      note: 'This is a short-lived access-controlled link. The underlying Drive file or S3 object was not made public.',
     })
-    const metadata = await drive.files.get({ fileId: file.providerFileId, fields: 'webViewLink,webContentLink' })
-    return res.json({ status: 'ok', url: metadata.data.webViewLink ?? metadata.data.webContentLink })
   } catch (error: any) {
-    return res.status(500).json({ code: 'GOOGLE_API_ERROR', message: error.message || 'Failed to update Google Drive permissions.' })
+    return next(error)
   }
 })
 
@@ -347,29 +355,18 @@ fileRouter.post('/:id/preview-token', async (req: AuthRequest, res, next) => {
   }
 })
 
+/**
+ * Returns a short-lived preview capability URL for *either* provider. It used to
+ * set `anyone/writer` on the Google file and hand out a webViewLink; that made
+ * private documents publicly editable. The URL below is minted after the
+ * dashboard's authenticated session and expires.
+ */
 fileRouter.get('/:id/view-url', async (req: AuthRequest, res, next) => {
   try {
     const fileId = String(req.params.id)
-    const file = await prisma.file.findFirstOrThrow({ where: { id: fileId, userId: req.user!.id }, include: { connectedAccount: true } })
-    if (file.provider === 's3') return res.json({ url: null })
-    const auth = await getAuthedGoogleClient(file.connectedAccount)
-    const drive = google.drive({ version: 'v3', auth })
-
-    // Automatically set permission to public writer when retrieving/copying the view URL!
-    try {
-      await drive.permissions.create({
-        fileId: file.providerFileId,
-        requestBody: {
-          role: 'writer',
-          type: 'anyone'
-        }
-      })
-    } catch (err: any) {
-      console.error('Failed to make Google Drive file public during view-url retrieval:', err.message || err)
-    }
-
-    const metadata = await drive.files.get({ fileId: file.providerFileId, fields: 'webViewLink,webContentLink' })
-    return res.json({ url: metadata.data.webViewLink ?? metadata.data.webContentLink })
+    const file = await prisma.file.findFirstOrThrow({ where: { id: fileId, userId: req.user!.id, status: 'active' } })
+    const minted = await mintResourceUrl(req, { id: file.id, userId: file.userId, objectKey: file.objectKey }, { download: false })
+    return res.json({ url: minted.url, expiresAt: minted.expiresAt, mechanism: minted.mechanism })
   } catch (error) {
     return next(error)
   }
@@ -406,44 +403,99 @@ fileRouter.post('/batch-download', async (req: AuthRequest, res, next) => {
     })
     if (files.length === 0) return res.status(404).json({ code: 'FILES_NOT_FOUND', message: 'No files found.' })
 
-    res.setHeader('Content-Type', 'application/zip')
-    res.setHeader('Content-Disposition', 'attachment; filename="9drive-download.zip"')
-
-    const archive = new ZipArchive({ zlib: { level: 9 } })
-    archive.on('error', (err: any) => {
-      throw err
-    })
-    archive.pipe(res)
-
+    // Preflight the provider objects. A ZIP must never be returned as a success
+    // while quietly omitting files whose bytes could not be read.
+    const problems: Array<{ id: string; name: string; code: string; message: string }> = []
+    const usable: typeof files = []
     for (const file of files) {
       try {
+        const metadata = await verifyProviderFile({
+          provider: file.provider,
+          providerFileId: file.providerFileId,
+          connectedAccountId: file.connectedAccountId,
+          userId: req.user!.id,
+          name: file.name,
+          mimeType: file.mimeType,
+          sizeBytes: file.sizeBytes,
+        })
+        if (metadata.availability !== 'available') {
+          problems.push({ id: file.id, name: file.name, code: 'PROVIDER_UNAVAILABLE', message: metadata.detail ?? 'The provider cannot serve this file.' })
+          continue
+        }
+        usable.push(file)
+      } catch (error) {
+        problems.push({ id: file.id, name: file.name, code: 'PROVIDER_UNAVAILABLE', message: error instanceof Error ? error.message : 'Provider check failed.' })
+      }
+    }
+    if (usable.length === 0) {
+      return res.status(502).json({ code: 'BULK_ALL_FILES_UNAVAILABLE', message: 'None of the selected files could be retrieved.', problems })
+    }
+    const limits = checkBulkLimits(
+      usable.map((file) => ({ sizeBytes: file.sizeBytes })),
+      { maxFiles: env.RESOURCE_BULK_MAX_FILES, maxBytes: env.RESOURCE_BULK_MAX_BYTES },
+    )
+    if (!limits.ok) return res.status(413).json({ code: limits.code, message: limits.message, problems })
+
+    const nameById = new Map(
+      resolveZipNames(usable.map((file) => ({ id: file.id, name: file.name }))).map((entry) => [entry.id, entry.name]),
+    )
+    res.setHeader('Content-Type', 'application/zip')
+    res.setHeader('Content-Disposition', 'attachment; filename="9drive-download.zip"')
+    res.setHeader('Cache-Control', 'private, no-store')
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.setHeader('X-Resource-Bulk-Error-Count', String(problems.length))
+    res.setHeader('X-Resource-Bulk-Skipped', problems.map((problem) => problem.id).join(','))
+
+    const archive = new ZipArchive({ zlib: { level: 6 } })
+    let aborted = false
+    const abort = (error: Error) => {
+      if (aborted) return
+      aborted = true
+      console.error('[files] batch download aborted:', error.message)
+      archive.abort()
+      res.destroy(error)
+    }
+    archive.on('error', abort)
+    archive.pipe(res)
+
+    for (const file of usable) {
+      try {
         let stream: Readable
-        let fileName = file.name
+        let fileName = nameById.get(file.id) ?? safeResourceFileName(file.name)
         if (file.provider === 's3') {
           const config = await getS3ConfigForAccount(file.connectedAccountId)
           const client = createS3Client(config)
           const response = await client.send(new GetObjectCommand({ Bucket: config.bucket, Key: file.providerFileId }))
+          if (!response.Body) throw new Error('The object has no body.')
           stream = response.Body as Readable
         } else {
           const auth = await getAuthedGoogleClient(file.connectedAccount)
           const headers = normalizeHeaders(await auth.getRequestHeaders())
           const exportTarget = googleDownloadExportMimeTypes[file.mimeType]
           if (exportTarget) {
-            fileName = withExtension(file.name, exportTarget.extension)
+            fileName = withExtension(fileName, exportTarget.extension)
           }
           const url = exportTarget
             ? `https://www.googleapis.com/drive/v3/files/${file.providerFileId}/export?mimeType=${encodeURIComponent(exportTarget.mimeType)}`
             : `https://www.googleapis.com/drive/v3/files/${file.providerFileId}?alt=media`
           const response = await fetch(url, { headers })
-          if (!response.ok || !response.body) continue
+          if (!response.ok || !response.body) throw new Error(`Google Drive returned HTTP ${response.status} for this file.`)
           stream = Readable.fromWeb(response.body as any)
         }
+        stream.on('error', abort)
         archive.append(stream, { name: fileName })
-      } catch (err) {
-        console.error(`Failed to add file ${file.name} to zip:`, err)
+      } catch (error) {
+        abort(error instanceof Error ? error : new Error('Could not open a provider stream.'))
+        return
       }
     }
-
+    if (problems.length > 0) {
+      const text = [
+        'Some selected files could not be included in this archive.',
+        ...problems.map((problem) => `${problem.code} ${problem.id} ${problem.name}: ${problem.message}`),
+      ].join('\n')
+      archive.append(Buffer.from(text, 'utf8'), { name: '_download-errors.txt' })
+    }
     await archive.finalize()
   } catch (error) {
     return next(error)

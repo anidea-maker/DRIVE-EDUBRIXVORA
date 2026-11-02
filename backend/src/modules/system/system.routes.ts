@@ -3,6 +3,7 @@ import { exec, spawn } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import { requireAuth } from '../../middleware/auth.middleware.js'
+import { requireRole } from '../../middleware/role.middleware.js'
 import { prisma } from '../../config/prisma.js'
 import { decryptText, encryptText } from '../../utils/crypto.js'
 import { describeConfigProblem, looksLikePlaceholder, GOOGLE_CALLBACK_PATH } from '../google/config-health.js'
@@ -10,6 +11,8 @@ import { repairStoredRedirectUri, requestOrigin, resolveGoogleRedirectUri } from
 import Busboy from 'busboy'
 
 export const systemRouter = Router()
+systemRouter.use(requireAuth)
+systemRouter.use(requireRole('manage_resources'))
 
 
 systemRouter.post('/update', requireAuth, (req, res, next) => {

@@ -1,8 +1,11 @@
 import { Router } from 'express'
 import { prisma } from '../../config/prisma.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
+import { requireRole } from '../../middleware/role.middleware.js'
 
 export const auditLogRouter = Router()
+auditLogRouter.use(requireAuth)
+auditLogRouter.use(requireRole('manage_resources'))
 
 auditLogRouter.get('/', requireAuth, async (req: AuthRequest, res, next) => {
   try {

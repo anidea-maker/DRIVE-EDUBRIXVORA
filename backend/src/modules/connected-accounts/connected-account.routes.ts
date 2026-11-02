@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { env } from '../../config/env.js'
 import { prisma } from '../../config/prisma.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
+import { requireRole } from '../../middleware/role.middleware.js'
 import { encryptText, hashToken, randomToken } from '../../utils/crypto.js'
 import { hashPassword } from '../../utils/password.js'
 import { createOAuthClient, syncGoogleQuota } from '../google/google.service.js'
@@ -44,7 +45,7 @@ async function syncQuotaForAccount(account: { id: string; provider: string }) {
   return syncGoogleQuota(account.id)
 }
 
-connectedAccountRouter.get('/', requireAuth, async (req: AuthRequest, res, next) => {
+connectedAccountRouter.get('/', requireAuth, requireRole('manage_resources'), async (req: AuthRequest, res, next) => {
   try {
     // A freshly connected bucket must appear immediately, not after a browser
     // decides its cached JSON is still good.
@@ -141,7 +142,7 @@ async function createGoogleConnectUrl(req: AuthRequest): Promise<string | null> 
  * hand-typed fields. Secrets are reported as `hasSecretKey: true`, never as
  * values - they stay on the server.
  */
-connectedAccountRouter.get('/s3/presets', requireAuth, async (_req, res) => {
+connectedAccountRouter.get('/s3/presets', requireAuth, requireRole('manage_resources'), async (_req, res) => {
   // Never cached, and stamped with the moment it was read: a backend appears as
   // soon as its variables exist, and a cached copy is indistinguishable from
   // "the new backend was not updated". `readAt` lets the Settings modal show the
@@ -157,7 +158,7 @@ connectedAccountRouter.get('/s3/presets', requireAuth, async (_req, res) => {
   })
 })
 
-connectedAccountRouter.post('/s3', requireAuth, async (req: AuthRequest, res, next) => {
+connectedAccountRouter.post('/s3', requireAuth, requireRole('manage_resources'), async (req: AuthRequest, res, next) => {
   try {
     const body = s3ConnectSchema.parse(req.body)
 
@@ -356,7 +357,7 @@ connectedAccountRouter.post('/s3', requireAuth, async (req: AuthRequest, res, ne
  * The URL the popup is opened with. A missing OAuth client is a setup problem, so
  * it comes back as JSON with an instruction rather than a stack trace.
  */
-connectedAccountRouter.get('/google/connect-url', requireAuth, async (req: AuthRequest, res, next) => {
+connectedAccountRouter.get('/google/connect-url', requireAuth, requireRole('manage_resources'), async (req: AuthRequest, res, next) => {
   try {
     const url = await createGoogleConnectUrl(req)
     if (!url) {
@@ -372,7 +373,7 @@ connectedAccountRouter.get('/google/connect-url', requireAuth, async (req: AuthR
   }
 })
 
-connectedAccountRouter.get('/google/connect', requireAuth, async (req: AuthRequest, res, next) => {
+connectedAccountRouter.get('/google/connect', requireAuth, requireRole('manage_resources'), async (req: AuthRequest, res, next) => {
   try {
     const url = await createGoogleConnectUrl(req)
     if (!url) {
@@ -580,7 +581,7 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
   }
 })
 
-connectedAccountRouter.post('/:id/sync-quota', requireAuth, async (req: AuthRequest, res, next) => {
+connectedAccountRouter.post('/:id/sync-quota', requireAuth, requireRole('manage_resources'), async (req: AuthRequest, res, next) => {
   try {
     const accountId = String(req.params.id)
     const account = await prisma.connectedAccount.findFirstOrThrow({ where: { id: accountId, userId: req.user!.id } })
@@ -599,7 +600,7 @@ connectedAccountRouter.post('/:id/sync-quota', requireAuth, async (req: AuthRequ
   }
 })
 
-connectedAccountRouter.delete('/:id', requireAuth, async (req: AuthRequest, res, next) => {
+connectedAccountRouter.delete('/:id', requireAuth, requireRole('manage_resources'), async (req: AuthRequest, res, next) => {
   try {
     const accountId = String(req.params.id)
     await prisma.connectedAccount.updateMany({ where: { id: accountId, userId: req.user!.id }, data: { status: 'disconnected' } })

@@ -3,12 +3,14 @@ import { google } from 'googleapis'
 import { z } from 'zod'
 import { prisma } from '../../config/prisma.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
+import { requireRole } from '../../middleware/role.middleware.js'
 import { getAuthedGoogleClient, syncGoogleQuota, ensureGoogleAppFolder } from '../google/google.service.js'
 import { createAuditLog } from '../../utils/audit.js'
 import { createFolder, folderCreateSchema as createSchema, serializeFolder } from './folder.service.js'
 
 export const folderRouter = Router()
 folderRouter.use(requireAuth)
+folderRouter.use(requireRole('manage_resources'))
 
 async function ensureProviderFolderIds(
   folders: Array<{ id: string; name: string; parentId: string | null; providerFolderId: string | null }>,

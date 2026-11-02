@@ -2,6 +2,7 @@ import { Router, type Response } from 'express'
 import { z } from 'zod'
 import { env } from '../../config/env.js'
 import { requireApiKey, type ApiKeyRequest } from '../../middleware/api-key.middleware.js'
+import { requireRole } from '../../middleware/role.middleware.js'
 import { absoluteUrl } from './serialize.js'
 import { signObjectUrl, signedObjectPath, type SignedMethod } from './object-signing.js'
 import {
@@ -95,7 +96,7 @@ objectsRouter.get('/', requireApiKey('files:read'), async (req: ApiKeyRequest, r
  * Mints a URL the other website can hand to a browser: `<img src>` for reads,
  * a direct upload for writes. The key never reaches the browser.
  */
-objectsRouter.post('/sign', requireApiKey(['files:read', 'files:write']), async (req: ApiKeyRequest, res, next) => {
+objectsRouter.post('/sign', requireApiKey(['files:read', 'files:write']), requireRole('manage_resources'), async (req: ApiKeyRequest, res, next) => {
   try {
     const body = z
       .object({
@@ -142,7 +143,7 @@ objectsRouter.post('/sign', requireApiKey(['files:read', 'files:write']), async 
 
 /* --------------------------------- verbs --------------------------------- */
 
-objectsRouter.put('/*key', requireApiKey('files:write'), async (req: ApiKeyRequest, res, next) => {
+objectsRouter.put('/*key', requireApiKey('files:write'), requireRole('manage_resources'), async (req: ApiKeyRequest, res, next) => {
   try {
     const key = keyFromParams(req.params)
     if (invalidKey(res, key)) return
@@ -213,7 +214,7 @@ objectsRouter.head('/*key', requireApiKey('files:read'), async (req: ApiKeyReque
   }
 })
 
-objectsRouter.delete('/*key', requireApiKey('files:delete'), async (req: ApiKeyRequest, res, next) => {
+objectsRouter.delete('/*key', requireApiKey('files:delete'), requireRole('manage_resources'), async (req: ApiKeyRequest, res, next) => {
   try {
     const key = keyFromParams(req.params)
     if (invalidKey(res, key)) return

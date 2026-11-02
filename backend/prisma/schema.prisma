@@ -13,6 +13,13 @@ model User {
   email          String             @unique @db.VarChar(191)
   passwordHash   String             @map("password_hash") @db.VarChar(255)
   status         String             @default("active") @db.VarChar(32)
+  /**
+   * Server-verified role. Every existing account keeps `admin`, so registration
+   * and uploads continue to work after the migration. `SUPER_ADMIN_EMAILS` can
+   * grant `super_admin` without a database edit; a super admin can then assign
+   * roles through the admin API. Never read a role from a request body.
+   */
+  role           String             @default("admin") @db.VarChar(32)
   createdAt      DateTime           @default(now()) @map("created_at")
   updatedAt      DateTime           @updatedAt @map("updated_at")
   sessions       UserSession[]
@@ -220,6 +227,28 @@ model File {
    * same key overwrites - the behaviour every S3 client expects.
    */
   objectKey          String?          @map("object_key") @db.VarChar(700)
+  /**
+   * Educational resource registry. These columns are additive: a normal
+   * dashboard file has them all null/false and behaves exactly as before.
+   * `isResource` marks a row Edvanta may discover; `id` is the stable
+   * application-level identifier, while `provider` + `providerFileId` +
+   * `connectedAccountId` locate the bytes at Google Drive or S3.
+   */
+  isResource         Boolean          @default(false) @map("is_resource")
+  title              String?          @db.VarChar(255)
+  description        String?          @db.Text
+  category           String?          @db.VarChar(191)
+  subject            String?          @db.VarChar(191)
+  academicLevel      String?          @map("academic_level") @db.VarChar(191)
+  examType           String?          @map("exam_type") @db.VarChar(191)
+  visibility         String           @default("private") @db.VarChar(32)
+  clientRequestId    String?          @map("client_request_id") @db.VarChar(191)
+  resourceMetadata   Json?            @map("resource_metadata")
+  uploadedBy         String?          @map("uploaded_by") @db.Char(36)
+  lastModifiedBy     String?          @map("last_modified_by") @db.Char(36)
+  /** available | missing | inaccessible | unknown - never inferred from the row alone. */
+  availability       String           @default("unknown") @db.VarChar(32)
+  lastVerifiedAt     DateTime?        @map("last_verified_at")
   status             String           @default("active") @db.VarChar(32)
   createdAt          DateTime         @default(now()) @map("created_at")
   updatedAt          DateTime         @updatedAt @map("updated_at")
@@ -233,7 +262,13 @@ model File {
   @@index([userId])
   @@index([userId, status, createdAt])
   @@index([userId, status, folderId, createdAt])
+  @@index([userId, isResource, status, createdAt])
+  @@index([userId, category])
+  @@index([userId, subject])
+  @@index([userId, academicLevel])
+  @@index([userId, examType])
   @@unique([userId, objectKey])
+  @@unique([userId, clientRequestId])
   @@index([connectedAccountId])
   @@index([folderId])
   @@index([providerFileId])

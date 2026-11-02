@@ -2,10 +2,12 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { prisma } from '../../config/prisma.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
+import { requireRole } from '../../middleware/role.middleware.js'
 import { encryptText } from '../../utils/crypto.js'
 
 export const providerConfigRouter = Router()
 providerConfigRouter.use(requireAuth)
+providerConfigRouter.use(requireRole('manage_resources'))
 
 const schema = z.object({
   clientId: z.string().min(1),

@@ -78,14 +78,50 @@ services:
         sync: false
       - key: IDRIVE_E2_REGION
         sync: false
-      - key: DBBYTE_API_KEY
+      # DBRIJ preset names read by backend/src/modules/s3/presets.ts. The old
+      # DBBYTE_* keys here were never read by any code and have been removed.
+      - key: DBRIJ_STORAGE_URL
         sync: false
-      - key: DBBYTE_BUCKET
+      - key: DBRIJ_STORAGE_ACCESS_KEY
         sync: false
-      - key: DBBYTE_ENDPOINT_URL
+      - key: DBRIJ_STORAGE_SECRET_KEY
         sync: false
-      - key: DBBYTE_REGION
+      - key: DBRIJ_STORAGE_BUCKET
         sync: false
+      - key: DBRIJ_REGION
+        sync: false
+      - key: DBRIJ_STORAGE_MAX_GB
+        sync: false
+      - key: DBRIJ_DISPLAY_NAME
+        sync: false
+      # Generic S3-compatible credentials (also accepted by presets.ts).
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_REGION
+        sync: false
+      # Optional: only when a proxy rewrites Host for signed/share URLs.
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: OBJECT_URL_SIGNING_SECRET
+        sync: false
+      - key: API_RATE_LIMIT_PER_MINUTE
+        value: "600"
+      # Edvanta resource API + server-verified administrator roles.
+      # Comma-separated emails; leave empty when roles are assigned in the DB.
+      - key: SUPER_ADMIN_EMAILS
+        sync: false
+      - key: RESOURCE_URL_TTL_SECONDS
+        value: "600"
+      - key: RESOURCE_BULK_MAX_FILES
+        value: "25"
+      - key: RESOURCE_BULK_MAX_BYTES
+        value: "536870912"
 
 # --- Alternative: two services (API + static SPA) -------------------------------
 # Requires the pair to agree on API_UPSTREAM / VITE_API_URL / CORS:

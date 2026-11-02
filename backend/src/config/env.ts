@@ -72,6 +72,26 @@ const envSchema = z.object({
   /** Request budget per API key, per minute. 0 disables the limit. */
   API_RATE_LIMIT_PER_MINUTE: z.coerce.number().default(600),
   /**
+   * Bootstrap for the super-admin role. Comma-separated, lower-cased email
+   * addresses. This is server-side configuration, never a value a browser can
+   * supply; it exists so a fresh deployment does not need a manual DB edit.
+   */
+  SUPER_ADMIN_EMAILS: z
+    .string()
+    .optional()
+    .transform((value) =>
+      (value ?? '')
+        .replace(CONTROL_CHARS, '')
+        .split(',')
+        .map((email) => email.trim().toLowerCase())
+        .filter((email) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)),
+    ),
+  /** Lifetime of an Edvanta preview/download capability URL, in seconds. */
+  RESOURCE_URL_TTL_SECONDS: z.coerce.number().int().min(30).max(3600).default(600),
+  /** Guards against a bulk ZIP that would exhaust Render's memory or timeout. */
+  RESOURCE_BULK_MAX_FILES: z.coerce.number().int().min(1).max(100).default(25),
+  RESOURCE_BULK_MAX_BYTES: z.coerce.number().int().min(1024).max(5 * 1024 * 1024 * 1024).default(512 * 1024 * 1024),
+  /**
    * Signs expiring object URLs (`POST /api/v1/objects/sign`). Optional: without it
    * a key is derived from TOKEN_ENCRYPTION_KEY, so signed links work on an
    * existing deployment with no new configuration.

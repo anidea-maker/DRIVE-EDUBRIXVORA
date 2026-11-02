@@ -6,6 +6,7 @@
     "env:setup": "node scripts/ensure-env.mjs",
     "dev": "node scripts/ensure-env.mjs && tsx watch src/server.ts",
     "build": "tsc",
+    "test": "npm run build && node --test test/*.test.mjs",
     "start": "node scripts/ensure-env.mjs && node dist/server.js",
     "start:deploy": "npm run db:migrate:deploy && node dist/server.js",
     "prisma:generate": "node scripts/ensure-env.mjs && node scripts/prisma-run.mjs generate",
