@@ -5,25 +5,10 @@ import { prisma } from '../../config/prisma.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
 import { getAuthedGoogleClient, syncGoogleQuota, ensureGoogleAppFolder } from '../google/google.service.js'
 import { createAuditLog } from '../../utils/audit.js'
+import { createFolder, folderCreateSchema as createSchema, serializeFolder } from './folder.service.js'
 
 export const folderRouter = Router()
 folderRouter.use(requireAuth)
-
-const defaultFolderColor = '#3b82f6'
-const defaultFolderIconUrl = 'https://api.iconify.design/lucide:folder.svg'
-const iconUrlSchema = z.string().url().startsWith('https://api.iconify.design/lucide:').max(2048)
-const colorSchema = z.string().regex(/^(#[0-9a-fA-F]{6}|text-[a-z]+-[0-9]+)$/).max(64)
-
-const createSchema = z.object({
-  name: z.string().min(1).max(255),
-  color: colorSchema.optional(),
-  iconUrl: iconUrlSchema.nullable().optional(),
-  parentId: z.string().nullable().optional(),
-})
-
-function serializeFolder(folder: { id: string; name: string; color: string; iconUrl?: string | null; parentId?: string | null; providerFolderId?: string | null; createdAt: Date; updatedAt: Date }) {
-  return { ...folder, providerFolderId: folder.providerFolderId ?? null, createdAt: folder.createdAt.toISOString(), updatedAt: folder.updatedAt.toISOString() }
-}
 
 async function ensureProviderFolderIds(
   folders: Array<{ id: string; name: string; parentId: string | null; providerFolderId: string | null }>,
@@ -114,55 +99,7 @@ folderRouter.get('/recent', async (req: AuthRequest, res, next) => {
 folderRouter.post('/', async (req: AuthRequest, res, next) => {
   try {
     const body = createSchema.parse(req.body)
-    let parentFolder = null
-    if (body.parentId) {
-      parentFolder = await prisma.folder.findFirstOrThrow({
-        where: { id: body.parentId, userId: req.user!.id, deletedAt: null }
-      })
-    }
-
-    const connectedAccount = await prisma.connectedAccount.findFirst({
-      where: { userId: req.user!.id, provider: 'google_drive', status: 'connected' }
-    })
-
-    let providerFolderId: string | null = null
-    if (connectedAccount) {
-      try {
-        const auth = await getAuthedGoogleClient(connectedAccount)
-        const drive = google.drive({ version: 'v3', auth })
-
-        let googleParentId = await ensureGoogleAppFolder(connectedAccount)
-        if (parentFolder && parentFolder.providerFolderId) {
-          googleParentId = parentFolder.providerFolderId
-        }
-
-        const driveFolder = await drive.files.create({
-          requestBody: {
-            name: body.name,
-            mimeType: 'application/vnd.google-apps.folder',
-            parents: [googleParentId]
-          },
-          fields: 'id'
-        })
-        providerFolderId = driveFolder.data.id ?? null
-      } catch (error) {
-        console.error('Failed to create folder on Google Drive:', error)
-      }
-    }
-
-    const folder = await prisma.folder.create({
-      data: {
-        userId: req.user!.id,
-        name: body.name,
-        color: body.color ?? defaultFolderColor,
-        iconUrl: body.iconUrl ?? defaultFolderIconUrl,
-        parentId: body.parentId ?? null,
-        providerFolderId,
-        connectedAccountId: connectedAccount?.id ?? null
-      },
-      select: { id: true, name: true, color: true, iconUrl: true, parentId: true, providerFolderId: true, createdAt: true, updatedAt: true },
-    })
-    await createAuditLog(req.user!.id, 'CREATE_FOLDER', 'folder', folder.id, { name: folder.name })
+    const folder = await createFolder(req.user!.id, body)
     return res.status(201).json({ folder: serializeFolder(folder) })
   } catch (error) {
     return next(error)

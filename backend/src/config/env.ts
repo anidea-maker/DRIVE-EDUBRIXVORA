@@ -60,6 +60,18 @@ const envSchema = z.object({
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().default(30),
   MAX_UPLOAD_BYTES: z.coerce.number().default(5 * 1024 * 1024 * 1024),
   /**
+   * Origin to put in links that leave this service (share URLs, download URLs in
+   * API responses). Only needed behind a proxy that rewrites Host; otherwise the
+   * request's own origin is used, which is correct by construction.
+   */
+  PUBLIC_BASE_URL: z
+    .string()
+    .optional()
+    .transform((value) => (value?.trim() ? normalizeOrigin(value) : undefined))
+    .pipe(z.string().url().optional()),
+  /** Request budget per API key, per minute. 0 disables the limit. */
+  API_RATE_LIMIT_PER_MINUTE: z.coerce.number().default(600),
+  /**
    * Directory holding the built SPA. Set by the single-service Dockerfile, and the
    * signal that this process is also the web server - so browser redirects can be
    * relative and do not depend on FRONTEND_URL at all.
