@@ -150,7 +150,14 @@ connectedAccountRouter.post('/s3', requireAuth, async (req: AuthRequest, res, ne
      * field the form left blank comes from there. A manually typed value always
      * wins, so a user can point a preset at a different bucket.
      */
-    const preset = body.provider ? getStoragePreset(body.provider) : resolveActivePreset()
+    /**
+     * Only use the environment when the caller asked for it: a named `provider`, or
+     * a body with no connection details at all (an API client relying on
+     * `STORAGE_BACKEND`). A manual form entry never silently inherits an endpoint
+     * from a different backend.
+     */
+    const wantsEnvironment = Boolean(body.provider) || (!body.bucket && !body.accessKeyId && !body.endpoint)
+    const preset = body.provider ? getStoragePreset(body.provider) : wantsEnvironment ? resolveActivePreset() : null
     if (body.provider && !preset) {
       return res.status(400).json({ code: 'STORAGE_BACKEND_UNKNOWN', message: `Unknown storage backend "${body.provider}".` })
     }

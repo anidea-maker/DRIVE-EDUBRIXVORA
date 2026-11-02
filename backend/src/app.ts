@@ -183,13 +183,45 @@ app.get(['/api/diagnostics', '/diagnostics'], async (req, res) => {
     google = { error: error instanceof Error ? error.message : String(error) }
   }
 
+  /**
+   * Is anything actually connected? Counts only - no addresses or names, so this
+   * stays safe on a public endpoint while answering "did my connect attempt work?".
+   */
+  let accountsSummary: Record<string, unknown>
+  try {
+    const rows = (await prisma.connectedAccount.groupBy({
+      by: ['provider', 'status'],
+      _count: { _all: true },
+    })) as Array<{ provider: string; status: string; _count: { _all: number } }>
+    const byProvider: Record<string, number> = {}
+    for (const row of rows) {
+      const key = `${row.provider}:${row.status}`
+      byProvider[key] = row._count._all
+    }
+    const connectedDrives = byProvider['google_drive:connected'] ?? 0
+    const connectedS3 = byProvider['s3:connected'] ?? 0
+    accountsSummary = { byProvider, googleDrive: connectedDrives, s3: connectedS3 }
+    if (connectedDrives === 0) hints.push('No Google Drive account is connected yet: open Settings -> Connect Drive and approve access.')
+    if (connectedS3 === 0) hints.push('No S3 bucket is connected yet: open Settings -> Connect S3.')
+  } catch (error) {
+    accountsSummary = { error: error instanceof Error ? error.message : String(error) }
+  }
+
   const hasControlChars = /[\u0000-\u001f\u007f]/.test(env.FRONTEND_URL)
   if (hasControlChars) {
     hints.push('FRONTEND_URL contains control characters (usually a pasted newline). Remove them - the value is wrong even though redirects stay safe.')
   }
-  const partialPreset = listStoragePresets().find((preset) => !preset.ready && preset.missing.length < 6)
-  if (partialPreset) {
-    hints.push(`Storage backend ${partialPreset.label} is partly configured: missing ${partialPreset.missing.join(', ')}. Fill them on the service, then connect it from Settings -> S3 Compatible.`)
+  for (const preset of listStoragePresets()) {
+    if (preset.ready) continue
+    if (preset.emptyVars.length > 0) {
+      hints.push(
+        `${preset.label}: ${preset.emptyVars.join(', ')} ${preset.emptyVars.length === 1 ? 'is' : 'are'} present on the service but ` +
+          'empty (or still a placeholder), so they are ignored. Paste the real value next to each key in your host dashboard, then redeploy. ' +
+          'Until then, Connect S3 -> Enter manually works.',
+      )
+    } else if (preset.unsetVars.length < 6 && preset.unsetVars.length > 0) {
+      hints.push(`${preset.label}: set ${preset.unsetVars.join(', ')} on the service to enable one-click connect, or use Connect S3 -> Enter manually.`)
+    }
   }
   if (spaEnabled) {
     hints.push('Single-service mode: OAuth callbacks redirect with a relative path, so FRONTEND_URL cannot send the browser to the wrong host.')
@@ -215,6 +247,7 @@ app.get(['/api/diagnostics', '/diagnostics'], async (req, res) => {
     database,
     google,
     storage: describeStorageEnvironment(),
+    accounts: accountsSummary,
     hints,
   })
 })

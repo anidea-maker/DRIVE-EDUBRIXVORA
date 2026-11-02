@@ -21,9 +21,26 @@ type S3Preset = {
   hasSecretKey: boolean
   quotaBytes: string | null
   missing: string[]
+  emptyVars: string[]
+  unsetVars: string[]
   ready: boolean
   notes: string[]
 }
+
+/**
+ * Endpoint shapes for manual entry, so connecting a bucket that is not described by
+ * the environment is three fields instead of six. B2 and Wasabi derive their
+ * endpoint from the region; R2 and MinIO need one typed.
+ */
+type ManualTemplate = 'aws' | 'b2' | 'r2' | 'wasabi' | 'custom'
+
+const MANUAL_TEMPLATES: Array<{ id: ManualTemplate; label: string; pathStyle: boolean; endpointFor?: (region: string) => string; hint?: string }> = [
+  { id: 'aws', label: 'Amazon S3', pathStyle: false },
+  { id: 'b2', label: 'Backblaze B2', pathStyle: true, endpointFor: (region) => (region ? `https://s3.${region}.backblazeb2.com` : '') },
+  { id: 'wasabi', label: 'Wasabi', pathStyle: false, endpointFor: (region) => (region ? `https://s3.${region}.wasabisys.com` : '') },
+  { id: 'r2', label: 'Cloudflare R2', pathStyle: true, hint: 'Endpoint looks like https://<account-id>.r2.cloudflarestorage.com' },
+  { id: 'custom', label: 'Other (MinIO, IDrive…)', pathStyle: true },
+]
 
 type ConnectedAccount = { id: string; provider: string; email: string; displayName?: string | null; status: string; storageAccount?: { totalBytes: string | null; usedBytes: string; availableBytes: string | null; lastSyncedAt: string | null } | null }
 
@@ -31,7 +48,33 @@ type ConnectedAccount = { id: string; provider: string; email: string; displayNa
  * Fill the S3 form from a backend described by the environment. Bucket/region are
  * editable, the key fields stay empty and are resolved server-side.
  */
-function presetForm(preset: S3Preset, form: { name: string; bucket: string; region: string; endpoint: string; accessKeyId: string; secretAccessKey: string; forcePathStyle: boolean; quotaBytes: string; provider: string }) {
+type S3FormState = {
+  provider: string
+  template: ManualTemplate
+  name: string
+  bucket: string
+  region: string
+  endpoint: string
+  accessKeyId: string
+  secretAccessKey: string
+  forcePathStyle: boolean
+  quotaBytes: string
+}
+
+const emptyS3Form: S3FormState = {
+  provider: '',
+  template: 'aws',
+  name: '',
+  bucket: '',
+  region: 'us-east-1',
+  endpoint: '',
+  accessKeyId: '',
+  secretAccessKey: '',
+  forcePathStyle: false,
+  quotaBytes: '',
+}
+
+function presetForm(preset: S3Preset, form: S3FormState): S3FormState {
   return {
     ...form,
     provider: preset.id,
@@ -69,7 +112,7 @@ export function SettingsPage() {
   const [connecting, setConnecting] = useState(false)
   const [s3Open, setS3Open] = useState(false)
   const [connectingS3, setConnectingS3] = useState(false)
-  const [s3Form, setS3Form] = useState({ provider: '', name: '', bucket: '', region: 'us-east-1', endpoint: '', accessKeyId: '', secretAccessKey: '', forcePathStyle: false, quotaBytes: '' })
+  const [s3Form, setS3Form] = useState({ provider: '', template: 'aws' as ManualTemplate, name: '', bucket: '', region: 'us-east-1', endpoint: '', accessKeyId: '', secretAccessKey: '', forcePathStyle: false, quotaBytes: '' })
   // Backends this deployment already holds credentials for (`B2_*`, `IDRIVE_E2_*`,
   // `DBBYTE_*`). Connecting one is a single click: the secrets never reach the browser.
   const [s3Presets, setS3Presets] = useState<S3Preset[]>([])
@@ -460,7 +503,7 @@ export function SettingsPage() {
         }),
       })
       setS3Open(false)
-      setS3Form({ provider: '', name: '', bucket: '', region: 'us-east-1', endpoint: '', accessKeyId: '', secretAccessKey: '', forcePathStyle: false, quotaBytes: '' })
+      setS3Form(emptyS3Form)
       setMessage('S3 storage connected.')
       await load()
       window.dispatchEvent(new Event('9drive:storage-changed'))
@@ -770,7 +813,7 @@ export function SettingsPage() {
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={() => setS3Form({ provider: '', name: '', bucket: '', region: 'us-east-1', endpoint: '', accessKeyId: '', secretAccessKey: '', forcePathStyle: false, quotaBytes: '' })}
+                onClick={() => setS3Form(emptyS3Form)}
                 className={!s3Form.provider ? 'rounded-lg border border-blue-600 bg-blue-50 px-2.5 py-1.5 text-[12px] font-bold text-blue-700' : 'rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-semibold text-slate-600'}
               >
                 Enter manually
@@ -800,18 +843,57 @@ export function SettingsPage() {
               </p>
             ) : null}
             {s3Presets
-              .filter((preset) => !preset.ready && preset.missing.length < 6)
+              .filter((preset) => !preset.ready)
               .map((preset) => (
                 <p key={preset.id} className="text-[11px] leading-relaxed text-amber-700">
-                  {preset.label} is partly configured - add {preset.missing.join(', ')} on the service, then redeploy.
+                  {preset.emptyVars?.length
+                    ? `${preset.label}: ${preset.emptyVars.join(', ')} ${preset.emptyVars.length === 1 ? 'is' : 'are'} set on the service but empty - paste the value next to the key in your host dashboard, then redeploy.`
+                    : `${preset.label} is partly configured - add ${preset.missing.join(', ')} on the service, then redeploy.`}
                 </p>
               ))}
           </div>
         ) : null}
         <form className="grid gap-4" onSubmit={connectS3}>
+          <label className="grid gap-1.5 text-xs font-bold text-slate-500">
+            Provider
+            <select
+              className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm dark:border-slate-800 dark:bg-slate-950"
+              value={s3Form.provider ? 'preset' : s3Form.template}
+              disabled={Boolean(s3Form.provider)}
+              onChange={(event) => {
+                const template = MANUAL_TEMPLATES.find((entry) => entry.id === event.target.value)
+                if (!template) return
+                setS3Form((form) => ({
+                  ...form,
+                  template: template.id,
+                  forcePathStyle: template.pathStyle,
+                  endpoint: template.endpointFor ? template.endpointFor(form.region) : '',
+                }))
+              }}
+            >
+              {s3Form.provider ? <option value="preset">{s3Presets.find((preset) => preset.id === s3Form.provider)?.label ?? 'From environment'} (environment)</option> : null}
+              {MANUAL_TEMPLATES.map((template) => (
+                <option key={template.id} value={template.id}>{template.label}</option>
+              ))}
+            </select>
+          </label>
+          {!s3Form.provider && MANUAL_TEMPLATES.find((entry) => entry.id === s3Form.template)?.hint ? (
+            <p className="-mt-2 text-[11px] text-slate-500">{MANUAL_TEMPLATES.find((entry) => entry.id === s3Form.template)?.hint}</p>
+          ) : null}
           <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder="Display name" value={s3Form.name} onChange={(event) => setS3Form({ ...s3Form, name: event.target.value })} required />
           <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder="Bucket" value={s3Form.bucket} onChange={(event) => setS3Form({ ...s3Form, bucket: event.target.value })} required />
-          <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder="Region" value={s3Form.region} onChange={(event) => setS3Form({ ...s3Form, region: event.target.value })} required />
+          <input
+            className="h-11 rounded-xl border border-slate-200 px-3 text-sm"
+            placeholder="Region"
+            value={s3Form.region}
+            onChange={(event) => {
+              const region = event.target.value
+              // B2 and Wasabi embed the region in the endpoint, so keep it in sync.
+              const template = MANUAL_TEMPLATES.find((entry) => entry.id === s3Form.template)
+              setS3Form((form) => ({ ...form, region, endpoint: !form.provider && template?.endpointFor ? template.endpointFor(region) : form.endpoint }))
+            }}
+            required
+          />
           <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder="Endpoint URL (optional)" value={s3Form.endpoint} onChange={(event) => setS3Form({ ...s3Form, endpoint: event.target.value })} />
           <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder={s3Form.provider ? 'Access key ID (from environment - leave empty)' : 'Access key ID'} value={s3Form.accessKeyId} onChange={(event) => setS3Form({ ...s3Form, accessKeyId: event.target.value })} required={!s3Form.provider} />
           <input className="h-11 rounded-xl border border-slate-200 px-3 text-sm" placeholder={s3Form.provider ? 'Secret access key (from environment - leave empty)' : 'Secret access key'} type="password" value={s3Form.secretAccessKey} onChange={(event) => setS3Form({ ...s3Form, secretAccessKey: event.target.value })} required={!s3Form.provider} />

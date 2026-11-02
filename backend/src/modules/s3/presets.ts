@@ -17,6 +17,17 @@ import { looksLikePlaceholder } from '../../utils/placeholder.js'
 
 export type StorageBackendId = 'b2' | 'idrive_e2' | 'dbyte'
 
+/**
+ * State of one environment variable, without ever exposing its value.
+ *
+ * The live deployment had `B2_KEY_ID` and friends listed in Render's Environment
+ * tab but with **empty values** - which looked configured and behaved exactly like
+ * "not set". Distinguishing the two turns a guessing game into one instruction.
+ */
+export type EnvVarState = 'ok' | 'empty' | 'unset' | 'placeholder'
+
+export type EnvVarReport = { name: string; state: EnvVarState }
+
 export type StoragePreset = {
   id: StorageBackendId
   label: string
@@ -30,10 +41,25 @@ export type StoragePreset = {
   hasSecretKey: boolean
   /** JSON-friendly so the API can send it unchanged. */
   quotaBytes: string | null
-  /** Environment variable names that are absent or still placeholders. */
+  /** Environment variable names that are absent, empty or still placeholders. */
   missing: string[]
+  /** Which of those exist on the service but have no value. */
+  emptyVars: string[]
+  /** Which of those are not defined at all. */
+  unsetVars: string[]
+  /** Per-variable state, for diagnostics. */
+  env: EnvVarReport[]
   ready: boolean
   notes: string[]
+}
+
+function envState(name: string): EnvVarState {
+  const raw = process.env[name]
+  if (raw === undefined) return 'unset'
+  const trimmed = raw.trim()
+  if (!trimmed) return 'empty'
+  if (looksLikePlaceholder(trimmed)) return 'placeholder'
+  return 'ok'
 }
 
 function readEnv(name: string): string | null {
@@ -164,6 +190,9 @@ export function listStoragePresets(): StoragePreset[] {
   return DEFINITIONS.map((definition) => {
     const resolved = definition.resolve()
     const missing = resolved.required.filter(([, value]) => !value).map(([name]) => name)
+    const env = resolved.required.map(([name]) => ({ name, state: envState(name) }))
+    const emptyVars = env.filter((entry) => entry.state === 'empty' || entry.state === 'placeholder').map((entry) => entry.name)
+    const unsetVars = env.filter((entry) => entry.state === 'unset').map((entry) => entry.name)
     return {
       id: definition.id,
       label: definition.label,
@@ -176,6 +205,9 @@ export function listStoragePresets(): StoragePreset[] {
       hasSecretKey: Boolean(resolved.secretAccessKey),
       quotaBytes: resolved.quotaBytes,
       missing,
+      emptyVars,
+      unsetVars,
+      env,
       ready: missing.length === 0,
       notes: resolved.notes,
     }
@@ -223,6 +255,9 @@ export function describeStorageEnvironment() {
       label: preset.label,
       ready: preset.ready,
       missing: preset.missing,
+      emptyVars: preset.emptyVars,
+      unsetVars: preset.unsetVars,
+      env: preset.env,
       bucket: preset.bucket,
       endpoint: preset.endpoint,
     })),
