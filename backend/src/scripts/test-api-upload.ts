@@ -98,6 +98,72 @@ async function main() {
     created.length = 0
     console.log('delete            ok')
 
+    /* ------------------------------------------------- object: write/read */
+    const objectKey = `api-smoke/${Date.now()}.txt`
+    const objectUrl = `${apiUrl}/api/v1/objects/${objectKey}`
+    const putHeaders = { ...auth, 'Content-Type': 'text/plain' }
+
+    const putFirst = await fetch(objectUrl, { method: 'PUT', headers: putHeaders, body: 'hello object' })
+    assert(putFirst.status === 201, `first PUT should be 201, got ${putFirst.status} ${await putFirst.clone().text()}`)
+    const etag = putFirst.headers.get('etag')
+    assert(etag?.startsWith('"') && etag.endsWith('"'), `PUT should return a quoted ETag, got ${etag}`)
+    console.log('object put        ok', etag)
+
+    const readFirst = await fetch(objectUrl, { headers: auth })
+    assert(readFirst.ok, `GET object failed: ${readFirst.status}`)
+    assert((await readFirst.text()) === 'hello object', 'object bytes differ from what was written')
+    console.log('object get        ok')
+
+    const head = await fetch(objectUrl, { method: 'HEAD', headers: auth })
+    assert(head.status === 200, `HEAD should be 200, got ${head.status}`)
+    assert(head.headers.get('etag') === etag, 'HEAD ETag differs from PUT ETag')
+    assert(head.headers.get('content-length') === '12', `HEAD content-length wrong: ${head.headers.get('content-length')}`)
+    assert(head.headers.get('last-modified'), 'HEAD should send Last-Modified')
+    console.log('object head       ok')
+
+    /* ------------------------------------------------------ object overwrite */
+    const putSecond = await fetch(objectUrl, { method: 'PUT', headers: putHeaders, body: 'replaced!' })
+    assert(putSecond.status === 200, `overwrite should be 200, got ${putSecond.status}`)
+    assert((await (await fetch(objectUrl, { headers: auth })).text()) === 'replaced!', 'overwrite did not replace the bytes')
+    console.log('object overwrite  ok')
+
+    /* --------------------------------------------------------- object listing */
+    const listing = await json<{ objects: Array<{ key: string }>; isTruncated: boolean }>(
+      await fetch(`${apiUrl}/api/v1/objects?prefix=api-smoke/`, { headers: auth }),
+      'object list',
+    )
+    assert(listing.objects.some((object) => object.key === objectKey), 'the object is missing from the listing')
+    console.log('object list       ok', listing.objects.length, 'objects')
+
+    /* ---------------------------------------------------------- signed links */
+    const signed = await json<{ url: string }>(
+      await fetch(`${apiUrl}/api/v1/objects/sign`, {
+        method: 'POST',
+        headers: { ...auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: objectKey, method: 'GET', expiresInSeconds: 120 }),
+      }),
+      'sign',
+    )
+    const unsigned = await fetch(signed.url)
+    assert(unsigned.ok, `signed GET failed without a key: ${unsigned.status}`)
+    assert((await unsigned.text()) === 'replaced!', 'signed GET returned different bytes')
+    console.log('object sign       ok')
+
+    const tampered = await fetch(signed.url.replace(/sig=[^&]+/, 'sig=deadbeef'))
+    assert(tampered.status === 403, `a bad signature should be 403, got ${tampered.status}`)
+    const unsignedNoQuery = await fetch(signed.url.split('?')[0]!)
+    assert(unsignedNoQuery.status === 401, `an unsigned request should be 401, got ${unsignedNoQuery.status}`)
+    console.log('signature refusal ok')
+
+    /* --------------------------------------------------------- object delete */
+    const deleted = await fetch(objectUrl, { method: 'DELETE', headers: auth })
+    assert(deleted.status === 204, `DELETE should be 204, got ${deleted.status}`)
+    const gone = await fetch(objectUrl, { headers: auth })
+    assert(gone.status === 404, `GET after DELETE should be 404, got ${gone.status}`)
+    const deletedAgain = await fetch(objectUrl, { method: 'DELETE', headers: auth })
+    assert(deletedAgain.status === 204, `DELETE is idempotent, got ${deletedAgain.status}`)
+    console.log('object delete     ok')
+
     /* -------------------------------------------------------------- scopes */
     const forbidden = await fetch(`${apiUrl}/api/v1/files`, { headers: { Authorization: 'Bearer 9d_live_not_a_key' } })
     assert(forbidden.status === 401, `a bogus key should be 401, got ${forbidden.status}`)

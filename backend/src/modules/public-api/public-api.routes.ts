@@ -13,6 +13,7 @@ import { buildS3ObjectKey, deleteS3Object, getS3ConfigForAccount, syncS3Quota, u
 import { handleUpload, selectAccount, syncQuotaInBackground } from '../uploads/upload.routes.js'
 import { API_SCOPES } from './scopes.js'
 import { KIND_FILTERS, absoluteUrl, apiFile, apiFolder, publicBaseUrl } from './serialize.js'
+import { objectsRouter } from './objects.routes.js'
 
 export const publicApiRouter = Router()
 
@@ -94,6 +95,12 @@ publicApiRouter.get(['/v1', '/v1/'], (req, res) => {
       { method: 'GET', path: '/api/v1/folders', scope: 'files:read', description: 'List folders. Query: parentId, all=1.' },
       { method: 'POST', path: '/api/v1/folders', scope: 'files:write', description: 'Create a folder. Body: name, parentId.' },
       { method: 'GET', path: '/api/v1/usage', scope: 'files:read', description: 'Used and available bytes across every connected account.' },
+      { method: 'PUT', path: '/api/v1/objects/:key', scope: 'files:write', description: 'S3-style object write. The body is the file; the same key overwrites. Returns ETag.' },
+      { method: 'GET', path: '/api/v1/objects/:key', scope: 'files:read', description: 'Object bytes. Range, ETag and If-None-Match supported.' },
+      { method: 'HEAD', path: '/api/v1/objects/:key', scope: 'files:read', description: 'Object headers only: Content-Type, Content-Length, ETag, Last-Modified.' },
+      { method: 'DELETE', path: '/api/v1/objects/:key', scope: 'files:delete', description: 'Deletes the object. Always 204, like S3.' },
+      { method: 'GET', path: '/api/v1/objects', scope: 'files:read', description: 'List objects. Query: prefix, delimiter, max-keys, continuation-token.' },
+      { method: 'POST', path: '/api/v1/objects/sign', scope: 'files:read', description: 'Expiring signed URL for GET/HEAD/PUT, so a browser can read or upload without a key.' },
     ],
   })
 })
@@ -103,6 +110,7 @@ publicApiRouter.get(['/v1', '/v1/'], (req, res) => {
 /* -------------------------------------------------------------------------- */
 
 const storageRouter = Router()
+publicApiRouter.use('/v1/objects', objectsRouter)
 publicApiRouter.use('/v1', storageRouter)
 
 /** Legacy path from the first API version; kept so existing scripts keep working. */

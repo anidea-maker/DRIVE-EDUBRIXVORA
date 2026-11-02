@@ -183,6 +183,101 @@ POST /api/v1/files/:id/share
 
 `DELETE /api/v1/files/:id/share` disables every public URL for that file.
 
+## Objects (S3-style)
+
+Same storage, addressed by path instead of id. This is the surface to use when
+you want S3's habits - write a key, read it back, list by prefix - without an S3
+client, SigV4, or XML.
+
+| Verb | Path | Behaviour |
+| --- | --- | --- |
+| `PUT` | `/api/v1/objects/:key` | Body is the object. `201` created, `200` overwritten |
+| `GET` | `/api/v1/objects/:key` | Bytes, `Range`, `If-None-Match` → `304` |
+| `HEAD` | `/api/v1/objects/:key` | `Content-Type`, `Content-Length`, `ETag`, `Last-Modified`, no body |
+| `DELETE` | `/api/v1/objects/:key` | Deletes for good. Always `204` |
+| `GET` | `/api/v1/objects` | List: `prefix`, `delimiter`, `max-keys`, `continuation-token` |
+| `POST` | `/api/v1/objects/sign` | Expiring URL for `GET`/`HEAD`/`PUT` |
+
+```bash
+curl -X PUT "$BASE/objects/branding/logo.png" \
+  -H "Authorization: Bearer $DRIVE_API_KEY" \
+  -H "Content-Type: image/png" \
+  --upload-file ./logo.png
+```
+
+**Keys** are paths: no leading or trailing slash, no empty segment, no `.` or
+`..`, at most 700 characters. They are opaque - no case folding, no
+normalisation - so two callers that agree on a string land on the same object.
+
+**Overwrites** are in place: `PUT` to an existing key replaces the bytes and the
+metadata, and there is never a second row. On an S3-backed account this is a
+single provider `PutObject`; on Google Drive the new file is written first and
+the old one is removed after, so a failed overwrite leaves the previous version
+readable.
+
+**`ETag`** is the MD5 of the body, computed while streaming, so revalidation and
+`If-None-Match` cost nothing extra. Every write returns it.
+
+**`DELETE`** is idempotent, like S3: deleting a key that does not exist answers
+`204`. A `GET` or `HEAD` for a missing key answers `404` with `NO_SUCH_KEY`
+(`HEAD` has no body, as S3 specifies).
+
+**Listing** mirrors the S3 response shape:
+
+```json
+{
+  "prefix": "branding/",
+  "delimiter": "/",
+  "objects": [{ "key": "branding/logo.png", "sizeBytes": "4829", "lastModified": "…", "etag": "\"9b2c…\"", "mimeType": "image/png" }],
+  "prefixes": ["branding/icons/"],
+  "isTruncated": false,
+  "nextContinuationToken": null
+}
+```
+
+`delimiter=/` collapses everything below the prefix into `prefixes`, which is how
+a console renders folders. Paginate with `max-keys` (default 1000) and
+`continuation-token` from the previous page.
+
+### Signed URLs
+
+A browser cannot hold the API key, but it can hold a link. `POST
+/api/v1/objects/sign` mints one that is bound to a single key, a single method
+and a short expiry:
+
+```json
+POST /api/v1/objects/sign
+{ "key": "branding/logo.png", "method": "GET", "expiresInSeconds": 3600 }
+```
+
+```json
+{
+  "key": "branding/logo.png",
+  "method": "GET",
+  "url": "https://host/api/public/objects/branding/logo.png?u=…&m=GET&exp=…&sig=…",
+  "expiresAt": "2026-05-01T10:12:00.000Z"
+}
+```
+
+- `GET`/`HEAD` links read; `PUT` links write. A `GET` link cannot be replayed as a `PUT`, and a link for one key cannot be pointed at another.
+- The signature covers user, key, method and expiry, and is verified with a constant-time comparison.
+- Signing requires the scope the method needs (`files:read` for `GET`, `files:write` for `PUT`), so it can never widen a key's access.
+- Links are signed with `OBJECT_URL_SIGNING_SECRET` when set, otherwise a key derived from `TOKEN_ENCRYPTION_KEY` - no configuration needed, and rotating that secret invalidates every outstanding link.
+
+```html
+<img src="https://host/api/public/objects/branding/logo.png?u=…&m=GET&exp=…&sig=…" />
+```
+
+### Errors specific to objects
+
+| Status | Code | Meaning |
+| --- | --- | --- |
+| 400 | `OBJECT_KEY_INVALID` | The key has a leading/trailing slash, `//`, `.`, `..`, control characters, or is over 700 characters |
+| 404 | `NO_SUCH_KEY` | No object at that key |
+| 411 | `OBJECT_SIZE_REQUIRED` | `PUT` without `Content-Length` |
+| 413 | `OBJECT_TOO_LARGE` | Over `MAX_UPLOAD_BYTES` |
+| 401/403 | `SIGNED_URL_REQUIRED` / `SIGNED_URL_EXPIRED` / `SIGNED_URL_INVALID` | Signed link missing, expired, or tampered with |
+
 ## Folders
 
 ```http

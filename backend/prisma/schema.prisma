@@ -214,6 +214,12 @@ model File {
   mimeType           String           @map("mime_type") @db.VarChar(191)
   sizeBytes          BigInt           @map("size_bytes")
   checksum           String?          @db.VarChar(191)
+  /**
+   * S3-style object path (`assets/hero.jpg`). Null for files uploaded through the
+   * dashboard, which are addressed by id instead. Unique per user, so PUT to the
+   * same key overwrites - the behaviour every S3 client expects.
+   */
+  objectKey          String?          @map("object_key") @db.VarChar(700)
   status             String           @default("active") @db.VarChar(32)
   createdAt          DateTime         @default(now()) @map("created_at")
   updatedAt          DateTime         @updatedAt @map("updated_at")
@@ -227,6 +233,7 @@ model File {
   @@index([userId])
   @@index([userId, status, createdAt])
   @@index([userId, status, folderId, createdAt])
+  @@unique([userId, objectKey])
   @@index([connectedAccountId])
   @@index([folderId])
   @@index([providerFileId])

@@ -138,7 +138,11 @@ export async function uploadS3Object(config: S3Config, key: string, body: NodeJS
   }).done()
 }
 
-export async function deleteS3Object(file: FileWithAccount) {
+/**
+ * Only the account and the object key are needed to delete, so the parameter is
+ * intentionally narrow: object-API rows and dashboard rows both satisfy it.
+ */
+export async function deleteS3Object(file: { connectedAccountId: string; providerFileId: string }) {
   const config = await getS3ConfigForAccount(file.connectedAccountId)
   const client = createS3Client(config)
   await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: file.providerFileId }))
