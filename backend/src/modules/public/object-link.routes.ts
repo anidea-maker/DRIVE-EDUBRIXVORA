@@ -52,7 +52,10 @@ function checkSignature(
   if (keyProblem) return { problem: 'invalid', keyProblem }
   // The signature covers the method in the URL, so a GET link cannot be replayed
   // as a PUT: the method sent here must match the method that was signed.
-  if (query(req, 'm') !== expected) return { problem: 'invalid', keyProblem: null }
+  // Checked only when present - a request with no signature at all should be told
+  // it needs one, not that its (absent) signature is wrong.
+  const method = query(req, 'm')
+  if (method && method !== expected) return { problem: 'invalid', keyProblem: null }
   const exp = Number(query(req, 'exp') ?? NaN)
   const problem = verifyObjectUrl({
     method: expected,
