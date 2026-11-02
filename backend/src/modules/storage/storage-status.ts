@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client'
+import { env } from '../../config/env.js'
 
 /**
  * One storage status shape shared by every public/health endpoint.
@@ -28,6 +29,15 @@ export type StorageReport = {
     googleDrive: number
     s3: number
   }
+  upload: {
+    available: boolean
+    endpoint: string
+    alternativeEndpoint: string
+    method: 'POST'
+    requiredScope: 'files:write'
+    maxBytes: string
+    reason: string | null
+  }
   appRecords: string
   display: {
     storageProvider: '9drive'
@@ -36,6 +46,8 @@ export type StorageReport = {
     fileCapRemaining: string
     persistence: 'Persistent'
     appRecords: string
+    uploadEndpoint: string
+    uploadAvailable: boolean
   }
   checkedAt: string
   note: string
@@ -52,6 +64,7 @@ export type StorageReportInput = {
   unavailable?: boolean
   checkedAt?: string
   note?: string
+  maxUploadBytes?: number | bigint
 }
 
 const APP_RECORDS = 'Turso — accounts, document metadata & registry, not file bytes'
@@ -76,6 +89,16 @@ export function buildStorageReport(input: StorageReportInput = {}): StorageRepor
   const fileCapLabel = capacityReported && fileCapRemaining !== null
     ? `${fileCapRemaining} bytes`
     : 'Capacity not reported'
+  const connected = input.connectedAccounts ?? 0
+  const uploadAvailable = status === 'connected' && connected > 0
+  const uploadReason = uploadAvailable
+    ? null
+    : status === 'unavailable'
+      ? 'The storage registry could not be read; uploads cannot be routed yet.'
+      : connected === 0
+        ? 'No connected storage account is available for this API key owner.'
+        : 'Storage is degraded; uploads are paused until a provider is healthy.'
+  const maxBytes = (input.maxUploadBytes ?? env.MAX_UPLOAD_BYTES).toString()
 
   return {
     status,
@@ -94,9 +117,18 @@ export function buildStorageReport(input: StorageReportInput = {}): StorageRepor
         : 'At least one connected account does not report a quota, so capacity stays unknown rather than looking unlimited.',
     },
     accounts: {
-      connected: input.connectedAccounts ?? 0,
+      connected,
       googleDrive: input.googleDriveAccounts ?? 0,
       s3: input.s3Accounts ?? 0,
+    },
+    upload: {
+      available: uploadAvailable,
+      endpoint: '/api/v1/resources',
+      alternativeEndpoint: '/api/v1/files',
+      method: 'POST',
+      requiredScope: 'files:write',
+      maxBytes,
+      reason: uploadReason,
     },
     appRecords: APP_RECORDS,
     display: {
@@ -106,6 +138,8 @@ export function buildStorageReport(input: StorageReportInput = {}): StorageRepor
       fileCapRemaining: fileCapLabel,
       persistence: 'Persistent',
       appRecords: APP_RECORDS,
+      uploadEndpoint: '/api/v1/resources',
+      uploadAvailable,
     },
     checkedAt,
     note: input.note ?? (capacityReported

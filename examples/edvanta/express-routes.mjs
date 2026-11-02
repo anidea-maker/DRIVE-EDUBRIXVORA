@@ -65,16 +65,41 @@ export function mergeStorageStatus(overview, status) {
   }
 }
 
+const META_WRAPPERS = ['resourceMeta', 'metadata', 'meta', 'resource']
+const META_PLAIN_FIELDS = [
+  'title', 'description', 'category', 'subject', 'academicLevel', 'examType',
+  'visibility', 'provider', 'clientRequestId', 'fileName', 'mimeType',
+  'sizeBytes', 'size', 'displayName', 'requestId',
+]
+
+/**
+ * Edvanta's admin UI has used a JSON `resourceMeta` field, a JSON `metadata`
+ * field, and plain multipart fields. Merge them; 9Drive keeps any unknown
+ * wrapper keys only as opaque metadata and never treats them as privilege.
+ */
 function parseMeta(req) {
-  const raw = req.body?.resourceMeta ?? req.body?.meta
-  if (typeof raw === 'string') {
-    try {
-      return JSON.parse(raw)
-    } catch {
-      throw Object.assign(new Error('resourceMeta must be valid JSON.'), { code: 'RESOURCE_META_INVALID', status: 400 })
+  const body = req.body ?? {}
+  let meta = {}
+  for (const key of META_WRAPPERS) {
+    const raw = body[key]
+    if (raw === undefined || raw === null || raw === '') continue
+    let parsed = raw
+    if (typeof raw === 'string') {
+      try {
+        parsed = JSON.parse(raw)
+      } catch {
+        throw Object.assign(new Error(`${key} must be valid JSON.`), { code: 'RESOURCE_META_INVALID', status: 400 })
+      }
     }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw Object.assign(new Error(`${key} must be a JSON object.`), { code: 'RESOURCE_META_INVALID', status: 400 })
+    }
+    meta = { ...meta, ...parsed }
   }
-  return raw && typeof raw === 'object' ? raw : {}
+  for (const key of META_PLAIN_FIELDS) {
+    if (meta[key] === undefined && body[key] !== undefined) meta[key] = body[key]
+  }
+  return meta
 }
 
 export function mountEdvantaResourceRoutes(app, { storage, requireStudent, requireAdmin, logger = console } = {}) {
@@ -108,6 +133,8 @@ export function mountEdvantaResourceRoutes(app, { storage, requireStudent, requi
         status: status.storage.status,
         provider: status.storage.provider,
         checkedAt: status.storage.checkedAt,
+        uploadAvailable: status.storage.uploadAvailable ?? status.storage.upload?.available ?? null,
+        uploadEndpoint: status.storage.uploadEndpoint ?? status.storage.upload?.endpoint ?? null,
         reported: true,
       },
       storageStatus: status.storageStatus,
@@ -182,7 +209,12 @@ export function mountEdvantaResourceRoutes(app, { storage, requireStudent, requi
 
   /* ------------------------------- admin side ------------------------------ */
 
-  app.post('/api/admin/resources', requireAdmin, wrap(async (req, res) => {
+  /**
+   * Edvanta's batch UI has posted to /api/admin/resources, /api/resources/upload
+   * and /api/admin/documents/upload across deployments. All aliases use the
+   * same server-verified admin guard and the same retry-safe per-file handler.
+   */
+  const adminUploadHandler = wrap(async (req, res) => {
     const files = Array.isArray(req.files) ? req.files : req.file ? [req.file] : []
     if (files.length === 0) return res.status(400).json({ code: 'RESOURCE_FILE_REQUIRED', message: 'Attach at least one file.' })
     const baseMeta = parseMeta(req)
@@ -206,7 +238,15 @@ export function mountEdvantaResourceRoutes(app, { storage, requireStudent, requi
     const succeeded = results.filter((entry) => entry.status === 'success').length
     // One failed file never marks the whole batch successful.
     return res.status(succeeded > 0 ? 201 : 502).json({ results, succeeded, failed: results.length - succeeded })
-  }))
+  })
+  for (const path of [
+    '/api/admin/resources',
+    '/api/admin/resources/upload',
+    '/api/resources/upload',
+    '/api/admin/documents/upload',
+  ]) {
+    app.post(path, requireAdmin, adminUploadHandler)
+  }
 
   app.patch('/api/admin/resources/:id', requireAdmin, wrap(async (req, res) => {
     const { resource } = await storage.patchResource(req.params.id, parseMeta(req))

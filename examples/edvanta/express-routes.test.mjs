@@ -59,6 +59,9 @@ test('registers student and admin routes with separate guards', () => {
   assert.ok(handlers.has('GET /api/resources/:id/preview'))
   assert.ok(handlers.has('POST /api/resources/bulk-download'))
   assert.ok(handlers.has('POST /api/admin/resources'))
+  assert.ok(handlers.has('POST /api/admin/resources/upload'))
+  assert.ok(handlers.has('POST /api/resources/upload'))
+  assert.ok(handlers.has('POST /api/admin/documents/upload'))
   assert.ok(handlers.has('PATCH /api/admin/resources/:id'))
   assert.ok(handlers.has('GET /api/admin/resources/health'))
 })
@@ -135,6 +138,39 @@ test('one failed file does not mark an admin batch successful', async () => {
   assert.equal(res.body.results[1].code, 'S3_ACCESS_DENIED')
   assert.equal(uploaded[0].resourceMeta.clientRequestId, 'batch-1-0')
   assert.equal(uploaded[1].resourceMeta.clientRequestId, 'batch-1-1')
+})
+
+test('upload aliases accept JSON metadata wrappers and plain multipart fields', async () => {
+  const uploaded = []
+  const { app, handlers } = fakeApp()
+  mountEdvantaResourceRoutes(app, {
+    storage: {
+      uploadResource: async (input) => {
+        uploaded.push(input)
+        return { resource: { id: `r${uploaded.length}` }, objectKey: `key-${uploaded.length}` }
+      },
+    },
+    requireStudent: pass,
+    requireAdmin: pass,
+  })
+  const req = {
+    params: {},
+    query: {},
+    body: {
+      metadata: JSON.stringify({ title: 'Chapter 3', sizeBytes: '10', clientRequestId: 'alias-batch' }),
+      category: 'Science',
+      role: 'super_admin',
+    },
+    files: [{ buffer: Buffer.from('ok'), originalname: 'chapter3.pdf', mimetype: 'application/pdf' }],
+  }
+  const res = fakeRes()
+  await handlers.get('POST /api/resources/upload')(req, res, () => {})
+  assert.equal(res.statusCode, 201)
+  assert.equal(uploaded.length, 1)
+  assert.equal(uploaded[0].resourceMeta.title, 'Chapter 3')
+  assert.equal(uploaded[0].resourceMeta.category, 'Science')
+  assert.equal(uploaded[0].resourceMeta.clientRequestId, 'alias-batch-0')
+  assert.equal(uploaded[0].resourceMeta.role, undefined, 'a browser-supplied role is not forwarded as privilege')
 })
 
 test('public counts route hardcodes student audience and never blocks on a cold start', async () => {

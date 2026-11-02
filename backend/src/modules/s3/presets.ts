@@ -200,7 +200,11 @@ function endpointNote(raw: string | null, normalized: string | null): string | n
  * (`s3.<region>.backblazeb2.com`), and `B2_ENDPOINT_URL` wins when set.
  */
 function resolveB2(): Resolved {
-  const bucket = readEnv('B2_BUCKET')
+  const rawBucket = readEnv('B2_BUCKET')
+  // Backblaze B2 bucket names are lowercase. A pasted uppercase name produces
+  // NoSuchBucket on every upload, so normalise it at the boundary instead of
+  // only warning in diagnostics.
+  const bucket = rawBucket ? rawBucket.toLowerCase() : null
   const region = readEnv('B2_REGION')
   const explicitEndpoint = readEndpointEnv('B2_ENDPOINT_URL')
   const endpoint = normalizeEndpoint(explicitEndpoint) ?? (region ? normalizeEndpoint(`s3.${region}.backblazeb2.com`) : null)
@@ -217,8 +221,8 @@ function resolveB2(): Resolved {
   if (endpointRegion && region && endpointRegion !== region) {
     notes.push(`B2_REGION is "${region}" but the endpoint is for "${endpointRegion}". Use B2_REGION=${endpointRegion}, or clear B2_ENDPOINT_URL to derive it.`)
   }
-  if (bucket && /[A-Z]/.test(bucket)) {
-    notes.push(`B2_BUCKET "${bucket}" contains capitals. Backblaze bucket names are lowercase - use the exact name from the B2 console.`)
+  if (rawBucket && rawBucket !== bucket) {
+    notes.push(`B2_BUCKET "${rawBucket}" was normalised to "${bucket}" because Backblaze B2 bucket names are lowercase.`)
   }
 
   const quotaFromName = quota.value ? null : quotaFromDisplayName(displayName)

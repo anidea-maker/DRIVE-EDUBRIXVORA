@@ -27,8 +27,23 @@ export function createS3Client(config: S3Config) {
   })
 }
 
+/**
+ * Backblaze B2 bucket names are lowercase. Older connected accounts may have
+ * stored the display name with capitals (`EDUBRIXVORA`), which makes every
+ * HeadBucket/PutObject fail with NoSuchBucket. Normalise on read without
+ * rewriting the stored row, so existing connections start working.
+ */
+export function normalizeS3Config<T extends { bucket: string; endpoint: string | null }>(config: T): T {
+  const host = (config.endpoint ?? '').toLowerCase()
+  if (host.includes('backblazeb2.com') && /[A-Z]/.test(config.bucket)) {
+    return { ...config, bucket: config.bucket.toLowerCase() }
+  }
+  return config
+}
+
 export async function getS3ConfigForAccount(accountId: string, userId?: string) {
-  return prisma.s3StorageConfig.findFirstOrThrow({ where: { connectedAccountId: accountId, status: 'active', ...(userId ? { userId } : {}) } })
+  const config = await prisma.s3StorageConfig.findFirstOrThrow({ where: { connectedAccountId: accountId, status: 'active', ...(userId ? { userId } : {}) } })
+  return normalizeS3Config(config)
 }
 
 /**

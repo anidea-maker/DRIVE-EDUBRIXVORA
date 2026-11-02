@@ -59,6 +59,13 @@ function isExternalApiPath(path: string) {
     path.startsWith('/api/v1/') ||
     path === '/v1' ||
     path.startsWith('/v1/') ||
+    // Bare /api compatibility aliases used by some Edvanta builds.
+    path === '/api/storage-status' ||
+    path.startsWith('/api/storage-status/') ||
+    path === '/api/upload' ||
+    path.startsWith('/api/upload/') ||
+    path === '/api/resources' ||
+    path.startsWith('/api/resources/') ||
     path === '/api/public' ||
     path.startsWith('/api/public/') ||
     path === '/public' ||

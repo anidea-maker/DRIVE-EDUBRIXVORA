@@ -38,6 +38,7 @@ class StorageStatusTests(unittest.TestCase):
                     "database": {"ok": True},
                     "accounts": [{"ok": True, "provider": "s3"}],
                     "resources": {"available": 4, "missing": 0, "inaccessible": 0, "unknown": 0},
+                    "upload": {"available": True, "endpoint": "/api/v1/resources", "requiredScope": "files:write"},
                     "checkedAt": "2026-11-02T12:00:00+00:00",
                     "reported": True,
                 },
@@ -52,6 +53,7 @@ class StorageStatusTests(unittest.TestCase):
         self.assertEqual(captured["api_key"], "9d_live_test")
         self.assertEqual(status["storage"]["status"], "connected")
         self.assertEqual(status["storage"]["endpoint"], "https://drive-edubrixvora-1.onrender.com/api/v1")
+        self.assertTrue(status["storage"]["upload"]["available"])
         self.assertTrue(status["reported"])
 
     def test_offline_9drive_is_reported_as_unavailable_not_missing(self):
@@ -63,6 +65,8 @@ class StorageStatusTests(unittest.TestCase):
             status = asyncio.run(fastapi_9drive.get_storage_status(fetch=fetch))
         self.assertEqual(status["storage"]["status"], "unavailable")
         self.assertEqual(status["storage"]["error"], "STORAGE_UPSTREAM_UNAVAILABLE")
+        self.assertFalse(status["storage"]["upload"]["available"])
+        self.assertEqual(status["storage"]["upload"]["endpoint"], "/api/v1/resources")
         self.assertTrue(status["storage"]["reported"])
         self.assertTrue(status["reported"])
 

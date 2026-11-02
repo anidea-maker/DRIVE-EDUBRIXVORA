@@ -195,7 +195,15 @@ resourceMeta = {
 file = <binary>
 ```
 
-`resourceMeta` must precede the file part. The backend:
+`resourceMeta` must precede the file part for the streaming parser. Deployments
+that cannot send a JSON wrapper may instead send `metadata`/`meta` as JSON or
+plain multipart fields (`title`, `category`, `size`/`sizeBytes`, `fileName`,
+`mimeType`, `visibility`, `clientRequestId`, `provider=9drive`). The file part
+may be named `file`, `files`, `upload` or `document`. Compatible endpoints are
+`POST /api/v1/resources`, `/api/v1/resources/upload`, `/api/v1/upload`, and the
+bare-`/api` aliases `/api/resources`, `/api/resources/upload`, `/api/upload`.
+All of them use the same server-verified `files:write` scope and
+`admin`/`super_admin` role requirement. The backend:
 
 1. streams the body to the selected provider (no full-file buffering),
 2. counts/MD5s bytes and rejects a truncated upload,
@@ -344,11 +352,14 @@ The response now always includes `storage`, `storageStatus` and
 
 A degraded provider changes `storage.status` to `degraded`; it does **not**
 remove the field. The response also carries the shared `provider`,
-`configured`, `persistence`, `capacity`, `accounts`, `appRecords` and `display`
-fields from `/api/v1/storage-status`, while keeping the detailed per-account
-health checks. This is what fixes an Edvanta admin panel that says
-“Storage status has not been reported by the API yet.” The client helpers also
-report `unavailable` if 9Drive is cold/offline, so the field is never absent.
+`configured`, `persistence`, `capacity`, `accounts`, `upload`, `appRecords` and
+`display` fields from `/api/v1/storage-status`, while keeping the detailed
+per-account health checks. `upload.available` tells an admin panel whether an
+authenticated upload can currently be routed and includes the canonical
+endpoint, required scope, byte limit and a safe reason when it is false. This
+is what fixes an Edvanta admin panel that says “Storage status has not been
+reported by the API yet.” The client helpers also report `unavailable` if
+9Drive is cold/offline, so the field is never absent.
 
 ### Allow the API to report storage to the admin panel
 
@@ -360,6 +371,7 @@ might poll, so whichever one Edvanta uses already has the field:
 | --- | --- | --- |
 | `GET /api/v1` | public | `storage`, `storageStatus`, `reported` |
 | `GET /api/v1/storage-status` | public | Full redacted storage declaration (recommended) |
+| `GET /api/storage-status` | public | Bare-`/api` alias for clients whose base URL was not normalized to `/api/v1` |
 | `GET /health`, `GET /ready` | public | `storage`, `storageStatus`, `reported` |
 | `GET /api/diagnostics` | public | `storageStatus`, `storageReported`, `reported` |
 | `GET /api/v1/me`, `/api/v1/usage` | `files:read` | `storage`, `storageStatus`, `reported` |
@@ -367,8 +379,9 @@ might poll, so whichever one Edvanta uses already has the field:
 
 `GET /api/v1/storage-status` is the simplest drop-in. It is cached for 30s,
 never contacts Google Drive/S3, and returns `provider`, `configured`,
-`persistence`, `capacity`, `accounts`, `display` hints and `reported: true`.
-No credentials, account emails, bucket names or object keys are exposed.
+`persistence`, `capacity`, `accounts`, `upload`, `display` hints and
+`reported: true`. No credentials, account emails, bucket names or object keys
+are exposed.
 
 ```bash
 curl https://drive-edubrixvora-1.onrender.com/api/v1/storage-status
@@ -593,19 +606,52 @@ It reads the same `NINE_DRIVE_API_URL` / `NINE_DRIVE_API_KEY` variables. If
 URL and account details; admin routes must stay behind Edvanta's real admin
 session middleware.
 
-CORS: `/api/v1/*` and `/api/public/*` accept any origin because they require a
-bearer key or a signed URL (credentials are off). Dashboard routes remain
-restricted to `FRONTEND_URL`. Both services must use HTTPS. Set reasonable
-timeouts on Edvanta's proxy (`STORAGE_TIMEOUT_MS`) for large uploads/ZIPs.
+CORS: `/api/v1/*`, the bare `/api/resources/*`, `/api/upload` and
+`/api/storage-status` aliases, and `/api/public/*` accept any origin because
+they require a bearer key or a signed URL (credentials are off). Dashboard
+routes remain restricted to `FRONTEND_URL`. Both services must use HTTPS. Set
+reasonable timeouts on Edvanta's proxy (`STORAGE_TIMEOUT_MS`) for large
+uploads/ZIPs.
+
+### Rectifying “9drive file storage is unavailable right now” during a batch
+
+That banner is produced by Edvanta's UI, not by 9Drive; it appears when its
+upload request gets a `404`, a generic `5xx`, or no usable storage status. The
+9Drive side now removes the common causes:
+
+1. **Endpoint shape.** `POST /api/v1/resources`, `/api/v1/resources/upload`,
+   `/api/v1/upload`, `/api/resources`, `/api/resources/upload` and `/api/upload`
+   all reach the same authenticated handler. `GET /api/v1/storage-status` also
+   has a bare `/api/storage-status` alias. The API index advertises them.
+2. **Multipart shape.** `resourceMeta`, `metadata`, `meta`, or plain fields are
+   accepted; `sizeBytes` aliases include `size`/`fileSize`/`bytes`; file parts
+   may be `file`, `files`, `upload` or `document`; `provider=9drive`/`auto`
+   means automatic 9Drive routing. Metadata must still precede the file part so
+   the provider stream can be routed without buffering the whole file.
+   `clientRequestId` keeps retries idempotent.
+3. **Status capability.** `storage.upload` reports `available`, the canonical
+   endpoint, required scope, max bytes and a safe reason when false. An admin
+   panel can distinguish “not configured / no connected account / degraded”
+   from a real provider failure instead of showing a generic outage.
+4. **Backblaze B2 bucket case.** Existing connected accounts with
+   `EDUBRIXVORA` are normalized to lowercase on read, so `NoSuchBucket` no
+   longer looks like a storage outage. Set the exact lowercase name in Render
+   as the source of truth; no other cloud preset is required.
+
+Edvanta still needs the drop-in server route (or its existing upload handler)
+to call one of those endpoints with `NINE_DRIVE_API_KEY` and a key owner whose
+server-side role is `admin`/`super_admin`. Its repository was not writable from
+this session, so no claim is made that its live batch UI has been changed or
+that an authenticated live upload succeeded. See the manual checklist below.
 
 ## 8. Verification performed in this change
 
 Mocked/automated (no cloud credentials, no MySQL):
 
 ```bash
-cd backend && npm test                                 # 19/19 pass (includes 4 storage-status tests)
+cd backend && npm test                                 # 21/21 pass (includes 4 storage-status tests)
 cd frontend && npm run build                            # typecheck + Vite + nginx template pass
-node --test examples/edvanta/*.test.mjs                 # 21/21 pass
+node --test examples/edvanta/*.test.mjs                 # 22/22 pass
 python3 -m unittest discover -s examples/edvanta -p 'test_*.py'  # 5/5 pass (FastAPI helper)
 node --test examples/other-website/drive-storage.test.mjs  # 13/13 pass (existing kit)
 ```
@@ -634,7 +680,8 @@ Manual acceptance checklist after deploying both services:
    Settings. Confirm `/api/diagnostics` shows both.
 4. Upload a PDF, an image, a text file and a DOCX through
    `POST /api/v1/resources` (or the Edvanta admin UI). Confirm each returns
-   `availability: available` and a distinct `storageProvider`.
+   `availability: available` and a distinct `storageProvider`. Repeat one with
+   a `/resources/upload` or plain-field alias to confirm all paths work.
 5. Retry one upload with the same `clientRequestId`; confirm one metadata row.
 6. List as `audience=student`; confirm private resources are excluded.
 7. Open each preview: PDF/image/text render; DOCX returns `415` plus a working
@@ -654,6 +701,11 @@ Manual acceptance checklist after deploying both services:
    status has not been reported by the API yet.” Stop 9Drive and confirm the
    panel reports `unavailable`, still with `reported: true`.
 12. Confirm no Drive file has an `anyone` permission and no bucket is public.
+13. With a real admin session and key, retry the exact Edvanta batch that
+    produced “9drive file storage is unavailable right now”. Confirm each file
+    returns `201`, check Documents before retrying, then repeat the same
+    selection with the same `clientRequestId`s and confirm no duplicate rows.
+    This is the only check that proves the end-to-end upload fix.
 
 ## 9. Known limitations
 
@@ -668,7 +720,9 @@ Manual acceptance checklist after deploying both services:
 - `SUPER_ADMIN_EMAILS` is a bootstrap convenience, not a replacement for a full
   user-management UI.
 - Edvanta's repository was not writable from this session; the integration kit
-  must be copied into it and its own frontend routes pointed at the new API.
+  must be copied into it and its own frontend routes pointed at the new API. No
+  authenticated live upload through Edvanta's batch UI was executed here, so
+  the live acceptance criterion remains checklist item 13.
 - Edvanta's existing `/api/admin/overview` handler was not edited here; it must
   call `mergeStorageStatus()` (JS), `merge_storage_status()` (Python), or simply
   proxy `GET ${NINE_DRIVE_API_URL}/storage-status` for the admin panel to stop

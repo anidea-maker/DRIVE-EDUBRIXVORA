@@ -15,7 +15,7 @@ import { handleUpload, selectAccount, syncQuotaInBackground } from '../uploads/u
 import { API_SCOPES } from './scopes.js'
 import { KIND_FILTERS, absoluteUrl, apiFile, apiFolder, publicBaseUrl } from './serialize.js'
 import { objectsRouter } from './objects.routes.js'
-import { resourceRouter } from '../resources/resource.routes.js'
+import { resourceRouter, uploadResourceHandler } from '../resources/resource.routes.js'
 import { buildStorageReport, readStorageReport, storageStatusResponse } from '../storage/storage-status.js'
 
 export const publicApiRouter = Router()
@@ -110,7 +110,12 @@ publicApiRouter.get(['/v1', '/v1/'], async (req, res) => {
       { method: 'GET', path: '/api/v1/objects', scope: 'files:read', description: 'List objects. Query: prefix, delimiter, max-keys, continuation-token.' },
       { method: 'POST', path: '/api/v1/objects/sign', scope: 'files:read', description: 'Expiring signed URL for GET/HEAD/PUT, so a browser can read or upload without a key.' },
       { method: 'GET', path: '/api/v1/resources', scope: 'files:read', description: 'Paginated educational resource discovery. Query: q, category, subject, academicLevel, examType, provider, visibility, audience, limit, cursor, order.' },
-      { method: 'POST', path: '/api/v1/resources', scope: 'files:write', description: 'Admin multipart upload with resourceMeta (title, category, subject, provider, clientRequestId). Retry-safe.' },
+      { method: 'POST', path: '/api/v1/resources', scope: 'files:write', description: 'Admin multipart upload with resourceMeta or plain metadata fields (title, category, subject, provider, clientRequestId). Retry-safe.' },
+      { method: 'POST', path: '/api/v1/resources/upload', scope: 'files:write', description: 'Alias of POST /api/v1/resources for consumers that append /upload.' },
+      { method: 'POST', path: '/api/v1/upload', scope: 'files:write', description: 'Alias of POST /api/v1/resources for simple upload clients.' },
+      { method: 'POST', path: '/api/upload', scope: 'files:write', description: 'Bare /api alias of POST /api/v1/resources.' },
+      { method: 'POST', path: '/api/resources', scope: 'files:write', description: 'Bare /api alias of the educational-resource registry.' },
+      { method: 'GET', path: '/api/storage-status', scope: 'public', description: 'Bare /api alias of the redacted storage declaration.' },
       { method: 'GET', path: '/api/v1/resources/:id', scope: 'files:read', description: 'Stable resource metadata, availability and endpoint URLs.' },
       { method: 'PATCH', path: '/api/v1/resources/:id', scope: 'files:write', description: 'Admin metadata update without re-uploading bytes.' },
       { method: 'DELETE', path: '/api/v1/resources/:id', scope: 'files:delete', description: 'Admin soft or permanent delete.' },
@@ -136,14 +141,24 @@ publicApiRouter.use('/v1/objects', objectsRouter)
 // Mounted before /v1's generic storage router so /v1/resources/... is owned by
 // the educational registry, not interpreted as a file id.
 publicApiRouter.use('/v1/resources', resourceRouter)
+/** Some Edvanta builds use a bare /api base instead of /api/v1. Keep the
+ * registry available under both prefixes instead of returning a 404 that the UI
+ * reports as "storage unavailable". */
+publicApiRouter.use('/resources', resourceRouter)
+
+/** Compatibility aliases for simple upload clients. */
+publicApiRouter.post('/v1/upload', requireApiKey('files:write'), requireRole('manage_resources'), uploadResourceHandler)
+publicApiRouter.post('/upload', requireApiKey('files:write'), requireRole('manage_resources'), uploadResourceHandler)
 
 /** Public, redacted storage declaration. Mounted before the generic /v1 router. */
-publicApiRouter.get(['/v1/storage-status', '/v1/storage-status/'], async (_req, res) => {
+async function sendStorageStatus(_req: Request, res: Response) {
   const storage = await readStorageReport(prisma)
   res.setHeader('Cache-Control', 'public, max-age=30')
   res.setHeader('X-Content-Type-Options', 'nosniff')
   return res.json({ ...storageStatusResponse(storage), checkedAt: storage.checkedAt })
-})
+}
+publicApiRouter.get(['/v1/storage-status', '/v1/storage-status/'], sendStorageStatus)
+publicApiRouter.get(['/storage-status', '/storage-status/'], sendStorageStatus)
 
 publicApiRouter.use('/v1', storageRouter)
 

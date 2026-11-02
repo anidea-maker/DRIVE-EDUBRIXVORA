@@ -27,6 +27,14 @@ test('storage status is always reported, even when capacity is unknown', () => {
   assert.equal(report.capacity.fileCapRemaining, null)
   assert.equal(report.display.fileCapRemaining, 'Capacity not reported')
   assert.equal(report.display.storageProvider, '9drive')
+  assert.equal(report.display.uploadEndpoint, '/api/v1/resources')
+  assert.equal(report.display.uploadAvailable, false, 'no connected account was supplied')
+  assert.equal(report.upload.available, false)
+  assert.equal(report.upload.endpoint, '/api/v1/resources')
+  assert.equal(report.upload.alternativeEndpoint, '/api/v1/files')
+  assert.equal(report.upload.method, 'POST')
+  assert.equal(report.upload.requiredScope, 'files:write')
+  assert.match(report.upload.reason, /No connected storage account/)
   assert.match(report.display.storageProviderNote, /only destination/)
   assert.match(report.display.appRecords, /Turso/)
   assert.match(report.note, /configured/)
@@ -54,6 +62,9 @@ test('reported capacity produces real available bytes, not a fake zero', () => {
   assert.equal(report.capacity.fileCapRemaining, '900')
   assert.equal(report.display.fileCapRemaining, '900 bytes')
   assert.deepEqual(report.accounts, { connected: 2, googleDrive: 1, s3: 1 })
+  assert.equal(report.upload.available, true)
+  assert.equal(report.upload.reason, null)
+  assert.equal(report.display.uploadAvailable, true)
 })
 
 test('degraded and unavailable states still keep reported true', () => {
@@ -66,6 +77,8 @@ test('degraded and unavailable states still keep reported true', () => {
   assert.equal(unavailable.status, 'unavailable')
   assert.equal(unavailable.reported, true)
   assert.equal(status.storageStatusResponse(unavailable).reported, true)
+  assert.equal(unavailable.upload.available, false)
+  assert.match(unavailable.upload.reason, /registry could not be read/)
 })
 
 test('readStorageReport aggregates accounts and falls back safely on DB errors', async () => {

@@ -338,7 +338,8 @@ the API key: Edvanta's server authenticates its own student/admin session first.
 | Method | Path | Scope | Extra requirement | Purpose |
 | --- | --- | --- | --- | --- |
 | `GET` | `/resources` | `files:read` | — | Paginated discovery: `q`, `category`, `subject`, `academicLevel`, `examType`, `provider`, `mimeType`, `visibility`, `status`, `availability`, `audience`, `limit`, `cursor`, `order` |
-| `POST` | `/resources` | `files:write` | admin/super_admin role | Multipart upload: `resourceMeta` field (title, category, subject, sizeBytes, optional `provider`, `clientRequestId`) then `file`. Retry-safe. |
+| `POST` | `/resources` | `files:write` | admin/super_admin role | Multipart upload: `resourceMeta`, `metadata`, `meta` or plain fields (title, category, subject, `sizeBytes`/`size`, optional `provider`, `clientRequestId`) then `file`/`files`/`upload`/`document`. Retry-safe. |
+| `POST` | `/resources/upload`, `/upload` | `files:write` | admin/super_admin role | Aliases of `POST /resources`. Also available under the bare `/api` prefix: `/api/resources`, `/api/resources/upload`, `/api/upload`. |
 | `GET` | `/resources/:id` | `files:read` | — | Metadata, availability and endpoint URLs |
 | `PATCH` | `/resources/:id` | `files:write` | admin/super_admin role | Edit metadata without re-uploading |
 | `DELETE` | `/resources/:id` | `files:delete` | admin/super_admin role | Soft delete; `?permanent=1` also removes provider bytes |
@@ -362,6 +363,29 @@ curl -X POST "$BASE/resources" \
   -H "Authorization: Bearer $KEY" \
   -F 'resourceMeta={"title":"Cell Structure Notes","category":"Science","subject":"Biology","visibility":"students","provider":"s3","clientRequestId":"request-12345678","fileName":"biology.pdf","mimeType":"application/pdf","sizeBytes":"2048"}' \
   -F 'file=@biology.pdf;type=application/pdf'
+
+# Equivalent aliases and plain-field form, useful when an existing admin client
+# cannot be changed to send a resourceMeta JSON part:
+#   POST "$BASE/resources/upload" or "$BASE/upload"
+#   POST https://drive.example.com/api/resources/upload
+curl -X POST "$BASE/resources/upload" \
+  -H "Authorization: Bearer $KEY" \
+  -F 'title=Cell Structure Notes' \
+  -F 'category=Science' \
+  -F 'size=2048' \
+  -F 'provider=9drive' \
+  -F 'clientRequestId=request-12345678' \
+  -F 'file=@biology.pdf;type=application/pdf'
+
+> **Upload troubleshooting.** A `4xx` from an unknown path is often displayed by
+> a client as “storage is unavailable”. Use one of the aliases above, keep the
+> same server-side API key with `files:write`, and make sure the key owner is an
+> `admin`/`super_admin`. Metadata fields must precede the file part for the
+> streaming parser. `provider=9drive` or `auto` means automatic routing, never a
+> third cloud. Backblaze B2 bucket names are normalized to lowercase on read,
+> so a stored `EDUBRIXVORA` no longer causes `NoSuchBucket`; still set the exact
+> lowercase bucket name in Render for clarity. A real provider failure returns a
+> structured `5xx` with a code and never a fake success.
 
 curl -H "Authorization: Bearer $KEY" \
   "$BASE/resources?audience=student&subject=Biology&limit=20"
@@ -427,6 +451,15 @@ curl https://drive-edubrixvora-1.onrender.com/api/v1/storage-status
       "note": "At least one connected account does not report a quota, so capacity stays unknown rather than looking unlimited."
     },
     "accounts": { "connected": 7, "googleDrive": 4, "s3": 3 },
+    "upload": {
+      "available": true,
+      "endpoint": "/api/v1/resources",
+      "alternativeEndpoint": "/api/v1/files",
+      "method": "POST",
+      "requiredScope": "files:write",
+      "maxBytes": "5368709120",
+      "reason": null
+    },
     "appRecords": "Turso — accounts, document metadata & registry, not file bytes",
     "display": {
       "storageProvider": "9drive",
@@ -434,7 +467,9 @@ curl https://drive-edubrixvora-1.onrender.com/api/v1/storage-status
       "configured": "9drive",
       "fileCapRemaining": "Capacity not reported",
       "persistence": "Persistent",
-      "appRecords": "Turso — accounts, document metadata & registry, not file bytes"
+      "appRecords": "Turso — accounts, document metadata & registry, not file bytes",
+      "uploadEndpoint": "/api/v1/resources",
+      "uploadAvailable": true
     },
     "checkedAt": "2026-11-02T12:00:00.000Z",
     "note": "9Drive is configured and reporting storage status; provider capacity is not reported."
@@ -449,7 +484,10 @@ curl https://drive-edubrixvora-1.onrender.com/api/v1/storage-status
 The same `storage`, `storageStatus` and `reported: true` fields are also present
 on `GET /api/v1` (API index), `GET /health`, `GET /ready`,
 `GET /api/diagnostics` (`storageStatus` / `storageReported`), `GET /api/v1/me`
-and `GET /api/v1/usage`. A degraded provider or an unreachable registry changes
+and `GET /api/v1/usage`. `storage.upload` advertises whether an authenticated
+upload can be routed right now, the canonical endpoint, the required scope and
+the byte limit; a false value includes a safe reason. `GET /api/storage-status`
+is a bare-`/api` alias. A degraded provider or an unreachable registry changes
 `storage.status` to `degraded` / `unavailable`; it never removes `reported`.
 Edvanta's own `/api/admin/overview` must pass this object through — see
 [`docs/EDVANTA-INTEGRATION.md`](EDVANTA-INTEGRATION.md).
