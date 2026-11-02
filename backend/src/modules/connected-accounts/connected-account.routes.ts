@@ -46,6 +46,9 @@ async function syncQuotaForAccount(account: { id: string; provider: string }) {
 
 connectedAccountRouter.get('/', requireAuth, async (req: AuthRequest, res, next) => {
   try {
+    // A freshly connected bucket must appear immediately, not after a browser
+    // decides its cached JSON is still good.
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
     const accounts = await prisma.connectedAccount.findMany({
       where: { userId: req.user!.id, status: 'connected' },
       include: { storageAccount: true },
@@ -139,10 +142,18 @@ async function createGoogleConnectUrl(req: AuthRequest): Promise<string | null> 
  * values - they stay on the server.
  */
 connectedAccountRouter.get('/s3/presets', requireAuth, async (_req, res) => {
+  // Never cached, and stamped with the moment it was read: a backend appears as
+  // soon as its variables exist, and a cached copy is indistinguishable from
+  // "the new backend was not updated". `readAt` lets the Settings modal show the
+  // age of what it is displaying instead of guessing.
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+  res.set('Pragma', 'no-cache')
   return res.json({
     presets: listStoragePresets(),
     active: resolveActivePreset()?.id ?? null,
     selected: process.env.STORAGE_BACKEND?.trim() || null,
+    readAt: new Date().toISOString(),
+    commit: process.env.RENDER_GIT_COMMIT?.slice(0, 7) ?? null,
   })
 })
 
