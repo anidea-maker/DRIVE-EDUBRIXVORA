@@ -20,7 +20,7 @@ function logUpload(message: string, metadata?: Record<string, unknown>) {
   console.info('[upload]', message, metadata ?? '')
 }
 
-function syncQuotaInBackground(accountId: string, sessionId: string) {
+export function syncQuotaInBackground(accountId: string, sessionId: string) {
   logUpload('quota sync started', { accountId, sessionId })
   syncGoogleQuota(accountId)
     .then(() => logUpload('quota sync completed', { accountId, sessionId }))
@@ -43,7 +43,7 @@ function byPriority<T extends { account: { id: string; createdAt: Date } }>(item
   })
 }
 
-async function selectAccount(userId: string, sizeBytes: bigint, reservedBytesByAccount = new Map<string, bigint>(), targetAccountId?: string | null) {
+export async function selectAccount(userId: string, sizeBytes: bigint, reservedBytesByAccount = new Map<string, bigint>(), targetAccountId?: string | null) {
   const accounts = await prisma.connectedAccount.findMany({
     where: { userId, provider: { in: ['google_drive', 's3'] }, status: 'connected', ...(targetAccountId ? { id: targetAccountId } : {}) },
     include: { storageAccount: true },

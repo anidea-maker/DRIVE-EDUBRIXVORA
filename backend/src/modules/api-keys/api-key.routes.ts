@@ -3,12 +3,18 @@ import { z } from 'zod'
 import { prisma } from '../../config/prisma.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
 import { hashToken, randomToken } from '../../utils/crypto.js'
+import { ALL_SCOPES, API_SCOPES, selectScopes } from '../public-api/scopes.js'
 
 export const apiKeyRouter = Router()
 apiKeyRouter.use(requireAuth)
 
-const createSchema = z.object({ name: z.string().trim().min(1).max(191), expiresAt: z.string().datetime().nullable().optional() })
-const scopes = ['files:upload']
+const createSchema = z.object({
+  name: z.string().trim().min(1).max(191),
+  // Optional: a caller that predates scopes still gets the full storage set,
+  // which is what "storage for my other website" needs out of the box.
+  scopes: z.array(z.string()).optional(),
+  expiresAt: z.string().datetime().nullable().optional(),
+})
 
 function serializeApiKey(apiKey: { id: string; name: string; keyPrefix: string; scopes: unknown; status: string; lastUsedAt: Date | null; expiresAt: Date | null; revokedAt: Date | null; createdAt: Date }) {
   return {
@@ -24,6 +30,14 @@ function serializeApiKey(apiKey: { id: string; name: string; keyPrefix: string; 
   }
 }
 
+/**
+ * The scopes this deployment understands, so the dashboard offers exactly the
+ * permissions the API enforces instead of a hardcoded copy that can drift.
+ */
+apiKeyRouter.get('/scopes', (_req, res) => {
+  return res.json({ scopes: API_SCOPES, defaultScopes: ALL_SCOPES })
+})
+
 apiKeyRouter.get('/', async (req: AuthRequest, res, next) => {
   try {
     const apiKeys = await prisma.apiKey.findMany({ where: { userId: req.user!.id }, orderBy: { createdAt: 'desc' } })
@@ -36,6 +50,14 @@ apiKeyRouter.get('/', async (req: AuthRequest, res, next) => {
 apiKeyRouter.post('/', async (req: AuthRequest, res, next) => {
   try {
     const body = createSchema.parse(req.body)
+    const chosenScopes = selectScopes(body.scopes)
+    if (chosenScopes.length === 0) {
+      return res.status(400).json({
+        code: 'API_KEY_SCOPES_INVALID',
+        message: 'None of the requested scopes exist. Pick at least one of: ' + ALL_SCOPES.join(', ') + '.',
+        allowed: ALL_SCOPES,
+      })
+    }
     const secret = `9d_live_${randomToken(32)}`
     const apiKey = await prisma.apiKey.create({
       data: {
@@ -43,7 +65,7 @@ apiKeyRouter.post('/', async (req: AuthRequest, res, next) => {
         name: body.name,
         keyPrefix: secret.slice(0, 16),
         keyHash: hashToken(secret),
-        scopes,
+        scopes: chosenScopes,
         expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
       },
     })

@@ -37,7 +37,11 @@ Other scripts that `AGENTS.md` doesn't list:
 3. Apply the user's `UploadRoutingPolicy` mode: `most_available` (default), `round_robin` (cursor kept in the DB), or `priority` (`priorityAccountIds`).
 4. If `availableBytes` is null, treat the account as unlimited. When quotas are unknown, S3 accounts are preferred.
 
-`handleUpload` is shared with the external API, mounted as `POST /api/v1/uploads` (`modules/public-api`). That route is guarded by `requireApiKey('files:upload')` in `middleware/api-key.middleware.ts`, not by `requireAuth`. API keys are stored hashed and carry scopes.
+`handleUpload` is shared with the public API, mounted at `POST /api/v1/files` (`modules/public-api`). It is guarded by `requireApiKey('files:write')` in `middleware/api-key.middleware.ts`, not by `requireAuth`. API keys are stored hashed and carry scopes (`files:read|write|delete`, catalogue in `modules/public-api/scopes.ts`; the old `files:upload` still authorises writes only).
+
+`modules/public-api/public-api.routes.ts` is the whole external surface: list/read/download/rename/delete files, folders, usage, and `POST /files/:id/share`, which mints a keyless `/api/public/files/:token/preview` URL for `<img>`/`<video>`. `/api/v1` describes itself as JSON; `docs/API.md` is the reference. `POST /api/v1/files/raw` streams the request body to the provider, while multipart reuses `handleUpload` (whose `{file}`/`{files}` body is rewritten into the API shape by `withApiFileShape`).
+
+CORS (`app.ts`) is per-request: `/api/v1` and `/api/public` reflect any origin with `credentials: false` (a bearer key is not ambient), while cookie-authenticated dashboard routes stay pinned to `FRONTEND_URL`.
 
 **Virtual vs physical.** Folders exist only in MySQL (`Folder.parentId` tree). Files are stored flat in the provider's `9drive` folder or prefix. `File.folderId` is purely app-side. Folders and files are soft-deleted (`deletedAt`/`status`), which is what the Trash and Archived pages rely on.
 

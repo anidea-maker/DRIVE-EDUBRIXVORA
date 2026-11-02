@@ -41,7 +41,7 @@ const menu = [
   { label: 'Recycle Bin', icon: Trash2, href: '/trash' },
   { label: 'Activity Log', icon: History, href: '/activity' },
   { label: 'Setting', icon: Settings, href: '/settings' },
-  { label: 'API Keys', icon: Braces, href: '/api' },
+  { label: 'Storage API', icon: Braces, href: '/api' },
 ]
 
 type StorageSummary = {

@@ -89,8 +89,8 @@ Try the live preview at **[9drive.zenhosta.com](https://9drive.zenhosta.com)**.
 - Activity log.
 
 **For developers**
-- An external upload API at `POST /api/v1/uploads` with API keys. Keys are shown once, stored hashed, track when they were last used, and can be revoked.
-- In-app API docs with cURL and JavaScript examples.
+- A storage API at `/api/v1` so another website can use 9Drive as its file store: upload, list, download, rename, delete, and mint public URLs. Keys are scoped (`files:read`, `files:write`, `files:delete`), shown once, stored hashed, and revocable.
+- Any origin may call it with a key. Full reference in [docs/API.md](docs/API.md), plus copy-paste examples in **API Management**.
 
 **Accounts and admin**
 - Email/password sign-up or **Continue with Google**, which connects your first Drive automatically.
@@ -519,18 +519,33 @@ pm2 restart 9drive-backend
 
 </details>
 
-## Upload API
+## Storage API
 
-Create a key under **API Keys** in the app, then send files as `multipart/form-data`. Each upload is routed using the same rules as the dashboard.
+9Drive can be the file store for another website. Create a key under **API Management**, keep it on that site's server, and call the API — any origin may use it, because the key travels in an `Authorization` header, never in a cookie.
 
 ```bash
-curl -X POST "http://localhost:4000/api/v1/uploads" \
+# Upload the request body as one file
+curl -X POST "http://localhost:4000/api/v1/files/raw?name=hello.txt" \
+  -H "Authorization: Bearer 9d_live_xxx" \
+  -H "Content-Type: text/plain" \
+  --data-binary @hello.txt
+
+# ...or multipart (filesMeta must come before the files)
+curl -X POST "http://localhost:4000/api/v1/files" \
   -H "Authorization: Bearer 9d_live_xxx" \
   -F 'filesMeta=[{"fieldName":"file-0","fileName":"hello.txt","mimeType":"text/plain","sizeBytes":"12"}]' \
   -F "file-0=@hello.txt;type=text/plain"
+
+# Read it back
+curl "http://localhost:4000/api/v1/files?limit=20" \
+  -H "Authorization: Bearer 9d_live_xxx"
+
+# A URL for <img src>/<video src> that needs no key
+curl -X POST "http://localhost:4000/api/v1/files/<id>/share" \
+  -H "Authorization: Bearer 9d_live_xxx"
 ```
 
-`filesMeta` must come **before** the files. It's a JSON array of `{ fieldName, fileName, mimeType, sizeBytes, folderId? }`, and each `fieldName` matches a file field (`file-0`, `file-1`, …).
+Keys are scoped: `files:read`, `files:write`, `files:delete`. Uploads are routed to whichever connected account has room, using the same policy as the dashboard. `GET /api/v1` describes the API, and [docs/API.md](docs/API.md) is the full reference.
 
 <details>
 <summary><b>Full REST API overview</b></summary>
@@ -565,10 +580,15 @@ Uploads       POST /uploads
               POST /uploads/resumable/init · PUT /uploads/resumable/chunk/:id · GET /uploads/resumable/status/:id
 
 Invites       GET /invites · POST /invites · DELETE /invites/:id
-API keys      GET /api-keys · POST /api-keys · DELETE /api-keys/:id
+API keys      GET /api-keys · GET /api-keys/scopes · POST /api-keys · DELETE /api-keys/:id
 Activity      GET /audit-logs
 Public files  GET /public/files/:token · GET /public/files/:token/download · GET /public/files/:token/preview
-External API  POST /api/v1/uploads   (API key with the files:upload scope)
+Storage API   GET  /api/v1 · GET /api/v1/me · GET /api/v1/usage      (API key, any origin)
+              GET  /api/v1/files · POST /api/v1/files · POST /api/v1/files/raw
+              GET  /api/v1/files/:id · /content · /download · PATCH / DELETE
+              POST /api/v1/files/:id/share · DELETE /api/v1/files/:id/share
+              GET  /api/v1/folders · POST /api/v1/folders
+              POST /api/v1/uploads   (legacy alias for POST /api/v1/files)
 ```
 
 </details>

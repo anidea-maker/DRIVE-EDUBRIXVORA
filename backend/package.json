@@ -16,7 +16,8 @@
     "seed:google-config": "node scripts/ensure-env.mjs && tsx src/scripts/seed-google-config.ts",
     "seed:google-config:docker": "node scripts/ensure-env.mjs && node dist/scripts/seed-google-config-if-present.js",
     "test:s3": "node scripts/ensure-env.mjs && tsx src/scripts/test-s3-connection.ts",
-    "test:api-upload": "node scripts/ensure-env.mjs && tsx src/scripts/test-api-upload.ts"
+    "test:api-upload": "node scripts/ensure-env.mjs && tsx src/scripts/test-api-upload.ts",
+    "test:api": "node scripts/ensure-env.mjs && tsx src/scripts/test-api-upload.ts"
   },
   "keywords": [],
   "author": "",

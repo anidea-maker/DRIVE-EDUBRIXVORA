@@ -43,18 +43,63 @@ if (spaWarning) console.warn(spaWarning)
 const allowAnyLocalOrigin = process.env.NODE_ENV !== 'production'
 const localOriginPattern = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i
 
-app.use(
-  cors({
-    origin(origin, callback) {
-      if (!origin) return callback(null, true)
-      if (origin === env.FRONTEND_URL) return callback(null, true)
-      if (allowAnyLocalOrigin && localOriginPattern.test(origin)) return callback(null, true)
-      // Refuse without throwing: a 500 here hides the actual misconfiguration.
-      return callback(null, false)
-    },
-    credentials: true,
-  }),
-)
+/**
+ * The storage API exists to be called from *another* website, so it cannot be
+ * restricted to FRONTEND_URL. That is safe because it authenticates with an
+ * `Authorization: Bearer` key, never with a cookie: a browser never attaches an
+ * API key on its own, so allowing any origin grants nothing an attacker did not
+ * already need the key for. Cookie-authenticated dashboard routes keep the
+ * strict single-origin rule below.
+ */
+function isExternalApiPath(path: string) {
+  return (
+    path === '/api/v1' ||
+    path.startsWith('/api/v1/') ||
+    path === '/v1' ||
+    path.startsWith('/v1/') ||
+    path === '/api/public' ||
+    path.startsWith('/api/public/') ||
+    path === '/public' ||
+    path.startsWith('/public/')
+  )
+}
+
+const externalApiCors = {
+  origin: true,
+  credentials: false,
+  methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  // Range/If-Range are sent by <video>/<audio> when they stream a share link.
+  allowedHeaders: ['Authorization', 'Content-Type', 'Range', 'If-Range', 'X-Requested-With', 'X-File-Name', 'X-File-Type'],
+  // Headers a browser client cannot read unless they are listed here; without
+  // them a download looks empty and a rate limit looks like a mystery 429.
+  exposedHeaders: [
+    'Content-Disposition',
+    'Content-Length',
+    'Content-Range',
+    'Accept-Ranges',
+    'ETag',
+    'Location',
+    'X-Api-Scopes',
+    'X-RateLimit-Limit',
+    'X-RateLimit-Remaining',
+    'X-RateLimit-Reset',
+    'Retry-After',
+  ],
+  maxAge: 86_400,
+}
+
+const dashboardCors = {
+  origin(origin: string | undefined, callback: (error: null, allow: boolean) => void) {
+    if (!origin) return callback(null, true)
+    if (origin === env.FRONTEND_URL) return callback(null, true)
+    if (allowAnyLocalOrigin && localOriginPattern.test(origin)) return callback(null, true)
+    // Refuse without throwing: a 500 here hides the actual misconfiguration.
+    return callback(null, false)
+  },
+  credentials: true,
+}
+
+app.use(cors((req, callback) => callback(null, isExternalApiPath(req.path) ? externalApiCors : dashboardCors)))
 app.use(express.json({ limit: '1mb' }))
 
 /**
