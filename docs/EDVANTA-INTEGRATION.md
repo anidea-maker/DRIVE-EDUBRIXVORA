@@ -306,6 +306,10 @@ added:
   an `active` registry row.
 - The object API now actually pipes the request body into its hashing stream
   (previously the provider received an unconnected Transform).
+- The dashboard's `POST /files/batch-download` no longer silently `continue`s on
+  a failed file. It preflights provider objects, reports skipped files in
+  `X-Resource-Bulk-*` headers plus `_download-errors.txt`, returns `502` when
+  everything failed, and aborts rather than streaming a truncated archive.
 
 ## 6. Security changes in this repository
 
