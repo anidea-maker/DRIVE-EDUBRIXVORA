@@ -10,7 +10,7 @@ import { getStoredUser, getAccessToken, clearAuthSession } from '@/lib/auth'
 import { useNavigate } from 'react-router-dom'
 
 type S3Preset = {
-  /** Backend id from the server's preset registry (`b2`, `idrive_e2`, `filebase`, `custom`, …). */
+  /** Backend id from the server's preset registry (`b2`, `idrive_e2`, `tigris`, `custom`, …). */
   id: string
   label: string
   name: string
@@ -33,17 +33,17 @@ type S3Preset = {
  * the environment is three fields instead of six. B2 and Wasabi derive their
  * endpoint from the region; R2 and MinIO need one typed.
  */
-type ManualTemplate = 'aws' | 'b2' | 'filebase' | 'r2' | 'wasabi' | 'custom'
+type ManualTemplate = 'aws' | 'b2' | 'tigris' | 'r2' | 'wasabi' | 'custom'
 
 const MANUAL_TEMPLATES: Array<{ id: ManualTemplate; label: string; pathStyle: boolean; region?: string; endpointFor?: (region: string) => string; hint?: string }> = [
   { id: 'aws', label: 'Amazon S3', pathStyle: false },
   { id: 'b2', label: 'Backblaze B2', pathStyle: true, endpointFor: (region) => (region ? `https://s3.${region}.backblazeb2.com` : '') },
-  // Filebase has one global endpoint and the region is the literal string "auto",
-  // so it needs no environment variables at all to be entered by hand.
-  { id: 'filebase', label: 'Filebase', pathStyle: true, region: 'auto', endpointFor: () => 'https://s3.filebase.io', hint: 'Endpoint https://s3.filebase.io and region auto are filled in. Paste the Access Key / Secret Key from the Filebase console. IPFS-backed buckets live on https://s3.filebase.com with region us-east-1.' },
+  // Tigris has one global endpoint and the region is the literal string "auto", so
+  // it needs no environment variables at all to be entered by hand.
+  { id: 'tigris', label: 'Tigris', pathStyle: true, region: 'auto', endpointFor: () => 'https://t3.storage.dev', hint: 'Endpoint https://t3.storage.dev and region auto are filled in. Paste the access key ID / secret access key from the Tigris console. Buckets created inside Fly.io use https://fly.storage.tigris.dev instead.' },
   { id: 'wasabi', label: 'Wasabi', pathStyle: false, endpointFor: (region) => (region ? `https://s3.${region}.wasabisys.com` : '') },
   { id: 'r2', label: 'Cloudflare R2', pathStyle: true, hint: 'Endpoint looks like https://<account-id>.r2.cloudflarestorage.com' },
-  { id: 'custom', label: 'Other (Storj, Hetzner, Tigris, MinIO, IDrive…)', pathStyle: true },
+  { id: 'custom', label: 'Other (Storj, Hetzner, MinIO, IDrive…)', pathStyle: true },
 ]
 
 type ConnectedAccount = { id: string; provider: string; email: string; displayName?: string | null; status: string; storageAccount?: { totalBytes: string | null; usedBytes: string; availableBytes: string | null; lastSyncedAt: string | null } | null }
@@ -118,7 +118,7 @@ export function SettingsPage() {
   const [connectingS3, setConnectingS3] = useState(false)
   const [s3Form, setS3Form] = useState({ provider: '', template: 'aws' as ManualTemplate, name: '', bucket: '', region: 'us-east-1', endpoint: '', accessKeyId: '', secretAccessKey: '', forcePathStyle: false, quotaBytes: '' })
   // Backends this deployment already holds credentials for (`B2_*`, `IDRIVE_E2_*`,
-  // `FILEBASE_*`, `S3_*`). Connecting one is a single click: the secrets never reach
+  // `TIGRIS_*`, `S3_*`). Connecting one is a single click: the secrets never reach
   // the browser.
   const [s3Presets, setS3Presets] = useState<S3Preset[]>([])
   const [presetsError, setPresetsError] = useState('')
