@@ -1,0 +1,62 @@
+name: typecheck
+
+# Why this exists: a Prisma `groupBy` call compiled locally against a hand-written
+# stub but failed on the deploy host with
+#   src/app.ts(192,57): error TS2345: Argument of type '{ by: [...]; _count: {...} }'
+# and the whole deploy stopped. `prisma generate` needs network access, so the only
+# place that can run the *real* generated types is CI. Run it on every push instead
+# of finding out from a failed build.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend typecheck (real Prisma client)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - name: Generate the Prisma client
+        run: npx prisma generate
+        env:
+          DATABASE_URL: mysql://user:pass@localhost:3306/db
+      - name: Typecheck
+        run: npx tsc --noEmit
+        env:
+          DATABASE_URL: mysql://user:pass@localhost:3306/db
+          JWT_ACCESS_SECRET: ci-only-secret-at-least-32-characters-long
+          TOKEN_ENCRYPTION_KEY: ci-only-key-at-least-32-characters-long
+      - name: Build
+        run: npm run build
+        env:
+          DATABASE_URL: mysql://user:pass@localhost:3306/db
+          JWT_ACCESS_SECRET: ci-only-secret-at-least-32-characters-long
+          TOKEN_ENCRYPTION_KEY: ci-only-key-at-least-32-characters-long
+
+  frontend:
+    name: Frontend typecheck + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run build
