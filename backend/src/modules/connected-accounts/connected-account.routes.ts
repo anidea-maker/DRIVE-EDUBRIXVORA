@@ -10,7 +10,7 @@ import { createOAuthClient, syncGoogleQuota } from '../google/google.service.js'
 import { classifyGoogleError, describeGoogleError, type ConnectFailure } from '../google/google-error.js'
 import { repairStoredRedirectUri, requestOrigin, resolveGoogleRedirectUri } from '../google/redirect-uri.js'
 import { redirectToFrontend } from '../../utils/redirect.js'
-import { describeS3Error, syncS3Quota, testS3Connection } from '../s3/s3.service.js'
+import { describeS3Error, listS3BucketNames, syncS3Quota, testS3Connection } from '../s3/s3.service.js'
 import { getStoragePreset, listStoragePresets, normalizeEndpoint, resolveActivePreset, resolvePresetCredentials, storageBackendIds } from '../s3/presets.js'
 import { looksLikePlaceholder } from '../../utils/placeholder.js'
 
@@ -190,7 +190,7 @@ connectedAccountRouter.post('/s3', requireAuth, async (req: AuthRequest, res, ne
 
     const presetCredentials = preset && preset.ready ? resolvePresetCredentials(preset.id) : null
 
-    const bucket = body.bucket ?? preset?.bucket ?? ''
+    const declaredBucket = body.bucket ?? preset?.bucket ?? ''
     const region = body.region ?? preset?.region ?? ''
     // A typed endpoint is normalised the same way the environment's is: a bare host
     // (`s3.ca-east-006.backblazeb2.com`) becomes https://… instead of failing in the
@@ -205,9 +205,45 @@ connectedAccountRouter.post('/s3', requireAuth, async (req: AuthRequest, res, ne
     }
     const accessKeyId = body.accessKeyId ?? presetCredentials?.accessKeyId ?? ''
     const secretAccessKey = body.secretAccessKey ?? presetCredentials?.secretAccessKey ?? ''
-    const name = body.name ?? preset?.name ?? `${bucket}`
     const forcePathStyle = body.forcePathStyle ?? preset?.forcePathStyle ?? Boolean(endpoint)
     const quotaBytes = body.quotaBytes ?? preset?.quotaBytes ?? null
+
+    /**
+     * No bucket named, but the credentials and the endpoint are there: ask the
+     * account which buckets it holds. A provider block written for the AWS CLI
+     * (`AWS_ACCESS_KEY_ID`, `AWS_ENDPOINT_URL_S3`, `AWS_REGION`) never contains the
+     * bucket, and the name is the one thing that cannot be derived.
+     */
+    let discoveredBucket = ''
+    if (!declaredBucket && accessKeyId && secretAccessKey) {
+      try {
+        const names = await listS3BucketNames({ region, endpoint, forcePathStyle, accessKeyId, secretAccessKey })
+        if (names.length === 1) {
+          discoveredBucket = names[0]
+        } else if (names.length === 0) {
+          return res.status(400).json({
+            code: 'S3_NO_BUCKETS',
+            message: `The credentials are valid, but ${endpoint || `AWS ${region}`} has no buckets yet. Create one in the provider's console and connect again.`,
+          })
+        } else {
+          return res.status(400).json({
+            code: 'S3_BUCKET_AMBIGUOUS',
+            message: `The credentials can see ${names.length} buckets: ${names.join(', ')}. Set the bucket field (or S3_BUCKET on the service) to the one to use.`,
+            buckets: names,
+          })
+        }
+      } catch (error) {
+        // Listing can be denied while a specific bucket is still readable, so this
+        // is reported as "we could not work out the bucket" rather than a dead end.
+        const described = describeS3Error(error, { bucket: '(no bucket given)', endpoint, region })
+        return res.status(400).json({
+          code: described.code === 'S3_AUTH_FAILED' ? described.code : 'S3_BUCKET_UNKNOWN',
+          message: `No bucket was given, and the account's buckets could not be listed: ${described.message}`,
+        })
+      }
+    }
+    const bucket = declaredBucket || discoveredBucket
+    const name = body.name ?? preset?.name ?? `${bucket}`
 
     const missingFields = [
       !bucket ? 'bucket' : null,

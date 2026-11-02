@@ -1,4 +1,4 @@
-import { DeleteObjectCommand, GetObjectCommand, HeadBucketCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3'
+import { DeleteObjectCommand, GetObjectCommand, HeadBucketCommand, ListBucketsCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3'
 import { Upload } from '@aws-sdk/lib-storage'
 import type { ConnectedAccount, File, S3StorageConfig } from '@prisma/client'
 import type { Response } from 'express'
@@ -74,6 +74,36 @@ export function describeS3Error(error: unknown, context: { bucket: string; endpo
     code: 'S3_CONNECTION_FAILED',
     message: `The storage provider rejected the connection to ${where}: ${name}${raw && raw !== name ? ` - ${raw}` : ''}`,
   }
+}
+
+/**
+ * The buckets these credentials can see.
+ *
+ * A provider that publishes `AWS_*` variables usually publishes the endpoint, the
+ * region and the keys - but not the bucket, because the bucket is not part of an
+ * AWS credential. Rather than making the user hunt for the name, ask the account:
+ * one bucket means there is nothing to choose, several are reported by name.
+ */
+export async function listS3BucketNames(credentials: {
+  region: string
+  endpoint: string | null
+  forcePathStyle: boolean
+  accessKeyId: string
+  secretAccessKey: string
+}): Promise<string[]> {
+  const client = new S3Client({
+    region: credentials.region,
+    endpoint: credentials.endpoint ?? undefined,
+    forcePathStyle: credentials.forcePathStyle || Boolean(credentials.endpoint),
+    credentials: {
+      accessKeyId: credentials.accessKeyId,
+      secretAccessKey: credentials.secretAccessKey,
+    },
+  })
+  const response = await client.send(new ListBucketsCommand({}))
+  return (response.Buckets ?? [])
+    .map((bucket) => bucket.Name)
+    .filter((name): name is string => Boolean(name))
 }
 
 export async function testS3Connection(config: S3Config) {
