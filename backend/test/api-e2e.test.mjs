@@ -14,7 +14,7 @@
  * HTTP, so a "201 Created" here means the object really exists at the provider
  * and was really confirmed there.
  *
- * No Google Drive, no cloud bucket and no MySQL are contacted.
+ * No Google Drive, no cloud bucket and no database server are contacted.
  */
 import test, { after, before, describe } from 'node:test'
 import assert from 'node:assert/strict'
@@ -26,7 +26,7 @@ import { createFakePrisma } from './helpers/fake-prisma.mjs'
 import { startFakeS3 } from './helpers/fake-s3.mjs'
 
 process.env.NODE_ENV = 'test'
-process.env.DATABASE_URL ||= 'mysql://test:test@127.0.0.1:3306/testdb'
+process.env.DATABASE_URL ||= 'file:./test/.tmp/test.db'
 process.env.JWT_ACCESS_SECRET ||= 'j'.repeat(40)
 process.env.TOKEN_ENCRYPTION_KEY ||= 'k'.repeat(40)
 process.env.FRONTEND_URL = 'http://localhost:5173'

@@ -183,7 +183,7 @@ python3 -m unittest discover -s examples/edvanta -p 'test_*.py'
 ```
 
 These tests stub `fetch` and a fake Express app. They do **not** contact Google
-Drive, S3, MySQL, Render or a browser. See
+Drive, S3, the database, Render or a browser. See
 [`docs/EDVANTA-INTEGRATION.md`](../../docs/EDVANTA-INTEGRATION.md) for the exact
 API contract, Render variables and the manual live-cloud checklist that still
 needs real credentials.

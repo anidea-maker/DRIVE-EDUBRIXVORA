@@ -1,12 +1,12 @@
 /**
- * Mocked website/object-API tests. No MySQL, Google Drive, S3 or HTTP server is
+ * Mocked website/object-API tests. No database server, Google Drive, S3 or HTTP server is
  * contacted; every helper below is pure or uses an in-memory fake store.
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 
-process.env.DATABASE_URL ||= 'mysql://test:test@127.0.0.1:3306/testdb'
+process.env.DATABASE_URL ||= 'file:./test/.tmp/test.db'
 process.env.JWT_ACCESS_SECRET ||= 'x'.repeat(40)
 process.env.TOKEN_ENCRYPTION_KEY ||= 'y'.repeat(40)
 process.env.NODE_ENV = 'test'

@@ -27,13 +27,25 @@ $backendEnv = Join-Path $backendDir ".env"
 $frontendEnv = Join-Path $frontendDir ".env"
 
 if (-not (Test-Path -LiteralPath $backendEnv)) {
-    $databaseUrl = Read-Host "MySQL DATABASE_URL [mysql://root@localhost:3306/9drive]"
+    Write-Host "Database: press Enter for a local SQLite file (no account needed), or"
+    Write-Host "paste your Turso URL (libsql://<database>-<org>.turso.io) for the hosted one."
+    $databaseUrl = Read-Host "TURSO_DATABASE_URL [file:./prisma/dev.db]"
     if ([string]::IsNullOrWhiteSpace($databaseUrl)) {
-        $databaseUrl = "mysql://root@localhost:3306/9drive"
+        $databaseUrl = "file:./prisma/dev.db"
+    }
+    $tursoToken = ""
+    if ($databaseUrl -match '^(libsql|https)://') {
+        $tursoToken = Read-Host "TURSO_AUTH_TOKEN (turso db tokens create <database>)"
+    }
+
+    $databaseLines = if ($databaseUrl -match '^(libsql|https)://') {
+        @("TURSO_DATABASE_URL=`"$databaseUrl`"", "TURSO_AUTH_TOKEN=`"$tursoToken`"")
+    } else {
+        @("DATABASE_URL=`"$databaseUrl`"")
     }
 
     @(
-        "DATABASE_URL=`"$databaseUrl`""
+        $databaseLines
         "APP_PORT=4000"
         "FRONTEND_URL=`"http://localhost:5173`""
         "JWT_ACCESS_SECRET=`"$(New-RandomHexKey)`""
@@ -63,6 +75,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Backend dependency installation failed." }
     npm run prisma:generate
     if ($LASTEXITCODE -ne 0) { throw "Prisma client generation failed." }
+    npm run db:migrate:deploy
+    if ($LASTEXITCODE -ne 0) { throw "Applying the database schema failed." }
 } finally {
     Pop-Location
 }
@@ -75,4 +89,4 @@ try {
     Pop-Location
 }
 
-Write-Host "Setup complete. Run migrations with: cd backend; npm run prisma:migrate"
+Write-Host "Setup complete. The schema is applied; start with: cd backend; npm run dev"

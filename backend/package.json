@@ -18,7 +18,8 @@
     "seed:google-config:docker": "node scripts/ensure-env.mjs && node dist/scripts/seed-google-config-if-present.js",
     "test:s3": "node scripts/ensure-env.mjs && tsx src/scripts/test-s3-connection.ts",
     "test:api-upload": "node scripts/ensure-env.mjs && tsx src/scripts/test-api-upload.ts",
-    "test:api": "node scripts/ensure-env.mjs && tsx src/scripts/test-api-upload.ts"
+    "test:api": "node scripts/ensure-env.mjs && tsx src/scripts/test-api-upload.ts",
+    "db:migrate:dev": "node scripts/ensure-env.mjs && node scripts/prisma-run.mjs migrate dev"
   },
   "keywords": [],
   "author": "",
@@ -27,6 +28,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.954.0",
     "@aws-sdk/lib-storage": "^3.954.0",
+    "@prisma/adapter-libsql": "^6.19.3",
     "@prisma/client": "^6.19.3",
     "archiver": "^8.0.0",
     "argon2": "^0.44.0",

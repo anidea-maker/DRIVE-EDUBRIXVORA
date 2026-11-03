@@ -1,65 +1,97 @@
 #!/usr/bin/env node
 /**
  * Runs the Prisma CLI with the right environment - used by every `prisma:*` and
- * `db:*` npm script.
+ * `db:*` script.
  *
- * Two things the plain `prisma` binary cannot do on its own:
+ * Why a wrapper instead of calling `prisma` directly:
  *
- *  1. A platform-injected `DATABASE_URL` overrides `backend/.env`, and Prisma's
- *     MySQL connector only reads TLS settings from the URL. So when the provider
- *     CA arrives as `DATABASE_CA_CERT`, this process writes it to
- *     `prisma/certs/db-ca.pem` and rewrites `DATABASE_URL` to
- *     `?sslcert=certs/db-ca.pem&sslaccept=strict` *before* spawning Prisma.
- *     Without this, `prisma migrate deploy` connects unencrypted and Aiven (and
- *     most managed MySQL servers) reject it.
- *
- *  2. Prisma resolves `sslcert` relative to `backend/prisma`, so the child is
- *     spawned with `backend/` as its working directory regardless of where the
- *     npm script was invoked from.
+ *  1. Prisma CLI commands in this project run through `prisma.config.ts`, which
+ *     needs `backend/.env` loaded (a config file disables the CLI's own .env
+ *     loading) and needs to fail with a readable message when no Turso
+ *     credentials are configured, instead of Prisma's opaque P1012.
+ *  2. Prisma resolves the config file relative to this package, so the child must
+ *     run from `backend/`.
+ *  3. `db:migrate:deploy` on a fresh Turso database has nothing to migrate *from*;
+ *     the wrapper prints the target and the migration count so a deploy log shows
+ *     which database was touched.
  *
  * Usage: node scripts/prisma-run.mjs generate
  *        node scripts/prisma-run.mjs migrate deploy
  *        node scripts/prisma-run.mjs migrate status
  */
 import { spawnSync } from 'node:child_process'
-import { backendDir, applyCaCertificate, readEnv, readEnvFile } from './lib/env-config.mjs'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const backendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+
+process.chdir(backendDir)
 
 const args = process.argv.slice(2)
-
 if (args.length === 0) {
   console.error('Usage: node scripts/prisma-run.mjs <command> [args...]  e.g. migrate deploy')
-  process.exit(2)
+  process.exit(1)
 }
 
-// backend/.env is only consulted when the variable is not already injected.
-if (!process.env.DATABASE_URL) {
-  const fromFile = readEnv(readEnvFile()).get('DATABASE_URL')
-  if (fromFile) process.env.DATABASE_URL = fromFile
+const command = args[0]
+
+/** Reads backend/.env without a dependency; existing process env wins. */
+function readEnvFile() {
+  const file = path.join(backendDir, '.env')
+  if (!fs.existsSync(file)) return new Map()
+  const map = new Map()
+  for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+    if (!line || line.trimStart().startsWith('#')) continue
+    const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/.exec(line)
+    if (!match) continue
+    let value = match[2].trim()
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1)
+    }
+    map.set(match[1], value)
+  }
+  return map
 }
 
-const ca = applyCaCertificate()
-if (ca.pemWritten) {
-  console.log('[prisma] Database CA certificate written to prisma/certs/db-ca.pem')
+const fromFile = readEnvFile()
+for (const key of ['DATABASE_URL', 'TURSO_DATABASE_URL', 'TURSO_AUTH_TOKEN']) {
+  if (!process.env[key]?.trim()) {
+    const value = fromFile.get(key)?.trim()
+    if (value) process.env[key] = value
+  }
 }
-if (ca.patched) {
-  console.log('[prisma] DATABASE_URL uses sslcert=certs/db-ca.pem&sslaccept=strict')
-}
-if (ca.pemWritten && !ca.patched) {
-  console.warn(
-    '[prisma] DATABASE_CA_CERT was supplied but DATABASE_URL has no sslcert - add\n' +
-      '         ?sslcert=certs/db-ca.pem&sslaccept=strict to it (or use a mysql:// URL).',
+
+const target = process.env.TURSO_DATABASE_URL || process.env.DATABASE_URL
+if (target && !/^(mysql|mysqls|mariadb):\/\//i.test(target.trim())) {
+  const masked = target.replace(/(authToken=)[^&]+/i, '$1********')
+  console.log(`[prisma] Target ${masked}`)
+} else if (target) {
+  console.error(
+    '[prisma] Refusing to run: DATABASE_URL/TURSO_DATABASE_URL still points at MySQL.\n' +
+      '         Set TURSO_DATABASE_URL + TURSO_AUTH_TOKEN (see backend/prisma/legacy-mysql/README.md).',
   )
+  process.exit(1)
 }
 
-const result = spawnSync('prisma', args, {
+if (command === 'migrate' && args[1] === 'deploy') {
+  const dir = path.join(backendDir, 'prisma', 'migrations')
+  const count = fs.existsSync(dir)
+    ? fs.readdirSync(dir).filter((entry) => fs.statSync(path.join(dir, entry)).isDirectory()).length
+    : 0
+  console.log(`[prisma] Applying ${count} migration(s) from prisma/migrations`)
+}
+
+const binary = process.platform === 'win32' ? 'prisma.cmd' : 'prisma'
+const result = spawnSync(binary, args, {
   cwd: backendDir,
   stdio: 'inherit',
   env: process.env,
+  shell: process.platform === 'win32',
 })
 
 if (result.error) {
   console.error(`[prisma] Failed to start the Prisma CLI: ${result.error.message}`)
   process.exit(1)
 }
-
 process.exit(result.status ?? 1)

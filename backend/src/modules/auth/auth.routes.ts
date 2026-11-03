@@ -7,6 +7,7 @@ import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.
 import { hashPassword, verifyPassword } from '../../utils/password.js'
 import { encryptText, hashToken, randomToken } from '../../utils/crypto.js'
 import { signAccessToken } from '../../utils/jwt.js'
+import { jsonStringArray, toJsonArrayColumn } from '../../utils/json-column.js'
 import { createOAuthClient, syncGoogleQuota } from '../google/google.service.js'
 import { classifyGoogleError, describeGoogleError, type ConnectFailure } from '../google/google-error.js'
 import { repairStoredRedirectUri, requestOrigin, resolveGoogleRedirectUri } from '../google/redirect-uri.js'
@@ -133,7 +134,7 @@ authRouter.get('/google/url', async (req, res, next) => {
       access_type: 'offline',
       prompt: 'consent',
       include_granted_scopes: true,
-      scope: config.scopes as string[],
+      scope: jsonStringArray(config.scopes),
       state,
       redirect_uri: redirectUri,
     })
@@ -249,7 +250,7 @@ authRouter.get('/google/callback', async (req, res) => {
         accessTokenEncrypted: encryptText(tokens.access_token),
         refreshTokenEncrypted,
         tokenExpiresAt: new Date(tokens.expiry_date ?? Date.now() + 3600_000),
-        scopes: oauthState.providerConfig.scopes as string[],
+        scopes: toJsonArrayColumn(jsonStringArray(oauthState.providerConfig.scopes)),
         status: 'connected',
       },
       update: {
@@ -260,7 +261,7 @@ authRouter.get('/google/callback', async (req, res) => {
         accessTokenEncrypted: encryptText(tokens.access_token),
         refreshTokenEncrypted,
         tokenExpiresAt: new Date(tokens.expiry_date ?? Date.now() + 3600_000),
-        scopes: oauthState.providerConfig.scopes as string[],
+        scopes: toJsonArrayColumn(jsonStringArray(oauthState.providerConfig.scopes)),
         status: 'connected',
       },
     })

@@ -1,12 +1,12 @@
 /**
- * Mocked storage-status tests. No MySQL, Google Drive, S3 or HTTP server is
+ * Mocked storage-status tests. No database server, Google Drive, S3 or HTTP server is
  * contacted; the Prisma client is stubbed with plain objects.
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 
-process.env.DATABASE_URL ||= 'mysql://test:test@127.0.0.1:3306/testdb'
+process.env.DATABASE_URL ||= 'file:./test/.tmp/test.db'
 process.env.JWT_ACCESS_SECRET ||= 'x'.repeat(40)
 process.env.TOKEN_ENCRYPTION_KEY ||= 'y'.repeat(40)
 process.env.NODE_ENV = 'test'
@@ -36,7 +36,7 @@ test('storage status is always reported, even when capacity is unknown', () => {
   assert.equal(report.upload.requiredScope, 'files:write')
   assert.match(report.upload.reason, /No connected storage account/)
   assert.match(report.display.storageProviderNote, /only destination/)
-  assert.match(report.display.appRecords, /MySQL/)
+  assert.match(report.display.appRecords, /Turso/)
   assert.match(report.note, /configured/)
 
   const wrapped = status.storageStatusResponse(report)

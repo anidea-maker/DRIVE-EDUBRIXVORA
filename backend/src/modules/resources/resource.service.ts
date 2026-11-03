@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { objectKeyProblem } from '../public-api/objects.shared.js'
+import { parseJsonColumn, toJsonColumn } from '../../utils/json-column.js'
 
 /**
  * Pure, testable core of the unified educational-resource registry.
@@ -358,7 +359,7 @@ export function serializeResource(file: ResourceRow, baseUrl: string) {
     academicLevel: file.academicLevel,
     examType: file.examType,
     description: file.description,
-    metadata: file.resourceMetadata ?? null,
+    metadata: parseJsonColumn(file.resourceMetadata, null),
     uploadedBy: file.uploadedBy ?? file.userId,
     lastModifiedBy: file.lastModifiedBy,
     createdAt: file.createdAt.toISOString(),
@@ -449,7 +450,7 @@ export async function createResourceRecord(
     clientRequestId,
     // Only write JSON when supplied: Prisma distinguishes JSON null from a
     // database NULL, and an absent field must not erase an existing value.
-    ...(meta.metadata ? { resourceMetadata: meta.metadata } : {}),
+    ...(meta.metadata ? { resourceMetadata: toJsonColumn(meta.metadata) } : {}),
     uploadedBy: userId,
     lastModifiedBy: userId,
     availability: 'available',

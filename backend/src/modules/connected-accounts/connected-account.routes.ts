@@ -7,6 +7,7 @@ import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.
 import { requireRole } from '../../middleware/role.middleware.js'
 import { encryptText, hashToken, randomToken } from '../../utils/crypto.js'
 import { hashPassword } from '../../utils/password.js'
+import { jsonStringArray, toJsonArrayColumn } from '../../utils/json-column.js'
 import { createOAuthClient, syncGoogleQuota } from '../google/google.service.js'
 import { classifyGoogleError, describeGoogleError, type ConnectFailure } from '../google/google-error.js'
 import { repairStoredRedirectUri, requestOrigin, resolveGoogleRedirectUri } from '../google/redirect-uri.js'
@@ -129,7 +130,7 @@ async function createGoogleConnectUrl(req: AuthRequest): Promise<string | null> 
     access_type: 'offline',
     prompt: 'consent',
     include_granted_scopes: true,
-    scope: config.scopes as string[],
+    scope: jsonStringArray(config.scopes),
     state,
     redirect_uri: redirectUri,
   })
@@ -287,7 +288,7 @@ connectedAccountRouter.post('/s3', requireAuth, requireRole('manage_resources'),
           accessTokenEncrypted: encryptText('s3'),
           refreshTokenEncrypted: encryptText(randomToken()),
           tokenExpiresAt: new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
-          scopes: [],
+          scopes: '[]',
           status: 'connected',
         },
       })
@@ -301,7 +302,7 @@ connectedAccountRouter.post('/s3', requireAuth, requireRole('manage_resources'),
         accessTokenEncrypted: encryptText('s3'),
         refreshTokenEncrypted: encryptText(randomToken()),
         tokenExpiresAt: new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
-        scopes: [],
+        scopes: '[]',
         status: 'connected',
       } })
     const config = await prisma.s3StorageConfig.upsert({
@@ -490,7 +491,7 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
           accessTokenEncrypted: encryptText(tokens.access_token),
           refreshTokenEncrypted,
           tokenExpiresAt: new Date(tokens.expiry_date ?? Date.now() + 3600_000),
-          scopes: oauthState.providerConfig.scopes as string[],
+          scopes: toJsonArrayColumn(jsonStringArray(oauthState.providerConfig.scopes)),
           status: 'connected',
         },
         update: {
@@ -501,7 +502,7 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
           accessTokenEncrypted: encryptText(tokens.access_token),
           refreshTokenEncrypted,
           tokenExpiresAt: new Date(tokens.expiry_date ?? Date.now() + 3600_000),
-          scopes: oauthState.providerConfig.scopes as string[],
+          scopes: toJsonArrayColumn(jsonStringArray(oauthState.providerConfig.scopes)),
           status: 'connected',
         },
       })
@@ -537,7 +538,7 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
         accessTokenEncrypted: encryptText(tokens.access_token),
         refreshTokenEncrypted,
         tokenExpiresAt: new Date(tokens.expiry_date ?? Date.now() + 3600_000),
-        scopes: oauthState.providerConfig.scopes as string[],
+        scopes: toJsonArrayColumn(jsonStringArray(oauthState.providerConfig.scopes)),
         status: 'connected',
       },
       update: {
@@ -548,7 +549,7 @@ connectedAccountRouter.get('/google/callback', async (req, res, next) => {
         accessTokenEncrypted: encryptText(tokens.access_token),
         refreshTokenEncrypted,
         tokenExpiresAt: new Date(tokens.expiry_date ?? Date.now() + 3600_000),
-        scopes: oauthState.providerConfig.scopes as string[],
+        scopes: toJsonArrayColumn(jsonStringArray(oauthState.providerConfig.scopes)),
         status: 'connected',
       },
     })

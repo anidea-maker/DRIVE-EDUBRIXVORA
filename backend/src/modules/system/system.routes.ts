@@ -8,6 +8,7 @@ import { prisma } from '../../config/prisma.js'
 import { decryptText, encryptText } from '../../utils/crypto.js'
 import { describeConfigProblem, looksLikePlaceholder, GOOGLE_CALLBACK_PATH } from '../google/config-health.js'
 import { repairStoredRedirectUri, requestOrigin, resolveGoogleRedirectUri } from '../google/redirect-uri.js'
+import { toJsonArrayColumn } from '../../utils/json-column.js'
 import Busboy from 'busboy'
 
 export const systemRouter = Router()
@@ -317,7 +318,7 @@ systemRouter.post('/google-config', requireAuth, async (req, res, next) => {
     // disabled the working config before creating the replacement, so a failed
     // save left Google sign-in broken with nothing to fall back to.
     const config = await prisma.providerConfig.create({
-      data: { userId: null, provider: 'google_drive', clientIdEncrypted, clientSecretEncrypted, redirectUri, scopes, status: 'active' },
+      data: { userId: null, provider: 'google_drive', clientIdEncrypted, clientSecretEncrypted, redirectUri, scopes: toJsonArrayColumn(scopes), status: 'active' },
     })
     try {
       await prisma.providerConfig.updateMany({

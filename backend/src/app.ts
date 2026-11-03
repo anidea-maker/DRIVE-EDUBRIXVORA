@@ -119,7 +119,7 @@ app.use(express.json({ limit: '1mb' }))
 
 /**
  * Liveness: the process answers. Deliberately does not touch the database, so a
- * platform health check does not restart the service every time MySQL blips.
+ * platform health check does not restart the service every time the database blips.
  *
  * `commit` makes it obvious when a deploy is serving an older build than `main`.
  */
@@ -155,7 +155,7 @@ app.get(['/ready', '/api/ready'], async (_req, res) => {
       status: 'error',
       database: 'unreachable',
       message,
-      hint: 'Check DATABASE_URL and DATABASE_CA_CERT on the backend service, then redeploy. `npm run db:check` gives a full report.',
+      hint: 'Check TURSO_DATABASE_URL/TURSO_AUTH_TOKEN (or DATABASE_URL) on the backend service, then redeploy. `npm run db:check` gives a full report.',
     })
   }
 
@@ -163,7 +163,7 @@ app.get(['/ready', '/api/ready'], async (_req, res) => {
     // Cast instead of a type argument so this compiles even before
     // `prisma generate` has produced the typed client.
     const rows = (await prisma.$queryRawUnsafe(
-      'SELECT COUNT(*) AS n FROM `_prisma_migrations`',
+      'SELECT COUNT(*) AS n FROM "_prisma_migrations"',
     )) as Array<{ n: bigint | number }>
     return res.json({ status: 'ok', database: 'ok', migrations: String(rows[0]?.n ?? 0), ...storageFields })
   } catch {
@@ -209,12 +209,12 @@ app.get(['/api/diagnostics', '/diagnostics'], async (req, res) => {
   try {
     await prisma.$queryRawUnsafe('SELECT 1')
     const rows = (await prisma.$queryRawUnsafe(
-      'SELECT COUNT(*) AS n FROM `_prisma_migrations`',
+      'SELECT COUNT(*) AS n FROM "_prisma_migrations"',
     )) as Array<{ n: bigint | number }>
     database = { ok: true, migrations: String(rows[0]?.n ?? 0) }
   } catch (error) {
     database = { ok: false, message: error instanceof Error ? error.message : String(error) }
-    hints.push('The database is unreachable: check DATABASE_URL and DATABASE_CA_CERT, then redeploy.')
+    hints.push('The database is unreachable: check TURSO_DATABASE_URL/TURSO_AUTH_TOKEN (or DATABASE_URL), then redeploy.')
   }
 
   let google: Record<string, unknown>

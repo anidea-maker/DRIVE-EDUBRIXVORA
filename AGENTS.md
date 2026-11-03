@@ -2,13 +2,13 @@
 
 ## Project Overview
 
-9Drive is a Google Drive storage gateway. It lets users register/login with email/password or Google, automatically connect the first Drive account during Google sign-in, connect additional Google Drive accounts, track combined quota, upload files through the backend into a dedicated Google Drive `9drive` folder, organize files in virtual folders, preview/download/share files, sync MySQL file records from Google Drive, invite other users to files/folders, and route uploads to a connected Drive account with enough free space.
+9Drive is a Google Drive storage gateway. It lets users register/login with email/password or Google, automatically connect the first Drive account during Google sign-in, connect additional Google Drive accounts, track combined quota, upload files through the backend into a dedicated Google Drive `9drive` folder, organize files in virtual folders, preview/download/share files, sync file records from Google Drive, invite other users to files/folders, and route uploads to a connected Drive account with enough free space.
 
 ## Repository Structure
 
-- `backend/`: Express API, TypeScript, Prisma schema/migrations, MySQL access, auth, Google OAuth/Drive integration.
+- `backend/`: Express API, TypeScript, Prisma schema/migrations, Turso (libSQL) access, auth, Google OAuth/Drive integration.
 - `frontend/`: Vite React app, protected dashboard UI, file/folder management, sharing, uploads, quota/settings pages.
-- `docker-compose.yml`: MySQL, backend, and nginx-served frontend services.
+- `docker-compose.yml`: backend (SQLite file on a volume) and nginx-served frontend services; `docker-compose.turso.yml` points the backend at Turso.
 - `.env.docker.example`: Docker environment template.
 - `README.md`: local setup, Google Cloud setup, Docker notes, deployment notes.
 
@@ -16,7 +16,7 @@
 
 - Node.js 20+
 - npm
-- MySQL 8+
+- Turso database (or a local SQLite file for development)
 - Google Cloud project with Google Drive API enabled
 - Google OAuth client ID and secret
 
@@ -25,8 +25,8 @@
 Stack:
 - Express 5
 - TypeScript
-- Prisma 6
-- MySQL
+- Prisma 6 (SQLite provider, `engineType = "client"`, libSQL driver adapter)
+- Turso (libSQL) / local SQLite
 - Zod
 - JWT bearer auth
 - Argon2 password hashing
@@ -40,13 +40,18 @@ Important files:
 - `backend/src/config/env.ts`: environment validation (exits with a readable message naming the missing variables).
 - `backend/src/config/load-env.ts`: loads `backend/.env` from any working directory.
 - `backend/scripts/ensure-env.mjs`: creates/repairs `backend/.env`; run via `npm run env:setup`.
-- `backend/src/config/prisma.ts`: Prisma client.
-- `backend/prisma/schema.prisma`: database schema.
+- `backend/src/config/prisma.ts`: Prisma client + libSQL adapter + foreign-key assertion.
+- `backend/src/config/database-url.ts`: single source of truth for the database target (Turso or local file).
+- `backend/prisma.config.ts`: Prisma CLI config (JS schema engine + libSQL adapter).
+- `backend/src/utils/json-column.ts`: JSON-as-TEXT helpers.
+- `backend/prisma/schema.prisma`: database schema (SQLite).
+- `backend/prisma/migrations/`: SQLite migrations applied by `db:migrate:deploy`.
+- `backend/prisma/legacy-mysql/`: retired MySQL migrations + the Aiven → Turso data guide.
 - `backend/.env.example`: environment template (copy to `backend/.env`).
 - `frontend/scripts/check-nginx.mjs` (`npm run check:nginx`, part of `npm run build`): validates the nginx template for every deployment shape without needing nginx.
 - `frontend/nginx.conf.template`: runtime-rendered nginx config (env vars `PORT`, `API_UPSTREAM`, `RESOLVER`); the backend honors a platform `PORT` too.
 - `Dockerfile` (repo root) + `.dockerignore`: single-service image (API + the built SPA on one origin); `SERVE_FRONTEND` enables SPA hosting inside the API process.
-- `docker-compose.external-db.yml`: compose override that points the backend at a hosted MySQL instead of the bundled container.
+- `docker-compose.turso.yml`: compose override that points the backend at the hosted Turso database.
 - `backend/src/middleware/auth.middleware.ts`: bearer auth.
 - `backend/src/middleware/error.middleware.ts`: JSON error responses.
 - `backend/src/modules/**`: feature route modules and provider services.
@@ -57,21 +62,20 @@ Commands:
 - `cd backend && npm run dev`: start development server.
 - `cd backend && npm run build`: typecheck/build backend.
 - `cd backend && npm run start`: run compiled backend from `dist/server.js`.
-- `cd backend && npm run prisma:migrate`: run Prisma dev migration.
+- `cd backend && npm run prisma:migrate`: run Prisma dev migration (local shadow DB).
 - `cd backend && npm run prisma:generate`: regenerate Prisma client.
 - `cd backend && npm run env:setup`: create or repair `backend/.env` (runs automatically before `dev`, `start`, and every `prisma:*` script).
 - `cd backend && npm run db:check`: diagnose `DATABASE_URL` (reachability, credentials, TLS parameters, schema state).
 - `cd backend && npm run db:status`: applied/pending migrations.
-- Managed MySQL (Aiven/PlanetScale/RDS): apply the committed migrations with `npm run db:migrate:deploy`; `migrate dev` needs a shadow database those services usually cannot create.
+- Managed Turso: apply the committed migrations with `npm run db:migrate:deploy` (the container does it on boot). `migrate dev` works locally because the libSQL adapter supplies an in-memory shadow database.
 - `cd backend && npm run seed:google-config`: store encrypted Google OAuth config.
 
 Environment:
-- `DATABASE_URL` (MySQL URL; Prisma MySQL has no `ssl-mode`/`sslmode` parameter - use `sslaccept`, plus `sslcert=certs/<ca>.pem` for verified TLS)
+- `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` (recommended), or `DATABASE_URL` as a single `libsql://…?authToken=…` URL; `file:./prisma/dev.db` for offline development
 - `APP_PORT`
 - `FRONTEND_URL`
 - `JWT_ACCESS_SECRET`
 - `TOKEN_ENCRYPTION_KEY`
-- `DATABASE_CA_CERT` (optional; provider CA as PEM/base64/path, materialized to `backend/prisma/certs/db-ca.pem`)
 - `ACCESS_TOKEN_TTL_SECONDS`
 - `REFRESH_TOKEN_TTL_DAYS`
 - `MAX_UPLOAD_BYTES`
@@ -104,10 +108,18 @@ Security rules:
 - Keep auth/token storage behavior centralized; do not change without explicit reason.
 
 Database rules:
-- Change DB schema through Prisma schema and migrations.
+- Change DB schema through Prisma schema and migrations (`backend/prisma/migrations`).
 - Do not hand-edit generated Prisma client files.
-- After schema changes, run Prisma migration/generation and backend build.
+- After schema changes, run `npm run db:migrate:deploy`, `npm run prisma:generate`, and `npm run build`.
 - Add indexes for new common filters before relying on them in hot paths.
+- SQLite has no `Json` scalar: store JSON in `String` columns and convert with
+  `backend/src/utils/json-column.ts`. Do not cast a column to an array/object.
+- SQLite has no `Json` filters, no `mode: 'insensitive'` and no `@db.*` native types.
+- Referential actions rely on database foreign keys (`PRAGMA foreign_keys` is ON in
+  libSQL/Turso). Do not switch to `relationMode = "prisma"`: it rejects the implicit
+  `onUpdate: Cascade` used by the folder self-relation.
+- SQLite allows a single writer. Keep transactions short and avoid long
+  read-modify-write batches inside one request.
 
 ## Frontend
 
@@ -236,21 +248,19 @@ Uploads:
 - File fields then match `filesMeta[*].fieldName`, e.g. `file-0`, `file-1`.
 - Backend selects a connected Drive account with enough available quota and streams each file directly to Google Drive.
 - Google Drive uploads are placed under the root Drive folder named `9drive`; virtual folders remain app/database-only.
-- `POST /files/sync-google` treats Google Drive folder `9drive` as source of truth for physical files: create missing MySQL file rows, update changed metadata, and mark missing Drive files as deleted.
+- `POST /files/sync-google` treats Google Drive folder `9drive` as source of truth for physical files: create missing database rows, update changed metadata, and mark missing Drive files as deleted.
 
 ## Docker
 
 Commands:
-- `docker compose up -d --build`: build and start MySQL, backend, frontend.
+- `docker compose up -d --build`: build and start backend (local SQLite volume), frontend.
 - `docker compose exec backend npm run seed:google-config`: seed Google config inside backend container.
 - `docker compose logs -f backend`: backend logs.
 - `docker compose logs -f frontend`: frontend logs.
-- `docker compose logs -f mysql`: MySQL logs.
 - `docker compose down`: stop services.
 - `docker compose down -v`: stop services and remove DB volume.
 
 Docker notes:
-- MySQL image is `mysql:8.4`.
 - Backend listens on `4000`.
 - Frontend build is served by nginx on host port `5173`.
 - Frontend build arg `VITE_API_URL` is embedded at build time.
@@ -265,7 +275,7 @@ Before finishing frontend changes:
 - `cd frontend && npm run build`
 
 Before finishing schema changes:
-- `cd backend && npm run prisma:migrate`
+- `cd backend && npm run db:migrate:deploy`
 - `cd backend && npm run build`
 
 Before finishing resource API changes:

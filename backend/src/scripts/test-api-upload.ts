@@ -12,6 +12,7 @@
 import { prisma } from '../config/prisma.js'
 import { deleteS3Object } from '../modules/s3/s3.service.js'
 import { hashToken, randomToken } from '../utils/crypto.js'
+import { toJsonArrayColumn } from '../utils/json-column.js'
 
 const apiUrl = (process.env.API_URL || 'http://localhost:4000').replace(/\/+$/, '')
 
@@ -36,7 +37,7 @@ async function main() {
       name: 'API storage smoke test',
       keyPrefix: secret.slice(0, 16),
       keyHash: hashToken(secret),
-      scopes: ['files:read', 'files:write', 'files:delete'],
+      scopes: toJsonArrayColumn(['files:read', 'files:write', 'files:delete']),
     },
   })
   const auth = { Authorization: `Bearer ${secret}` }

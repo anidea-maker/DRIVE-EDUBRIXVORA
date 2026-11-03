@@ -1,5 +1,6 @@
 import { prisma } from '../config/prisma.js'
 import { encryptText } from '../utils/crypto.js'
+import { toJsonArrayColumn } from '../utils/json-column.js'
 
 const scopes = [
   'https://www.googleapis.com/auth/drive',
@@ -26,7 +27,7 @@ async function main() {
       clientIdEncrypted: encryptText(clientId),
       clientSecretEncrypted: encryptText(clientSecret),
       redirectUri,
-      scopes,
+      scopes: toJsonArrayColumn(scopes),
       status: 'active',
     },
   })

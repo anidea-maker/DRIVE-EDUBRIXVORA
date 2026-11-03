@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { env } from '../../config/env.js'
 import { requireApiKey, type ApiKeyRequest } from '../../middleware/api-key.middleware.js'
 import { grantsScope } from './scopes.js'
+import { parseJsonColumn } from '../../utils/json-column.js'
 import { absoluteUrl } from './serialize.js'
 import { signObjectUrl, signedObjectPath, type SignedMethod } from './object-signing.js'
 import {
@@ -229,7 +230,7 @@ objectsRouter.put('/*key', requireApiKey('files:write'), async (req: ApiKeyReque
       sizeBytes: result.file.sizeBytes.toString(),
       mimeType: result.file.mimeType,
       checksum: result.file.checksum,
-      metadata: result.file.resourceMetadata ?? null,
+      metadata: parseJsonColumn(result.file.resourceMetadata, null),
       etag,
       createdAt: result.file.createdAt.toISOString(),
       lastModified: result.file.updatedAt.toISOString(),

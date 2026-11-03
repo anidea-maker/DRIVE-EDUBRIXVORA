@@ -4,3 +4,9 @@ dist
 .env.local
 .env.*.local
 npm-debug.log
+
+# Local SQLite databases and TLS files are per-environment
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

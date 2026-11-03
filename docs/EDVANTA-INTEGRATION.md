@@ -50,7 +50,7 @@ EduBrixVora → **API Management**. It is stored hashed. Scopes:
 
 Educational-resource writes and API-key management call
 `requireRole('manage_resources')`, which loads the **key owner's** role from
-MySQL. The website/object API instead relies on the bearer key's scopes and
+the database. The website/object API instead relies on the bearer key's scopes and
 per-user ownership, so a valid website key is not blocked by a later role
 demotion. Roles are `super_admin`, `admin`, `student`, `visitor`; **new**
 accounts default to `visitor` and must be promoted explicitly. Existing rows
@@ -83,7 +83,7 @@ student routes hardcode `audience=student` and cannot be escalated with
 
 ## 3. Unified registry
 
-The existing `files` table is the registry; no file contents are stored in MySQL.
+The existing `files` table is the registry; no file contents are stored in the database.
 Migration `20261102130000_education_resources` is additive and preserves all
 existing rows:
 
@@ -288,7 +288,7 @@ The Edvanta landing page previously showed “Loading the live counts — the fi
 answer after the server wakes takes about a minute. Everything below works while
 you wait.” That happened because the widget waited on a cold Render instance.
 
-This endpoint fixes the *cause*: it runs only cheap MySQL `count` / `groupBy`
+This endpoint fixes the *cause*: it runs only cheap SQLite `count` / `groupBy`
 queries, never a Drive/S3 HEAD request or a full listing, and caches the result
 in-process for 30 seconds per owner/audience. Responses carry
 `Cache-Control: private, max-age=30` and `X-Counts-Cache: hit|miss`.
@@ -332,7 +332,7 @@ GET /api/v1/resources/health
 Returns database reachability, per-provider account health (`HeadBucket` or Drive
 `about.get`), and counts of available/missing/inaccessible/unknown records. It
 returns `503` when degraded and never includes a credential. `/health` is
-Render's liveness probe; `/ready` checks MySQL and migrations.
+Render's liveness probe; `/ready` checks the database and migrations.
 
 The response now always includes `storage`, `storageStatus` and
 `reported: true`:
@@ -488,14 +488,14 @@ root `Dockerfile` (`API + SPA on one origin`, `SERVE_FRONTEND` set by the image)
 | Start | root `Dockerfile` CMD runs `npm run db:migrate:deploy`, an optional Google config seed, then `node dist/server.js` (equivalently `npm run start:deploy`) |
 | Port | Render injects `PORT`; the app prefers it over `APP_PORT` |
 | Health | `/health`; readiness `/ready`; diagnostics `/api/diagnostics` |
-| Database | hosted MySQL 8 via `DATABASE_URL`; apply `20261102130000_education_resources` and `20261102140000_website_api_hardening` with `npm run db:migrate:deploy` |
+| Database | hosted Turso (libSQL) via `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN`; the container applies `prisma/migrations` with `npm run db:migrate:deploy` on boot |
 
 Required / relevant environment variables (set in Render → Environment, never in
 the frontend build):
 
 ```env
-DATABASE_URL=mysql://…                 # required
-DATABASE_CA_CERT=…                     # managed MySQL CA, if TLS verified
+TURSO_DATABASE_URL=libsql://…          # required (or DATABASE_URL=libsql://…?authToken=…)
+TURSO_AUTH_TOKEN=…                     # required for a hosted database
 JWT_ACCESS_SECRET=…                    # generated once, >= 32 chars
 TOKEN_ENCRYPTION_KEY=…                 # generated once, KEEP STABLE
 FRONTEND_URL=https://drive-edubrixvora-1.onrender.com
@@ -510,7 +510,7 @@ RESOURCE_URL_TTL_SECONDS=600
 RESOURCE_BULK_MAX_FILES=25
 RESOURCE_BULK_MAX_BYTES=536870912
 OBJECT_URL_SIGNING_SECRET=             # optional; derived from TOKEN_ENCRYPTION_KEY when empty
-GOOGLE_CLIENT_ID=…                     # seeded into MySQL via Settings / seed script
+GOOGLE_CLIENT_ID=…                     # seeded into the database via Settings / seed script
 GOOGLE_CLIENT_SECRET=…
 GOOGLE_REDIRECT_URI=https://drive-edubrixvora-1.onrender.com/connected-accounts/google/callback
 STORAGE_BACKEND=…                      # optional S3 preset; see backend/.env.example
@@ -530,7 +530,7 @@ Google Cloud. Google Drive accounts and S3 buckets are connected through the
 dashboard; a repository URL alone grants no storage access.
 
 Render's filesystem is ephemeral: no uploaded file is written to local disk, and
-all metadata lives in MySQL. Do not change `TOKEN_ENCRYPTION_KEY` after accounts
+all metadata lives in the database. Do not change `TOKEN_ENCRYPTION_KEY` after accounts
 are connected - encrypted OAuth/S3 credentials would become unreadable.
 
 ### Edvanta (separate repository / Render service)
@@ -655,7 +655,7 @@ that an authenticated live upload succeeded. See the manual checklist below.
 
 ## 8. Verification performed in this change
 
-Mocked/automated (no cloud credentials, no MySQL):
+Mocked/automated (no cloud credentials, no database server):
 
 ```bash
 cd backend && npm test                                 # 63 pass, 2 fail (see note)
@@ -697,7 +697,7 @@ steps and the provider-selection note, see
 
 - Live Google Drive OAuth, shared-drive access, quota and rate-limit behaviour.
 - Live S3-compatible uploads, multipart, presigned/provider URL behaviour.
-- A real MySQL migration on the deployed database.
+- A migration against the deployed Turso database.
 - Edvanta's student UI, its own auth system, bookmarks and browser rendering.
 - An end-to-end upload → discovery → preview → single/bulk download on Render.
 

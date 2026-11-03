@@ -9,7 +9,7 @@ operations or an Edvanta deployment were executed here.
 
 - **In scope:** one external website, one website API key, the existing
   `/api/v1/objects` API, existing `selectAccount()` routing, connected
-  Google Drive / S3-compatible accounts, metadata in MySQL, secure
+  Google Drive / S3-compatible accounts, metadata in Turso (libSQL), secure
   file operations, and an integration example.
 - **Out of scope:** a new project, a platform-owned bucket, a new storage
   backend, provider credentials on the website, multi-website tenancy, and any
@@ -120,7 +120,7 @@ Mocked/local only:
 
 - No live Google Drive or S3 upload/download/delete, quota refresh, OAuth or
   rate-limit behaviour.
-- No real MySQL migration apply or multi-instance rate-limit run.
+- No migration against a live Turso database or multi-instance rate-limit run.
 - No authenticated end-to-end upload from the external website or Edvanta UI.
 - No Render deployment from this workspace; the branch must be merged/deployed
   and the migration applied before live acceptance checks.

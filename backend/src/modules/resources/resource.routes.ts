@@ -6,6 +6,7 @@ import { ZipArchive } from 'archiver'
 import { z } from 'zod'
 import { env } from '../../config/env.js'
 import { prisma } from '../../config/prisma.js'
+import { parseJsonColumn, toJsonColumn } from '../../utils/json-column.js'
 import { requireApiKey, type ApiKeyRequest } from '../../middleware/api-key.middleware.js'
 import { requireRole } from '../../middleware/role.middleware.js'
 import { canManageResources, effectiveRole, isActive } from '../auth/roles.js'
@@ -113,7 +114,7 @@ async function toResourceRow(file: PrismaFile): Promise<ResourceRow> {
   return {
     ...file,
     bucketName,
-    resourceMetadata: file.resourceMetadata ?? null,
+    resourceMetadata: parseJsonColumn(file.resourceMetadata, null),
   } as unknown as ResourceRow
 }
 
@@ -792,7 +793,7 @@ resourceRouter.patch(
     if (patch.academicLevel !== undefined) data.academicLevel = patch.academicLevel
     if (patch.examType !== undefined) data.examType = patch.examType
     if (patch.visibility !== undefined) data.visibility = patch.visibility
-    if (patch.metadata !== undefined) data.resourceMetadata = patch.metadata as Prisma.InputJsonValue
+    if (patch.metadata !== undefined) data.resourceMetadata = toJsonColumn(patch.metadata)
     const updated = await prisma.file.update({ where: { id: row.id }, data })
     await createAuditLog(req.user!.id, 'UPDATE_EDVANTA_RESOURCE', 'file', row.id, { fields: Object.keys(patch) })
     noStore(res)

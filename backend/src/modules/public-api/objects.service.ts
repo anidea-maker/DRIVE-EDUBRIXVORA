@@ -2,6 +2,7 @@ import { google } from 'googleapis'
 import { randomUUID } from 'node:crypto'
 import type { File, Prisma } from '@prisma/client'
 import { prisma } from '../../config/prisma.js'
+import { parseJsonColumn } from '../../utils/json-column.js'
 import { createAuditLog } from '../../utils/audit.js'
 import { ensureGoogleAppFolder, getAuthedGoogleClient } from '../google/google.service.js'
 import { buildS3ObjectKey, getS3ConfigForAccount, syncS3Quota, uploadS3Object } from '../s3/s3.service.js'
@@ -425,7 +426,7 @@ export async function listObjects(input: {
         createdAt: row.createdAt.toISOString(),
         lastModified: row.updatedAt.toISOString(),
         etag: row.checksum ? `"${row.checksum}"` : null,
-        metadata: row.resourceMetadata ?? null,
+        metadata: parseJsonColumn(row.resourceMetadata, null),
       })
     }
     lastKey = key
