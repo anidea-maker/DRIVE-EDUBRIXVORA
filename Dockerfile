@@ -7,7 +7,8 @@
 #
 # Render (or any Docker host):
 #   Runtime: Docker, Dockerfile Path: ./Dockerfile, Health Check: /health
-#   Env: DATABASE_URL, DATABASE_CA_CERT, JWT_ACCESS_SECRET, TOKEN_ENCRYPTION_KEY
+#   Env: TURSO_DATABASE_URL, TURSO_AUTH_TOKEN, JWT_ACCESS_SECRET,
+#        TOKEN_ENCRYPTION_KEY   (or a single DATABASE_URL=libsql://...?authToken=...)
 #   (FRONTEND_URL is optional - it defaults to this service's own origin)
 #
 # The two-service setup still works: use backend/Dockerfile + frontend/Dockerfile.
@@ -35,8 +36,10 @@ COPY backend/prisma ./prisma
 RUN npm ci
 
 COPY backend/tsconfig.json ./
+COPY backend/prisma.config.ts ./
 COPY backend/src ./src
 COPY backend/scripts ./scripts
+# No native query engine: the client uses the WASM compiler + the libSQL adapter.
 RUN npx prisma generate && npm run build
 
 # ---------- runtime ----------
@@ -55,8 +58,8 @@ COPY --from=backend /app/scripts ./scripts
 COPY --from=backend /app/package.json ./package.json
 COPY --from=frontend /app/dist ./public
 
-# `prisma migrate deploy` runs on boot; `ensure-env` refuses to start without a
-# database instead of failing later with an opaque P1012.
+# `prisma migrate deploy` runs on boot against Turso; `ensure-env` refuses to start
+# without database credentials instead of failing later with an opaque P1012.
 # Migrations are fatal (a missing database should fail loudly), but the Google
 # seed is not: a missing/invalid OAuth client must never stop the API from
 # booting, or nobody can register an email/password account.

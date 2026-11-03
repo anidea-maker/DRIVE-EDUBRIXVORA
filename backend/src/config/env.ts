@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { loadEnvFiles } from './load-env.js'
+import { resolveDatabaseConfig, DatabaseUrlError } from './database-url.js'
 
 loadEnvFiles()
 
@@ -38,6 +39,23 @@ function normalizeOrigin(value: string): string {
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) return trimmed
   const isLocal = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(trimmed)
   return `${isLocal ? 'http' : 'https'}://${trimmed}`
+}
+
+/**
+ * Resolve the database target before the schema runs, so a leftover MySQL URL or a
+ * missing Turso token produces the migration instructions instead of a generic
+ * "DATABASE_URL is invalid" line.
+ */
+try {
+  const database = resolveDatabaseConfig()
+  process.env.DATABASE_URL ??= database.url
+  if (database.authToken) process.env.TURSO_AUTH_TOKEN ??= database.authToken
+} catch (error) {
+  if (error instanceof DatabaseUrlError) {
+    console.error(['', error.message, ''].join('\n'))
+    process.exit(1)
+  }
+  throw error
 }
 
 const envSchema = z.object({
@@ -150,8 +168,11 @@ if (!parsed.success) {
       '  cd backend && npm run env:setup      # creates backend/.env with defaults + random secrets',
       '  cp backend/.env.example backend/.env # then edit the values by hand',
       '',
-      'DATABASE_URL must be a MySQL connection string, e.g.',
-      '  DATABASE_URL="mysql://root@localhost:3306/9drive"',
+      'DATABASE_URL must be a Turso/libSQL URL, e.g.',
+      '  TURSO_DATABASE_URL="libsql://<database>-<org>.turso.io"',
+      '  TURSO_AUTH_TOKEN="<token>"',
+      'or, for a local SQLite file:',
+      '  DATABASE_URL="file:./prisma/dev.db"',
       '',
     ].join('\n'),
   )
@@ -159,37 +180,25 @@ if (!parsed.success) {
 }
 
 /**
- * Placeholder passwords copied from a provider dashboard fail every query with a
- * cryptic "Access denied for user", so catch them at boot instead.
+ * A token copied from a template still fails every query, but with a generic
+ * "authentication failed" from Turso. Name it at boot instead.
  */
-const DATABASE_URL_PLACEHOLDERS = [
-  'CLICK_TO_REVEAL_PASSWORD',
-  'REPLACE_WITH',
-  'change-this-database-password',
-]
+const DATABASE_URL_PLACEHOLDERS = ['REPLACE_WITH', 'your-token', 'CLICK_TO_REVEAL']
 
-const placeholder = DATABASE_URL_PLACEHOLDERS.find((token) => parsed.data.DATABASE_URL.includes(token))
+const placeholder = DATABASE_URL_PLACEHOLDERS.find((token) =>
+  `${parsed.data.DATABASE_URL} ${process.env.TURSO_AUTH_TOKEN ?? ''}`.includes(token),
+)
 
 if (placeholder) {
   console.error(
     [
       '',
-      `DATABASE_URL still contains the placeholder "${placeholder}".`,
-      'Paste the real database password into backend/.env, then start the server again.',
+      `The database configuration still contains the placeholder "${placeholder}".`,
+      'Paste the real Turso URL and token into backend/.env, then start the server again.',
       '',
     ].join('\n'),
   )
   process.exit(1)
-}
-
-const databaseParams = new URL(parsed.data.DATABASE_URL).searchParams
-
-if (databaseParams.has('ssl-mode') || databaseParams.has('sslmode')) {
-  console.warn(
-    '[env] DATABASE_URL uses "ssl-mode"/"sslmode", which Prisma MySQL ignores - the ' +
-      'connection will not be encrypted. Use sslaccept=accept_invalid_certs, or ' +
-      'sslcert=certs/aiven-ca.pem&sslaccept=strict for verified TLS.',
-  )
 }
 
 /**

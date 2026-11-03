@@ -4,6 +4,7 @@ import { prisma } from '../../config/prisma.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
 import { requireRole } from '../../middleware/role.middleware.js'
 import { encryptText } from '../../utils/crypto.js'
+import { jsonStringArray, toJsonArrayColumn } from '../../utils/json-column.js'
 
 export const providerConfigRouter = Router()
 providerConfigRouter.use(requireAuth)
@@ -26,10 +27,10 @@ providerConfigRouter.post('/google', async (req: AuthRequest, res, next) => {
         clientIdEncrypted: encryptText(body.clientId),
         clientSecretEncrypted: encryptText(body.clientSecret),
         redirectUri: body.redirectUri,
-        scopes: body.scopes,
+        scopes: toJsonArrayColumn(body.scopes),
       },
     })
-    return res.status(201).json({ id: config.id, provider: config.provider, redirectUri: config.redirectUri, scopes: config.scopes, status: config.status })
+    return res.status(201).json({ id: config.id, provider: config.provider, redirectUri: config.redirectUri, scopes: jsonStringArray(config.scopes), status: config.status })
   } catch (error) {
     return next(error)
   }
@@ -38,7 +39,7 @@ providerConfigRouter.post('/google', async (req: AuthRequest, res, next) => {
 providerConfigRouter.get('/', async (req: AuthRequest, res, next) => {
   try {
     const configs = await prisma.providerConfig.findMany({ where: { userId: req.user!.id }, select: { id: true, provider: true, redirectUri: true, scopes: true, status: true, createdAt: true } })
-    return res.json({ configs })
+    return res.json({ configs: configs.map((config) => ({ ...config, scopes: jsonStringArray(config.scopes) })) })
   } catch (error) {
     return next(error)
   }

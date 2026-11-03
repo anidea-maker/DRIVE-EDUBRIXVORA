@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { google } from 'googleapis'
 import { env } from '../../config/env.js'
 import { prisma } from '../../config/prisma.js'
+import { jsonStringArray } from '../../utils/json-column.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
 import { requireRole } from '../../middleware/role.middleware.js'
 import { ensureGoogleAppFolder, getAuthedGoogleClient, syncGoogleQuota } from '../google/google.service.js'
@@ -14,6 +15,7 @@ import { buildS3ObjectKey, getS3ConfigForAccount, syncS3Quota, uploadS3Object } 
 import { deleteProviderFile, verifyProviderFile, type ProviderFileRef } from '../storage/provider-operations.js'
 import { hashingStream } from '../public-api/objects.shared.js'
 import { createAuditLog } from '../../utils/audit.js'
+import { buildUniqueObjectKey } from '../public-api/objects.shared.js'
 
 export const uploadRouter = Router()
 
@@ -39,7 +41,7 @@ export function syncQuotaInBackground(accountId: string, sessionId: string) {
 }
 
 function normalizePriorityAccountIds(value: unknown) {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+  return jsonStringArray(value)
 }
 
 function byPriority<T extends { account: { id: string; createdAt: Date } }>(items: T[], priorityAccountIds: string[]) {
@@ -108,7 +110,7 @@ export async function selectAccount(
     return target?.account ?? null
   }
 
-  const policy = await prisma.uploadRoutingPolicy.upsert({ where: { userId }, create: { userId, mode: 'most_available', priorityAccountIds: [] }, update: {} })
+  const policy = await prisma.uploadRoutingPolicy.upsert({ where: { userId }, create: { userId, mode: 'most_available', priorityAccountIds: '[]' }, update: {} })
   const mode = (['most_available', 'round_robin', 'priority'].includes(policy.mode) ? policy.mode : 'most_available') as RoutingMode
   const priorityAccountIds = normalizePriorityAccountIds(policy.priorityAccountIds)
 
@@ -223,9 +225,19 @@ export async function handleUpload(req: AuthRequest, res: Response, next: NextFu
         let uploadedMimeType = meta.mimeType
         if (account.provider === 's3') {
           const config = await getS3ConfigForAccount(account.id, req.user!.id)
+          /**
+           * Dashboard and API uploads address a file by id, but a complete
+           * storage backend also lets the caller preview it in a browser. Giving
+           * the row a key at creation time is what makes that possible: the
+           * listing can then mint a signed URL for it exactly like an object
+           * written through `PUT /objects/<key>`. The key is derived from the
+           * row id, so it is stable and cannot collide with the uploaded name.
+           */
           const provisionalFile = await prisma.file.create({
             data: { userId: req.user!.id, connectedAccountId: account.id, folderId, provider: 's3', providerFileId: 'pending', name: fileName, mimeType: meta.mimeType, sizeBytes: meta.sizeBytes, status: 'uploading' },
           })
+          const objectKey = buildUniqueObjectKey('uploads', fileName, provisionalFile.id)
+          await prisma.file.update({ where: { id: provisionalFile.id }, data: { objectKey } }).catch(() => undefined)
           s3FileId = provisionalFile.id
           // A unique key per attempt keeps any previous object readable.
           providerFileId = buildS3ObjectKey(config, req.user!.id, `${provisionalFile.id}-${randomUUID()}`, fileName)
@@ -270,7 +282,10 @@ export async function handleUpload(req: AuthRequest, res: Response, next: NextFu
           const file = await prisma.file.create({
             data: { userId: req.user!.id, connectedAccountId: account.id, folderId, provider: 'google_drive', providerFileId, name: uploadedName, mimeType: uploadedMimeType, sizeBytes: finalSize, status: 'active', availability: 'available', lastVerifiedAt: new Date(), uploadedBy: req.user!.id },
           })
-          completed.push({ ...file, sizeBytes: file.sizeBytes.toString() })
+          // Same reason as the S3 branch: a key is what a browser preview needs.
+          const objectKey = buildUniqueObjectKey('uploads', uploadedName, file.id)
+          const withKey = await prisma.file.update({ where: { id: file.id }, data: { objectKey } }).catch(() => file)
+          completed.push({ ...withKey, sizeBytes: withKey.sizeBytes.toString() })
         }
         logUpload('upload verified and registered', { sessionId: session.id, provider: account.provider, fileId: providerFileId })
         await prisma.uploadSession.update({ where: { id: session.id }, data: { status: 'completed', completedAt: new Date() } })

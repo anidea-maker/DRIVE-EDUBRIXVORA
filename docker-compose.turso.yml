@@ -1,0 +1,19 @@
+# Runs 9Drive against the hosted Turso database instead of the local SQLite file
+# created by docker-compose.yml.
+#
+#   # .env next to this file
+#   TURSO_DATABASE_URL="libsql://<database>-<org>.turso.io"
+#   TURSO_AUTH_TOKEN="<turso db tokens create <database>>"
+#
+#   docker compose -f docker-compose.yml -f docker-compose.turso.yml up -d --build
+#
+# The backend applies pending migrations on boot (`prisma migrate deploy`), so the
+# schema is created in Turso on the first start - no manual step.
+#
+# A single DATABASE_URL="libsql://...?authToken=..." also works; the two variables
+# above are recommended because the token never ends up in a printed URL.
+services:
+  backend:
+    environment:
+      TURSO_DATABASE_URL: "${TURSO_DATABASE_URL:-}"
+      TURSO_AUTH_TOKEN: "${TURSO_AUTH_TOKEN:-}"

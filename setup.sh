@@ -21,12 +21,29 @@ random_key() {
 }
 
 if [ ! -f "$backend_dir/.env" ]; then
-  printf "MySQL DATABASE_URL [mysql://root@localhost:3306/9drive]: "
+  echo "Database: press Enter for a local SQLite file (no account needed), or"
+  echo "paste your Turso URL (libsql://<database>-<org>.turso.io) to use the hosted one."
+  printf "TURSO_DATABASE_URL [file:./prisma/dev.db]: "
   IFS= read -r database_url
-  database_url=${database_url:-mysql://root@localhost:3306/9drive}
+  database_url=${database_url:-file:./prisma/dev.db}
+  turso_token=""
+  case "$database_url" in
+    libsql://*|https://*)
+      printf "TURSO_AUTH_TOKEN (turso db tokens create <database>): "
+      IFS= read -r turso_token
+      ;;
+  esac
 
   {
-    printf 'DATABASE_URL="%s"\n' "$database_url"
+    case "$database_url" in
+      libsql://*|https://*)
+        printf 'TURSO_DATABASE_URL="%s"\n' "$database_url"
+        printf 'TURSO_AUTH_TOKEN="%s"\n' "$turso_token"
+        ;;
+      *)
+        printf 'DATABASE_URL="%s"\n' "$database_url"
+        ;;
+    esac
     printf 'APP_PORT=4000\n'
     printf 'FRONTEND_URL="http://localhost:5173"\n'
     printf 'JWT_ACCESS_SECRET="%s"\n' "$(random_key)"
@@ -50,7 +67,7 @@ if [ ! -f "$frontend_dir/.env" ]; then
   echo "Created frontend/.env"
 fi
 
-(cd "$backend_dir" && npm install && npm run prisma:generate)
+(cd "$backend_dir" && npm install && npm run prisma:generate && npm run db:migrate:deploy)
 (cd "$frontend_dir" && npm install)
 
-echo "Setup complete. Run migrations with: cd backend && npm run prisma:migrate"
+echo "Setup complete. The schema is applied; start with: cd backend && npm run dev"

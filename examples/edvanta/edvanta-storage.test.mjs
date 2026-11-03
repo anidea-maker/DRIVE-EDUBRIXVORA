@@ -1,7 +1,7 @@
 /**
  * Mocked wire-format tests for the Edvanta server-side client.
  *
- * No network, no MySQL, no Google Drive and no S3 are used. A stubbed fetch
+ * No network, no database server, no Google Drive and no S3 are used. A stubbed fetch
  * returns canned EduBrixVora responses. Live integration must be verified with
  * real credentials using the checklist in ../../docs/EDVANTA-INTEGRATION.md.
  */

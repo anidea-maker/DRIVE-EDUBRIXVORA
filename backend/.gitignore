@@ -3,6 +3,8 @@ dist
 .env.local
 .env.*.local
 
-# Database TLS certificates (per environment)
-prisma/certs/*
-!prisma/certs/README.md
+# Local SQLite databases (dev.db is the default for `npm run dev`)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

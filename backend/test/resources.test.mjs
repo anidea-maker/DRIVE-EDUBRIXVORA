@@ -1,7 +1,7 @@
 /**
  * Registry, security and URL-signing tests.
  *
- * IMPORTANT: these are MOCKED tests. No Google Drive, S3, MySQL or HTTP server
+ * IMPORTANT: these are MOCKED tests. No Google Drive, S3, database server or HTTP server
  * is contacted. Live cloud integration needs real credentials and the manual
  * checks in docs/EDVANTA-INTEGRATION.md; nothing here claims to verify those.
  */
@@ -11,7 +11,7 @@ import { createRequire } from 'node:module'
 
 // config/env and @prisma/client are imported by some modules under test. These
 // are dummy values used only to construct a client - no connection is made.
-process.env.DATABASE_URL ||= 'mysql://test:test@127.0.0.1:3306/testdb'
+process.env.DATABASE_URL ||= 'file:./test/.tmp/test.db'
 process.env.JWT_ACCESS_SECRET ||= 'x'.repeat(40)
 process.env.TOKEN_ENCRYPTION_KEY ||= 'y'.repeat(40)
 process.env.SUPER_ADMIN_EMAILS = 'boss@example.com,second@example.com'

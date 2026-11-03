@@ -1,6 +1,7 @@
 import type { ProviderConfig } from '@prisma/client'
 import { prisma } from '../config/prisma.js'
 import { encryptText } from '../utils/crypto.js'
+import { toJsonArrayColumn } from '../utils/json-column.js'
 import {
   GOOGLE_CALLBACK_PATH,
   GOOGLE_CLIENT_ID_PATTERN,
@@ -93,7 +94,7 @@ async function main() {
           clientIdEncrypted: encryptText(clientId),
           clientSecretEncrypted: encryptText(clientSecret),
           redirectUri,
-          scopes,
+          scopes: toJsonArrayColumn(scopes),
           status: 'active',
         },
       })

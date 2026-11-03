@@ -49,11 +49,30 @@ test('a prefix namespaces every call, replacing the need for a bucket', async ()
   assert.equal(calls[0].init.headers['Content-Length'], '3')
 })
 
-test('put reports the etag and whether it created or overwrote', async () => {
-  const { fetchImpl } = recorder(() => json({ key: 'a.txt', sizeBytes: '5', etag: '"9b2cf5"', created: false }, { status: 200 }))
+test('put reports the checksum, etag and whether it created or overwrote', async () => {
+  const { fetchImpl } = recorder(() =>
+    json({ key: 'a.txt', sizeBytes: '5', checksum: '9b2cf5ee1f', etag: '"9b2cf5ee1f"', mimeType: 'text/plain', created: false }, { status: 200 }),
+  )
   const storage = createStorage({ endpoint: ENDPOINT, apiKey: 'k', fetchImpl })
   const result = await storage.put('a.txt', 'hello', { contentType: 'text/plain' })
-  assert.deepEqual(result, { key: 'a.txt', sizeBytes: '5', etag: '"9b2cf5"', created: false })
+  assert.deepEqual(result, {
+    key: 'a.txt',
+    sizeBytes: '5',
+    checksum: '9b2cf5ee1f',
+    etag: '"9b2cf5ee1f"',
+    mimeType: 'text/plain',
+    created: false,
+  })
+})
+
+test('put returns the namespaced key that later calls must use', async () => {
+  const { fetchImpl } = recorder(() => json({ key: 'shop/a.txt', sizeBytes: '5', checksum: 'abc123', created: true }, { status: 201 }))
+  const storage = createStorage({ endpoint: ENDPOINT, apiKey: 'k', prefix: 'shop', fetchImpl })
+  const result = await storage.put('a.txt', 'hello')
+  assert.equal(result.key, 'shop/a.txt')
+  // A server that reports only a checksum still yields a quoted ETag.
+  assert.equal(result.etag, '"abc123"')
+  assert.equal(result.mimeType, null)
 })
 
 test('put refuses a body whose length it cannot know', async () => {
@@ -154,4 +173,37 @@ test('an HTML answer (wrong endpoint) still reports the status', async () => {
 test('missing configuration fails loudly at construction', () => {
   assert.throws(() => createStorage({ endpoint: '', apiKey: 'k', fetchImpl: async () => json({}) }), /STORAGE_ENDPOINT/)
   assert.throws(() => createStorage({ endpoint: ENDPOINT, apiKey: '', fetchImpl: async () => json({}) }), /STORAGE_API_KEY/)
+})
+
+test('uploadFile goes through the file API and still returns browser URLs', async () => {
+  const { calls, fetchImpl } = recorder(() =>
+    json(
+      {
+        file: {
+          id: 'file-1',
+          name: 'hero.png',
+          key: 'uploads/file-1/hero.png',
+          sizeBytes: '3',
+          urls: {
+            content: 'https://host/api/v1/files/file-1/content',
+            download: 'https://host/api/v1/files/file-1/download',
+            preview: 'https://host/api/public/objects/uploads/file-1/hero.png?sig=abc',
+            signedDownload: 'https://host/api/public/objects/uploads/file-1/hero.png?sig=abc&download=1',
+            expiresAt: '2026-05-01T10:00:00.000Z',
+          },
+        },
+      },
+      { status: 201 },
+    ),
+  )
+  const storage = createStorage({ endpoint: ENDPOINT, apiKey: 'k', fetchImpl })
+
+  const file = await storage.uploadFile('hero.png', Buffer.from('abc'), { contentType: 'image/png' })
+  assert.equal(calls[0].url, `${ENDPOINT}/files/raw?name=hero.png&type=image%2Fpng`)
+  assert.equal(calls[0].init.method, 'POST')
+  assert.equal(calls[0].init.headers['Content-Type'], 'image/png')
+  // Flattened for templates, and the authenticated links are untouched.
+  assert.equal(file.previewUrl, 'https://host/api/public/objects/uploads/file-1/hero.png?sig=abc')
+  assert.match(file.downloadUrl, /download=1$/)
+  assert.equal(file.urls.download, 'https://host/api/v1/files/file-1/download')
 })

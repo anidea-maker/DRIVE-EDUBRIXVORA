@@ -9,9 +9,11 @@ backend/.env
 backend/.env.local
 backend/.env.*.local
 
-# Databases
+# Databases (local SQLite used by `npm run dev` and db:check)
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
 
 # Python helper bytecode
 __pycache__/

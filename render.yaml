@@ -7,8 +7,8 @@
 # commented block at the bottom - it needs ./backend + ./frontend images.)
 #
 # Fill in the dashboard (`sync: false`):
-#   DATABASE_URL       mysql://avnadmin:PASSWORD@HOST:PORT/defaultdb   (Aiven)
-#   DATABASE_CA_CERT   contents of ca.pem (PEM, base64, or a path)
+#   TURSO_DATABASE_URL libsql://<database>-<org>.turso.io   (Turso dashboard)
+#   TURSO_AUTH_TOKEN   token from `turso db tokens create <database>`
 #
 # JWT_ACCESS_SECRET / TOKEN_ENCRYPTION_KEY are generated once by Render. Keep
 # TOKEN_ENCRYPTION_KEY stable: changing it makes stored Google/S3 credentials
@@ -19,18 +19,18 @@ services:
     runtime: docker
     dockerContext: .
     dockerfilePath: ./Dockerfile
-    # Liveness only (no DB query) so a MySQL blip cannot restart the service.
+    # Liveness only (no DB query) so a database blip cannot restart the service.
     # Use /ready to check the database from a browser.
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
-      # Required. mysql://avnadmin:PASSWORD@HOST:PORT/defaultdb
-      - key: DATABASE_URL
+      # Required. Copy both from the Turso dashboard (or `turso db show <db> --url`
+      # and `turso db tokens create <db>`). The container applies pending migrations
+      # to Turso on boot, so a fresh database gets its schema automatically.
+      - key: TURSO_DATABASE_URL
         sync: false
-      # Required for Aiven/managed MySQL (paste ca.pem: PEM, base64, or a path).
-      # Turns into sslcert=certs/db-ca.pem&sslaccept=strict at runtime.
-      - key: DATABASE_CA_CERT
+      - key: TURSO_AUTH_TOKEN
         sync: false
       - key: JWT_ACCESS_SECRET
         generateValue: true
@@ -143,9 +143,9 @@ services:
 #    dockerfilePath: ./backend/Dockerfile
 #    healthCheckPath: /health
 #    envVars:
-#      - key: DATABASE_URL
+#      - key: TURSO_DATABASE_URL
 #        sync: false
-#      - key: DATABASE_CA_CERT
+#      - key: TURSO_AUTH_TOKEN
 #        sync: false
 #      - key: JWT_ACCESS_SECRET
 #        generateValue: true

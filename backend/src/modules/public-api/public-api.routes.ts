@@ -1,10 +1,13 @@
+import { randomUUID } from 'node:crypto'
 import { Router, type NextFunction, type Request, type Response } from 'express'
 import { google } from 'googleapis'
 import { z } from 'zod'
 import { env } from '../../config/env.js'
 import { prisma } from '../../config/prisma.js'
-import { requireApiKey, SCOPE_HEADER, type ApiKeyRequest } from '../../middleware/api-key.middleware.js'
-import { requireRole } from '../../middleware/role.middleware.js'
+import { requireActiveKeyOwner, requireApiKey, SCOPE_HEADER, type ApiKeyRequest } from '../../middleware/api-key.middleware.js'
+import { clampUrlTtl, objectUrls } from './object-urls.js'
+import { buildUniqueObjectKey } from './objects.shared.js'
+
 import { createAuditLog } from '../../utils/audit.js'
 import { hashToken, randomToken } from '../../utils/crypto.js'
 import { streamProviderFile } from '../files/stream-file.js'
@@ -30,6 +33,24 @@ function queryString(value: unknown) {
 }
 
 /**
+ * Adds the signed, keyless links to a serialized file.
+ *
+ * Shared by the listing, the single-file endpoint and the upload responses, so a
+ * caller sees one `urls` shape everywhere: list it, fetch it, or upload it and
+ * the same renderer works. Files with no object key (rows created before keys
+ * existed) keep the authenticated links only.
+ */
+function withBrowserUrls(req: ApiKeyRequest, base: ReturnType<typeof apiFile>, ttlSeconds: number) {
+  const key = base.key
+  if (!key) return base
+  const urls = objectUrls({ req, userId: req.user!.id, key, purpose: 'signed', apiKeyId: req.apiKey!.id, ttlSeconds })
+  return {
+    ...base,
+    urls: { ...base.urls, preview: urls.previewUrl, signedDownload: urls.downloadUrl, expiresAt: urls.expiresAt },
+  }
+}
+
+/**
  * Rewrites `{ file }` / `{ files }` response bodies into the documented API shape,
  * so the multipart upload (which is shared with the dashboard) answers with the
  * same fields - including download URLs - as every other endpoint here.
@@ -39,11 +60,14 @@ function withApiFileShape(req: Request, res: Response, next: NextFunction) {
   res.json = ((body: unknown) => {
     if (body && typeof body === 'object') {
       const payload = body as Record<string, unknown>
+      // `req` here is the API-key request; the shaper only runs on API routes.
+      const apiReq = req as ApiKeyRequest
+      const shape = (file: unknown) => withBrowserUrls(apiReq, apiFile(req, file as never), clampUrlTtl(undefined))
       if (Array.isArray(payload.files)) {
-        return json({ ...payload, files: payload.files.map((file) => apiFile(req, file as never)) })
+        return json({ ...payload, files: payload.files.map(shape) })
       }
       if (payload.file && typeof payload.file === 'object') {
-        return json({ ...payload, file: apiFile(req, payload.file as never) })
+        return json({ ...payload, file: shape(payload.file) })
       }
     }
     return json(body)
@@ -70,6 +94,17 @@ publicApiRouter.get(['/v1', '/v1/'], async (req, res) => {
     version: '1',
     baseUrl: `${base}/api/v1`,
     description: 'Store and serve files from 9Drive-connected storage (S3-compatible buckets and Google Drive). /resources adds the educational registry consumed by Edvanta.',
+    /**
+     * The shortest path from "a website needs storage" to working: the listing
+     * routes hand back browser-ready URLs, so a front end never sees the key.
+     */
+    quickstart: {
+      upload: 'PUT /api/v1/objects/<key> with the raw bytes, or POST /api/v1/files (multipart) for dashboard-visible files.',
+      list: 'GET /api/v1/objects?urls=signed -> objects[].urls.previewUrl / .downloadUrl are ready for <img>, <video> and <a>.',
+      preview: 'Use urls.previewUrl directly. Signed GET links support Range, ETag and 304, so video seeking works.',
+      download: 'Use urls.downloadUrl (same link with download=1) for a forced Save dialog.',
+      permanent: 'A link that does not expire: POST /api/v1/files/:id/share, revoke with DELETE.',
+    },
     auth: {
       type: 'bearer',
       header: 'Authorization: Bearer 9d_live_...',
@@ -91,7 +126,7 @@ publicApiRouter.get(['/v1', '/v1/'], async (req, res) => {
     },
     endpoints: [
       { method: 'GET', path: '/api/v1/me', scope: 'files:read', description: 'Identity, scopes and storage totals.' },
-      { method: 'GET', path: '/api/v1/files', scope: 'files:read', description: 'List files. Query: limit, cursor, folderId, root, q, kind, order.' },
+      { method: 'GET', path: '/api/v1/files', scope: 'files:read', description: 'List files. Query: limit, cursor, folderId, root, q, kind, order, urls=signed|api, expiresInSeconds. Returns previewUrl/downloadUrl for browsers by default.' },
       { method: 'POST', path: '/api/v1/files', scope: 'files:write', description: 'Upload one or more files as multipart/form-data.' },
       { method: 'POST', path: '/api/v1/files/raw', scope: 'files:write', description: 'Upload the request body as one file. Query: name, type, folderId.' },
       { method: 'GET', path: '/api/v1/files/:id', scope: 'files:read', description: 'One file and its URLs.' },
@@ -107,8 +142,8 @@ publicApiRouter.get(['/v1', '/v1/'], async (req, res) => {
       { method: 'GET', path: '/api/v1/objects/:key', scope: 'files:read', description: 'Object bytes. Range, ETag and If-None-Match supported.' },
       { method: 'HEAD', path: '/api/v1/objects/:key', scope: 'files:read', description: 'Object headers only: Content-Type, Content-Length, ETag, Last-Modified.' },
       { method: 'DELETE', path: '/api/v1/objects/:key', scope: 'files:delete', description: 'Deletes the object. Always 204, like S3.' },
-      { method: 'GET', path: '/api/v1/objects', scope: 'files:read', description: 'List/search objects. Query: prefix, delimiter, q, checksum, mimeType, max-keys, continuation-token. Checksum supports content-based duplicate detection.' },
-      { method: 'POST', path: '/api/v1/objects/sign', scope: 'files:read', description: 'Expiring signed URL for GET/HEAD/PUT, bound to the live API key row; revocation or scope removal invalidates it.' },
+      { method: 'GET', path: '/api/v1/objects', scope: 'files:read', description: 'List/search objects. Query: prefix, delimiter, q, checksum, mimeType, max-keys, continuation-token, urls=signed|api|none, expiresInSeconds. Each object carries ready-to-use urls. Checksum supports content-based duplicate detection.' },
+      { method: 'POST', path: '/api/v1/objects/sign', scope: 'files:read', description: 'Expiring signed URL for GET/HEAD/PUT, bound to the live API key row; revocation or scope removal invalidates it. Returns url and downloadUrl.' },
       { method: 'GET', path: '/api/v1/resources', scope: 'files:read', description: 'Paginated educational resource discovery. Query: q, category, subject, academicLevel, examType, provider, visibility, audience, limit, cursor, order.' },
       { method: 'POST', path: '/api/v1/resources', scope: 'files:write', description: 'Admin multipart upload with resourceMeta or plain metadata fields (title, category, subject, provider, clientRequestId). Retry-safe.' },
       { method: 'POST', path: '/api/v1/resources/upload', scope: 'files:write', description: 'Alias of POST /api/v1/resources for consumers that append /upload.' },
@@ -148,8 +183,8 @@ publicApiRouter.use('/v1/resources', resourceRouter)
 publicApiRouter.use('/resources', resourceRouter)
 
 /** Compatibility aliases for simple upload clients. */
-publicApiRouter.post('/v1/upload', requireApiKey('files:write'), requireRole('manage_resources'), uploadResourceHandler)
-publicApiRouter.post('/upload', requireApiKey('files:write'), requireRole('manage_resources'), uploadResourceHandler)
+publicApiRouter.post('/v1/upload', requireApiKey('files:write'), requireActiveKeyOwner(), uploadResourceHandler)
+publicApiRouter.post('/upload', requireApiKey('files:write'), requireActiveKeyOwner(), uploadResourceHandler)
 
 /** Public, redacted storage declaration. Mounted before the generic /v1 router. */
 async function sendStorageStatus(_req: Request, res: Response) {
@@ -164,7 +199,7 @@ publicApiRouter.get(['/storage-status', '/storage-status/'], sendStorageStatus)
 publicApiRouter.use('/v1', storageRouter)
 
 /** Legacy path from the first API version; kept so existing scripts keep working. */
-publicApiRouter.post('/v1/uploads', requireApiKey('files:write'), requireRole('manage_resources'), withApiFileShape, handleUpload)
+publicApiRouter.post('/v1/uploads', requireApiKey('files:write'), requireActiveKeyOwner(), withApiFileShape, handleUpload)
 
 storageRouter.get('/me', requireApiKey('files:read'), async (req: ApiKeyRequest, res, next) => {
   try {
@@ -274,6 +309,14 @@ const listQuerySchema = z.object({
   kind: z.string().optional(),
   order: z.enum(['newest', 'oldest', 'name', 'largest']).default('newest'),
   status: z.enum(['active', 'deleted']).default('active'),
+  /**
+   * `signed` (default) additionally returns `previewUrl`/`downloadUrl` that a
+   * browser can use directly - an <img>/<video> tag cannot send the API key.
+   * `api` returns only the authenticated `/api/v1/files/:id/...` links, which is
+   * all a server-side worker needs.
+   */
+  urls: z.enum(['signed', 'api']).default('signed'),
+  expiresInSeconds: z.coerce.number().int().min(30).max(604_800).optional(),
 })
 
 storageRouter.get('/files', requireApiKey('files:read'), async (req: ApiKeyRequest, res, next) => {
@@ -315,8 +358,29 @@ storageRouter.get('/files', requireApiKey('files:read'), async (req: ApiKeyReque
 
     const hasMore = rows.length > query.limit
     const page = hasMore ? rows.slice(0, query.limit) : rows
+
+    /**
+     * A file row can be addressed two ways: by its id (dashboard uploads, which
+     * have no key) or by its object key (writes through the object API). Browser
+     * URLs are minted with whichever applies; a file with neither stays on the
+     * authenticated links only.
+     */
+    const ttlSeconds = clampUrlTtl(query.expiresInSeconds)
+    /**
+     * `urls.content`/`urls.download` keep their documented meaning - the
+     * authenticated routes, which is what a server-side worker calls with the
+     * key. The browser-ready links are added alongside rather than replacing
+     * them: overwriting `download` would silently break every existing caller.
+     */
+    const files = page.map((file) => {
+      const base = apiFile(req, file)
+      return query.urls === 'api' ? base : withBrowserUrls(req, base, ttlSeconds)
+    })
+
     return res.json({
-      files: page.map((file) => apiFile(req, file)),
+      urls: query.urls,
+      urlExpiresInSeconds: query.urls === 'signed' ? ttlSeconds : null,
+      files,
       hasMore,
       nextCursor: hasMore ? page[page.length - 1]?.id ?? null : null,
     })
@@ -327,7 +391,7 @@ storageRouter.get('/files', requireApiKey('files:read'), async (req: ApiKeyReque
 
 // Multipart upload: same parser the dashboard uses, so routing, quota selection
 // and provider handling cannot behave differently between the two.
-storageRouter.post('/files', requireApiKey('files:write'), requireRole('manage_resources'), withApiFileShape, handleUpload)
+storageRouter.post('/files', requireApiKey('files:write'), requireActiveKeyOwner(), withApiFileShape, handleUpload)
 
 /**
  * Raw body upload: `curl --data-binary @photo.jpg`.
@@ -336,7 +400,7 @@ storageRouter.post('/files', requireApiKey('files:write'), requireRole('manage_r
  * the same as a small one. The size comes from Content-Length, because quota
  * routing has to pick an account *before* the bytes are read.
  */
-storageRouter.post('/files/raw', requireApiKey('files:write'), requireRole('manage_resources'), async (req: ApiKeyRequest, res, next) => {
+storageRouter.post('/files/raw', requireApiKey('files:write'), requireActiveKeyOwner(), async (req: ApiKeyRequest, res, next) => {
   try {
     if (req.body !== undefined && !Buffer.isBuffer(req.body)) {
       return res.status(400).json({
@@ -382,8 +446,25 @@ storageRouter.post('/files/raw', requireApiKey('files:write'), requireRole('mana
 
     if (account.provider === 's3') {
       const config = await getS3ConfigForAccount(account.id, req.user!.id)
+      const provisionalId = randomUUID()
       const provisional = await prisma.file.create({
-        data: { userId: req.user!.id, connectedAccountId: account.id, folderId: folderId ?? null, provider: 's3', providerFileId: '', name, mimeType, sizeBytes, status: 'uploading' },
+        data: {
+          userId: req.user!.id,
+          connectedAccountId: account.id,
+          folderId: folderId ?? null,
+          provider: 's3',
+          providerFileId: '',
+          name,
+          mimeType,
+          sizeBytes,
+          status: 'uploading',
+          // Set at creation, not after: a row without a key can never be given a
+          // browser preview URL by the listing, and this is the upload route most
+          // websites use. The key is derived from the row's own id, so it is
+          // stable and cannot collide with another upload of the same name.
+          objectKey: buildUniqueObjectKey('uploads', name, provisionalId),
+          id: provisionalId,
+        },
       })
       try {
         const key = buildS3ObjectKey(config, req.user!.id, provisional.id, name)
@@ -391,7 +472,7 @@ storageRouter.post('/files/raw', requireApiKey('files:write'), requireRole('mana
         const file = await prisma.file.update({ where: { id: provisional.id }, data: { providerFileId: key, status: 'active' }, include: FILE_INCLUDE })
         await prisma.uploadSession.update({ where: { id: session.id }, data: { status: 'completed', completedAt: new Date() } }).catch(() => undefined)
         await createAuditLog(req.user!.id, 'UPLOAD_FILE', 'file', file.id, { name: file.name, size: sizeBytes.toString(), source: 'api' })
-        res.status(201).json({ file: apiFile(req, file) })
+        res.status(201).json({ file: withBrowserUrls(req, apiFile(req, file), clampUrlTtl(undefined)) })
         syncS3Quota(account.id).catch(() => undefined)
         return
       } catch (error) {
@@ -418,6 +499,7 @@ storageRouter.post('/files/raw', requireApiKey('files:write'), requireRole('mana
         media: { mimeType, body: req as unknown as NodeJS.ReadableStream },
         fields: 'id,name,mimeType,size',
       })
+      const driveFileId = randomUUID()
       const file = await prisma.file.create({
         data: {
           userId: req.user!.id,
@@ -428,12 +510,15 @@ storageRouter.post('/files/raw', requireApiKey('files:write'), requireRole('mana
           name: uploaded.data.name ?? name,
           mimeType: uploaded.data.mimeType ?? mimeType,
           sizeBytes,
+          // Same reason as the bucket branch: a key is what a preview needs.
+          objectKey: buildUniqueObjectKey('uploads', uploaded.data.name ?? name, driveFileId),
+          id: driveFileId,
         },
         include: FILE_INCLUDE,
       })
       await prisma.uploadSession.update({ where: { id: session.id }, data: { status: 'completed', completedAt: new Date() } }).catch(() => undefined)
       await createAuditLog(req.user!.id, 'UPLOAD_FILE', 'file', file.id, { name: file.name, size: sizeBytes.toString(), source: 'api' })
-      res.status(201).json({ file: apiFile(req, file) })
+      res.status(201).json({ file: withBrowserUrls(req, apiFile(req, file), clampUrlTtl(undefined)) })
       syncQuotaInBackground(account.id, session.id)
       return
     } catch (error) {
@@ -463,7 +548,8 @@ storageRouter.get('/files/:id', requireApiKey('files:read'), async (req: ApiKeyR
       orderBy: { createdAt: 'desc' },
     })
     return res.json({
-      file: apiFile(req, file),
+      // Same shape the listing returns, so one renderer handles both.
+      file: withBrowserUrls(req, apiFile(req, file), clampUrlTtl(undefined)),
       share: share?.token ? { url: absoluteUrl(req, `/api/public/files/${share.token}/preview`), expiresAt: share.expiresAt?.toISOString() ?? null } : null,
     })
   } catch (error) {
@@ -497,7 +583,7 @@ storageRouter.get('/files/:id/download', requireApiKey('files:read'), async (req
   }
 })
 
-storageRouter.patch('/files/:id', requireApiKey('files:write'), requireRole('manage_resources'), async (req: ApiKeyRequest, res, next) => {
+storageRouter.patch('/files/:id', requireApiKey('files:write'), requireActiveKeyOwner(), async (req: ApiKeyRequest, res, next) => {
   try {
     const body = z.object({ name: z.string().trim().min(1).max(255).optional(), folderId: z.string().nullable().optional() }).parse(req.body)
     const file = await findOwnedFile(req)
@@ -525,7 +611,7 @@ storageRouter.patch('/files/:id', requireApiKey('files:write'), requireRole('man
   }
 })
 
-storageRouter.delete('/files/:id', requireApiKey('files:delete'), requireRole('manage_resources'), async (req: ApiKeyRequest, res, next) => {
+storageRouter.delete('/files/:id', requireApiKey('files:delete'), requireActiveKeyOwner(), async (req: ApiKeyRequest, res, next) => {
   try {
     const permanent = ['1', 'true'].includes(String(req.query.permanent ?? ''))
     const file = await findOwnedFile(req)
@@ -567,7 +653,7 @@ const shareSchema = z.object({ expiresInSeconds: z.coerce.number().int().min(60)
  * website: the site's HTML cannot carry an API key, but it can hold
  * `<img src="https://…/api/public/files/<token>/preview">`.
  */
-storageRouter.post('/files/:id/share', requireApiKey('files:write'), requireRole('manage_resources'), async (req: ApiKeyRequest, res, next) => {
+storageRouter.post('/files/:id/share', requireApiKey('files:write'), requireActiveKeyOwner(), async (req: ApiKeyRequest, res, next) => {
   try {
     const body = shareSchema.parse(req.body ?? {})
     const file = await findOwnedFile(req)
@@ -601,7 +687,7 @@ storageRouter.post('/files/:id/share', requireApiKey('files:write'), requireRole
   }
 })
 
-storageRouter.delete('/files/:id/share', requireApiKey('files:write'), requireRole('manage_resources'), async (req: ApiKeyRequest, res, next) => {
+storageRouter.delete('/files/:id/share', requireApiKey('files:write'), requireActiveKeyOwner(), async (req: ApiKeyRequest, res, next) => {
   try {
     await prisma.fileShare.updateMany({ where: { fileId: String(req.params.id), userId: req.user!.id, enabled: true }, data: { enabled: false } })
     return res.json({ status: 'ok' })
@@ -626,7 +712,7 @@ storageRouter.get('/folders', requireApiKey('files:read'), async (req: ApiKeyReq
   }
 })
 
-storageRouter.post('/folders', requireApiKey('files:write'), requireRole('manage_resources'), async (req: ApiKeyRequest, res, next) => {
+storageRouter.post('/folders', requireApiKey('files:write'), requireActiveKeyOwner(), async (req: ApiKeyRequest, res, next) => {
   try {
     const body = folderCreateSchema.parse(req.body)
     const folder = await createFolder(req.user!.id, body)

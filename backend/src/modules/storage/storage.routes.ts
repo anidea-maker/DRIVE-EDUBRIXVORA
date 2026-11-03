@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '../../config/prisma.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
 import { requireRole } from '../../middleware/role.middleware.js'
+import { jsonStringArray, toJsonArrayColumn } from '../../utils/json-column.js'
 
 export const storageRouter = Router()
 storageRouter.use(requireAuth)
@@ -19,13 +20,13 @@ const routingModes = ['most_available', 'round_robin', 'priority'] as const
 const routingPolicySchema = z.object({ mode: z.enum(routingModes), priorityAccountIds: z.array(z.string().min(1)).max(100).optional() })
 
 function normalizePriorityAccountIds(value: unknown) {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+  return jsonStringArray(value)
 }
 
 async function getOrCreateRoutingPolicy(userId: string) {
   return prisma.uploadRoutingPolicy.upsert({
     where: { userId },
-    create: { userId, mode: 'most_available', priorityAccountIds: [] },
+    create: { userId, mode: 'most_available', priorityAccountIds: '[]' },
     update: {},
   })
 }
@@ -79,8 +80,8 @@ storageRouter.patch('/routing-policy', async (req: AuthRequest, res, next) => {
     const priorityAccountIds = accountIds.filter((id) => validIds.has(id))
     const policy = await prisma.uploadRoutingPolicy.upsert({
       where: { userId: req.user!.id },
-      create: { userId: req.user!.id, mode: body.mode, priorityAccountIds, roundRobinCursor: 0 },
-      update: { mode: body.mode, priorityAccountIds, ...(body.mode !== 'round_robin' ? { roundRobinCursor: 0 } : {}) },
+      create: { userId: req.user!.id, mode: body.mode, priorityAccountIds: toJsonArrayColumn(priorityAccountIds), roundRobinCursor: 0 },
+      update: { mode: body.mode, priorityAccountIds: toJsonArrayColumn(priorityAccountIds), ...(body.mode !== 'round_robin' ? { roundRobinCursor: 0 } : {}) },
     })
     return res.json({ policy: { id: policy.id, mode: policy.mode, priorityAccountIds: normalizePriorityAccountIds(policy.priorityAccountIds), roundRobinCursor: policy.roundRobinCursor } })
   } catch (error) {
@@ -90,6 +91,8 @@ storageRouter.patch('/routing-policy', async (req: AuthRequest, res, next) => {
 
 storageRouter.get('/breakdown', async (req: AuthRequest, res, next) => {
   try {
+    // Plain SQLite dialect: no backticked identifiers, and the CASE expression is
+    // repeated in GROUP BY because SQLite does not resolve an output alias there.
     const rows = await prisma.$queryRaw<BreakdownRow[]>`
       SELECT
         CASE
@@ -100,7 +103,12 @@ storageRouter.get('/breakdown', async (req: AuthRequest, res, next) => {
         COALESCE(SUM(size_bytes), 0) AS bytes
       FROM files
       WHERE user_id = ${req.user!.id} AND status = 'active'
-      GROUP BY kind
+      GROUP BY
+        CASE
+          WHEN mime_type LIKE 'image/%' THEN 'photo'
+          WHEN mime_type LIKE 'video/%' THEN 'video'
+          ELSE 'document'
+        END
     `
     const breakdown = { photo: '0', video: '0', document: '0' }
     for (const row of rows) {

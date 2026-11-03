@@ -3,9 +3,9 @@ name: typecheck
 # Why this exists: a Prisma `groupBy` call compiled locally against a hand-written
 # stub but failed on the deploy host with
 #   src/app.ts(192,57): error TS2345: Argument of type '{ by: [...]; _count: {...} }'
-# and the whole deploy stopped. `prisma generate` needs network access, so the only
-# place that can run the *real* generated types is CI. Run it on every push instead
-# of finding out from a failed build.
+# and the whole deploy stopped. CI is the only place that runs the *real* generated
+# types, so it does that on every push. The schema is SQLite (Turso/libSQL), so the
+# migrations apply to a plain file here - no secrets, no hosted database.
 on:
   push:
     branches: ['**']
@@ -27,20 +27,34 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
+      # `tsc` needs the generated client, and the client is no longer produced by a
+      # postinstall hook, so generate first. Nothing reaches the network: the client
+      # uses the WASM query compiler, not a downloaded engine.
       - name: Generate the Prisma client
         run: npx prisma generate
         env:
-          DATABASE_URL: mysql://user:pass@localhost:3306/db
-      - name: Typecheck
-        run: npx tsc --noEmit
-        env:
-          DATABASE_URL: mysql://user:pass@localhost:3306/db
-          JWT_ACCESS_SECRET: ci-only-secret-at-least-32-characters-long
-          TOKEN_ENCRYPTION_KEY: ci-only-key-at-least-32-characters-long
+          DATABASE_URL: file:./prisma/ci.db
       - name: Build
         run: npm run build
         env:
-          DATABASE_URL: mysql://user:pass@localhost:3306/db
+          DATABASE_URL: file:./prisma/ci.db
+          JWT_ACCESS_SECRET: ci-only-secret-at-least-32-characters-long
+          TOKEN_ENCRYPTION_KEY: ci-only-key-at-least-32-characters-long
+      - name: Typecheck against the generated client
+        run: npx tsc --noEmit
+        env:
+          DATABASE_URL: file:./prisma/ci.db
+          JWT_ACCESS_SECRET: ci-only-secret-at-least-32-characters-long
+          TOKEN_ENCRYPTION_KEY: ci-only-key-at-least-32-characters-long
+      # The real proof: apply the SQLite migrations and run the mocked/e2e suites.
+      - name: Apply migrations to a throwaway SQLite database
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: file:./prisma/ci.db
+      - name: Backend tests
+        run: node --test test/*.test.mjs
+        env:
+          DATABASE_URL: file:./prisma/ci.db
           JWT_ACCESS_SECRET: ci-only-secret-at-least-32-characters-long
           TOKEN_ENCRYPTION_KEY: ci-only-key-at-least-32-characters-long
 
@@ -60,3 +74,7 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm run build
+      # Error-path tests: the messages a failed request produces. They bundle
+      # `src/lib/api.ts` with the app's own alias, so they must run after `npm ci`.
+      - name: Frontend tests
+        run: node --test test/*.test.mjs

@@ -1,6 +1,5 @@
 import dotenv from 'dotenv'
 import path from 'node:path'
-import { applyDatabaseCaCert } from './database-ca.js'
 
 let loaded = false
 
@@ -12,8 +11,9 @@ let loaded = false
  * back to the default `.env` lookup in the cwd. Existing environment variables
  * always win, which keeps Docker/PM2/PaaS secrets authoritative.
  *
- * Afterwards, an inline `DATABASE_CA_CERT` (PEM/base64) is materialized into
- * `prisma/certs/db-ca.pem` and wired into `DATABASE_URL` for verified TLS.
+ * Turso needs no certificate handling: @libsql/client talks HTTPS/WSS with the
+ * auth token, so the old `DATABASE_CA_CERT` -> `sslcert=` rewriting (which existed
+ * only for Aiven's managed MySQL) is gone.
  */
 export function loadEnvFiles(): void {
   if (loaded) return
@@ -21,5 +21,4 @@ export function loadEnvFiles(): void {
 
   dotenv.config({ path: path.resolve(__dirname, '..', '..', '.env'), quiet: true })
   dotenv.config({ quiet: true })
-  applyDatabaseCaCert()
 }

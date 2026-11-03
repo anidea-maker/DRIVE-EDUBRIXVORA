@@ -4,6 +4,7 @@ import { prisma } from '../config/prisma.js'
 import { hashToken } from '../utils/crypto.js'
 import { grantsScope, normalizeScopes, type ApiScope } from '../modules/public-api/scopes.js'
 import { takeApiKeyToken } from '../modules/public-api/rate-limit.js'
+import { canManageResources, effectiveRole, isActive } from '../modules/auth/roles.js'
 
 export type ApiKeyRequest = Request & {
   user?: { id: string; sessionId: string }
@@ -117,6 +118,39 @@ export function requireApiKey(scope: ApiScope | ApiScope[]) {
       const stale = !apiKey.lastUsedAt || Date.now() - apiKey.lastUsedAt.getTime() > 60_000
       if (stale) await prisma.apiKey.update({ where: { id: apiKey.id }, data: { lastUsedAt: new Date() } }).catch(() => undefined)
 
+      return next()
+    } catch (error) {
+      return next(error)
+    }
+  }
+}
+
+/**
+ * Extra gate for API-key routes that can spend an account's storage or change it.
+ *
+ * Key rows are only creatable by an account that manages resources, but a key
+ * outlives a demotion: a student promoted for a week, then demoted, would keep an
+ * active key forever. This re-reads the owner from the database on each write so
+ * a demoted or deactivated account loses its keys immediately, rather than at
+ * the next manual revocation. Read routes skip it - one query per download adds
+ * up, and a read-only key cannot damage anything.
+ */
+export function requireActiveKeyOwner() {
+  return async (req: ApiKeyRequest, res: Response, next: NextFunction) => {
+    try {
+      const userId = req.user?.id
+      if (!userId) return res.status(401).json({ code: 'AUTH_REQUIRED', message: 'Sign in or send a valid API key.' })
+      const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, role: true, status: true } })
+      if (!user || !isActive(user)) {
+        return res.status(403).json({ code: 'ACCOUNT_DISABLED', message: 'The account that owns this API key is not active. Re-enable the account or use a different key.' })
+      }
+      if (!canManageResources(effectiveRole(user))) {
+        return res.status(403).json({
+          code: 'ROLE_FORBIDDEN',
+          message: 'The account that owns this API key may no longer manage storage. Restore its administrator role to use this key for writes.',
+          requiredPermission: 'manage_resources',
+        })
+      }
       return next()
     } catch (error) {
       return next(error)

@@ -14,7 +14,7 @@
  * HTTP, so a "201 Created" here means the object really exists at the provider
  * and was really confirmed there.
  *
- * No Google Drive, no cloud bucket and no MySQL are contacted.
+ * No Google Drive, no cloud bucket and no database server are contacted.
  */
 import test, { after, before, describe } from 'node:test'
 import assert from 'node:assert/strict'
@@ -26,7 +26,7 @@ import { createFakePrisma } from './helpers/fake-prisma.mjs'
 import { startFakeS3 } from './helpers/fake-s3.mjs'
 
 process.env.NODE_ENV = 'test'
-process.env.DATABASE_URL ||= 'mysql://test:test@127.0.0.1:3306/testdb'
+process.env.DATABASE_URL ||= 'file:./test/.tmp/test.db'
 process.env.JWT_ACCESS_SECRET ||= 'j'.repeat(40)
 process.env.TOKEN_ENCRYPTION_KEY ||= 'k'.repeat(40)
 process.env.FRONTEND_URL = 'http://localhost:5173'
@@ -487,6 +487,122 @@ describe('object API: upload, verify, read, list, delete', () => {
     assert.equal((await tampered.json()).code, 'SIGNED_URL_INVALID')
   })
 
+  test('a website can upload, list, preview and download with no key in the browser', async () => {
+    // The exact sequence another site performs: write bytes, list what it wrote,
+    // then hand the resulting URLs straight to the browser.
+    const body = 'the quick brown fox'
+    const upload = await getJson('/api/v1/objects/site/blog/2026/fox.txt', {
+      method: 'PUT',
+      headers: { ...auth(KEYS.full), 'Content-Type': 'text/plain' },
+      body,
+    })
+    assert.equal(upload.status, 201)
+
+    const listed = await getJson('/api/v1/objects?prefix=site/blog/', { headers: auth(KEYS.full) })
+    assert.equal(listed.status, 200)
+    assert.equal(listed.body.urls, 'signed', 'listings default to browser-usable URLs')
+    const entry = listed.body.objects.find((object) => object.key === 'site/blog/2026/fox.txt')
+    assert.ok(entry, 'the object just written appears in the listing')
+    assert.ok(entry.urls?.previewUrl?.includes('sig='), 'the preview URL carries its own signature')
+    assert.ok(entry.urls?.downloadUrl?.includes('download=1'), 'the download URL forces a Save dialog')
+    assert.equal(entry.urls?.expiresAt, new Date(entry.urls.expiresAt).toISOString())
+
+    // --- Preview: no Authorization header, exactly like an <img>/<video> tag ---
+    const preview = await fetch(entry.urls.previewUrl)
+    assert.equal(preview.status, 200)
+    assert.equal(await preview.text(), body)
+    assert.equal(preview.headers.get('content-type'), 'text/plain')
+    assert.equal(preview.headers.get('x-preview-mode'), 'inline')
+    assert.equal(preview.headers.get('accept-ranges'), 'bytes')
+
+    // --- Video seeking: a Range request on the same URL returns a 206 slice ----
+    const range = await fetch(entry.urls.previewUrl, { headers: { Range: 'bytes=4-8' } })
+    assert.equal(range.status, 206)
+    assert.equal(await range.text(), 'quick')
+
+    // --- Download: same link plus the attachment flag --------------------------
+    const download = await fetch(entry.urls.downloadUrl)
+    assert.equal(download.status, 200)
+    assert.equal(await download.text(), body)
+    assert.match(download.headers.get('content-disposition') ?? '', /^attachment/)
+    assert.equal(download.headers.get('x-preview-mode'), 'download')
+
+    // --- The signed URLs expire, and a short TTL is honoured -------------------
+    const shortLived = await getJson('/api/v1/objects?prefix=site/blog/&expiresInSeconds=40', { headers: auth(KEYS.full) })
+    assert.equal(shortLived.body.urlExpiresInSeconds, 40)
+    const expiresAt = new Date(shortLived.body.objects[0].urls.expiresAt).getTime()
+    assert.ok(expiresAt - Date.now() <= 40_000, 'the link must not outlive the requested TTL')
+
+    // --- A caller that wants only authenticated links can ask for them ---------
+    const apiOnly = await getJson('/api/v1/objects?prefix=site/blog/&urls=api', { headers: auth(KEYS.full) })
+    assert.equal(apiOnly.body.objects[0].urls.expiresAt, null)
+    assert.equal(new URL(apiOnly.body.objects[0].urls.previewUrl).pathname, '/api/v1/objects/site/blog/2026/fox.txt')
+
+    // --- urlUrls=none leaves the payload untouched -----------------------------
+    const bare = await getJson('/api/v1/objects?prefix=site/blog/&urls=none', { headers: auth(KEYS.full) })
+    assert.equal(bare.body.objects[0].urls, undefined)
+  })
+
+  test('a preview URL cannot be replayed against a different object', async () => {
+    await getJson('/api/v1/objects/site/b/other.txt', {
+      method: 'PUT',
+      headers: { ...auth(KEYS.full), 'Content-Type': 'text/plain' },
+      body: 'other bytes',
+    })
+    const listed = await getJson('/api/v1/objects?prefix=site/b/', { headers: auth(KEYS.full) })
+    const previewUrl = listed.body.objects.find((object) => object.key === 'site/b/other.txt').urls.previewUrl
+
+    // Swap the key in the path, keep the signature: the HMAC covers the key.
+    const forged = previewUrl.replace('/site/b/other.txt', '/site/blog/2026/fox.txt')
+    const response = await fetch(forged)
+    assert.equal(response.status, 403)
+    assert.equal((await response.json()).code, 'SIGNED_URL_INVALID')
+  })
+
+  test('the file listing also returns browser URLs for object-backed files', async () => {
+    const listed = await getJson('/api/v1/files?q=fox&urls=signed', { headers: auth(KEYS.full) })
+    assert.equal(listed.status, 200)
+    assert.equal(listed.body.urls, 'signed')
+    const file = listed.body.files.find((candidate) => candidate.key === 'site/blog/2026/fox.txt')
+    assert.ok(file, 'the object is visible through the file API too')
+    assert.ok(file.urls.preview?.includes('sig='))
+    assert.ok(file.urls.signedDownload?.includes('download=1'))
+
+    /**
+     * The documented authenticated links must not be repurposed by the signed
+     * ones: `urls.download` stayed `/api/v1/files/:id/download` for every caller
+     * that already reads it, so the signed variant gets its own field.
+     */
+    assert.match(file.urls.content, /\/api\/v1\/files\/[^/]+\/content$/)
+    assert.match(file.urls.download, /\/api\/v1\/files\/[^/]+\/download$/)
+
+    const preview = await fetch(file.urls.preview)
+    assert.equal(preview.status, 200)
+    assert.equal(await preview.text(), 'the quick brown fox')
+  })
+
+  test('a demoted account cannot keep writing with an old key', async () => {
+    const owner = prisma._store.user.find((user) => user.id === 'user-1')
+    const originalRole = owner.role
+    owner.role = 'student'
+    try {
+      const upload = await getJson('/api/v1/objects/site/c/demoted.txt', {
+        method: 'PUT',
+        headers: { ...auth(KEYS.full), 'Content-Type': 'text/plain' },
+        body: 'nope',
+      })
+      assert.equal(upload.status, 403)
+      assert.equal(upload.body.code, 'ROLE_FORBIDDEN')
+
+      // Reading is unaffected: a read-only key cannot damage anything, and one
+      // extra query per download would cost more than it protects.
+      const read = await getJson('/api/v1/objects?prefix=site/blog/', { headers: auth(KEYS.full) })
+      assert.equal(read.status, 200)
+    } finally {
+      owner.role = originalRole
+    }
+  })
+
   test('a read-only key cannot sign a PUT link', async () => {
     const { status, body } = await getJson('/api/v1/objects/sign', {
       method: 'POST',
@@ -602,6 +718,24 @@ describe('file API: upload, metadata, download, delete', () => {
     assert.ok(body.file.urls.content.endsWith(`/api/v1/files/${fileId}/content`))
   })
 
+  test('a raw upload is previewable without the key', async () => {
+    const uploaded = await getJson('/api/v1/files/raw?name=raw.txt&type=text/plain', {
+      method: 'POST',
+      headers: { ...auth(KEYS.full), 'Content-Type': 'text/plain' },
+      body: 'raw bytes here',
+    })
+    assert.equal(uploaded.status, 201)
+    // The response already carries the browser links, so an upload endpoint does
+    // not need a follow-up listing just to render the result.
+    const file = uploaded.body.file
+    assert.match(file.key ?? '', /^uploads\/[^/]+\/raw\.txt$/)
+    assert.ok(file.urls.preview.includes('sig='))
+
+    const preview = await fetch(file.urls.preview)
+    assert.equal(preview.status, 200)
+    assert.equal(await preview.text(), 'raw bytes here')
+  })
+
   test('a multipart upload is accepted and routed the same way', async () => {
     const form = new FormData()
     // `sizeBytes` must precede the file part: the provider is chosen before the
@@ -624,6 +758,36 @@ describe('file API: upload, metadata, download, delete', () => {
     assert.equal(body.file.provider, 's3')
   })
 
+  test('a multipart upload is previewable: the file gets a key and a signed URL', async () => {
+    const form = new FormData()
+    form.append('sizeBytes', '9')
+    form.append('fileName', 'preview.png')
+    form.append('mimeType', 'image/png')
+    form.append('file', new Blob(['PNG-BYTES'], { type: 'image/png' }), 'preview.png')
+
+    const uploaded = await getJson('/api/v1/files', { method: 'POST', headers: auth(KEYS.full), body: form })
+    assert.equal(uploaded.status, 201)
+    const id = uploaded.body.file.id
+
+    // The row must carry an object key, or listings can never mint a URL for it.
+    const stored = prisma._store.file.find((row) => row.id === id)
+    assert.match(stored.objectKey ?? '', /^uploads\/[^/]+\/preview\.png$/)
+
+    const listed = await getJson('/api/v1/files?q=preview.png', { headers: auth(KEYS.full) })
+    const file = listed.body.files.find((candidate) => candidate.id === id)
+    assert.ok(file.urls.preview.includes('sig='), 'a dashboard upload gets a keyless preview URL too')
+    assert.ok(file.urls.signedDownload.includes('download=1'))
+
+    // And it actually streams without the key, as <img src> would.
+    const preview = await fetch(file.urls.preview)
+    assert.equal(preview.status, 200)
+    assert.equal(preview.headers.get('content-type'), 'image/png')
+    assert.equal(await preview.text(), 'PNG-BYTES')
+
+    // An upload response reports the file once, not once per branch.
+    assert.equal(uploaded.body.file.id, id)
+  })
+
   test('GET /api/v1/files lists files and GET /api/v1/files/:id returns one', async () => {
     const list = await getJson('/api/v1/files?limit=10', { headers: auth(KEYS.full) })
     assert.equal(list.status, 200)
@@ -634,6 +798,20 @@ describe('file API: upload, metadata, download, delete', () => {
     assert.equal(one.body.file.id, fileId)
     assert.equal(one.body.file.name, 'syllabus.pdf')
     assert.equal(one.body.share, null)
+  })
+
+  test('GET /api/v1/files/:id returns the same urls shape as the listing', async () => {
+    const one = await getJson(`/api/v1/files/${fileId}`, { headers: auth(KEYS.full) })
+    assert.equal(one.status, 200)
+    // A caller that lists and then fetches one file must not need two renderers.
+    assert.ok(one.body.file.urls.preview.includes('sig='))
+    assert.ok(one.body.file.urls.signedDownload.includes('download=1'))
+    assert.match(one.body.file.urls.content, /\/content$/)
+    assert.match(one.body.file.urls.download, /\/download$/)
+
+    const preview = await fetch(one.body.file.urls.preview)
+    assert.equal(preview.status, 200)
+    assert.equal(await preview.text(), '%PDF-1.4 e2e syllabus')
   })
 
   test('GET /api/v1/files/:id/content streams the bytes back', async () => {

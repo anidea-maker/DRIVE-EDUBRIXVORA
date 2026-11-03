@@ -10,7 +10,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-4f46e5" /></a>
   <img alt="Node.js 20+" src="https://img.shields.io/badge/node-20%2B-339933?logo=node.js&logoColor=white" />
-  <img alt="MySQL 8+" src="https://img.shields.io/badge/mysql-8%2B-4479A1?logo=mysql&logoColor=white" />
+  <img alt="Turso" src="https://img.shields.io/badge/turso-libsql-1EBCA1?logo=turso&logoColor=white" />
   <img alt="Docker ready" src="https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white" />
   <a href="https://9drive.zenhosta.com"><img alt="Live preview" src="https://img.shields.io/badge/live-preview-6366f1" /></a>
 </p>
@@ -91,7 +91,8 @@ Try the live preview at **[9drive.zenhosta.com](https://9drive.zenhosta.com)**.
 **For developers**
 - A storage API at `/api/v1` so another website can use 9Drive as its file store: upload, list, download, rename, delete, and mint public URLs.
 - S3-style objects - `PUT/GET/HEAD/DELETE /api/v1/objects/<any/key.png>`, list by `prefix` + `delimiter`, quoted `ETag`s, and expiring signed URLs for browsers.
-- A copy-paste client for the consuming site in [`examples/other-website`](examples/other-website): two environment variables, no SDK. Keys are scoped (`files:read`, `files:write`, `files:delete`), shown once, stored hashed, and revocable.
+- Listings return ready-to-use `previewUrl` / `downloadUrl` per object, so a third-party site renders images and video straight from `<img src>` with no API key in the browser.
+- A copy-paste client for the consuming site in [`examples/other-website`](examples/other-website): two environment variables, no SDK, and `demo.mjs` to prove upload → list → preview → download against your deployment. Keys are scoped (`files:read`, `files:write`, `files:delete`), shown once, stored hashed, and revocable.
 - Any origin may call it with a key. Full reference in [docs/API.md](docs/API.md), plus copy-paste examples in **API Management**.
 
 **Accounts and admin**
@@ -105,7 +106,7 @@ Pick the option that suits you. Docker is the easiest.
 
 ### Option A: Docker (recommended)
 
-You only need Docker. MySQL is included.
+You only need Docker. A local SQLite database is included - no account, no extra container.
 
 ```bash
 git clone https://github.com/zenhosta/9drive.git
@@ -118,32 +119,33 @@ docker compose up -d --build
 Then open **http://localhost:5173** and create an account. 🎉
 
 What happens behind the scenes:
+- The database lives in the `sqlite_data` Docker volume (one SQLite file).
 - The backend runs the database migrations on every start, so updating an existing install keeps your data.
+- To use the hosted Turso database instead, add `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` to `.env` and start with `docker compose -f docker-compose.yml -f docker-compose.turso.yml up -d --build`.
 - If `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env` are real values, the Google config is saved automatically. If they are blank, the app still starts and you can add them later in **Settings → Google Credentials**.
 
 | Service  | URL                     |
 | -------- | ----------------------- |
 | Frontend | http://localhost:5173   |
 | Backend  | http://localhost:4000   |
-| MySQL    | localhost:3306          |
 
 <details>
 <summary><b>Useful Docker commands</b></summary>
 
 ```bash
-docker compose logs -f backend      # backend logs (also: frontend, mysql)
+docker compose logs -f backend      # backend logs (also: frontend)
 docker compose exec backend npm run seed:google-config   # re-save Google OAuth config from .env
 docker compose down                 # stop
-docker compose down -v              # stop and delete the database volume
+docker compose down -v              # stop and delete the database volume (your data)
 ```
 
 </details>
 
 ### Option B: Run locally (for development)
 
-You need **Node.js 20+**, **npm**, and **MySQL 8+** running on your machine.
+You need **Node.js 20+** and **npm**. No database server: development uses a local SQLite file unless you point it at Turso.
 
-**1. Run the setup script.** It writes `backend/.env` and `frontend/.env` with secure random keys, installs dependencies, and generates the Prisma client.
+**1. Run the setup script.** It writes `backend/.env` and `frontend/.env` with secure random keys, installs dependencies, generates the Prisma client and applies the schema.
 
 ```bash
 # Linux / macOS
@@ -155,13 +157,12 @@ bash ./setup.sh
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-Enter your MySQL URL when asked (default `mysql://root@localhost:3306/9drive`). You can leave the Google credentials empty for now.
+Press **Enter** for a local database file, or paste a Turso URL (`libsql://…`, plus its token) to develop against the hosted database. You can leave the Google credentials empty for now.
 
-**2. Create the tables and start both apps** in two terminals:
+**2. Start both apps** in two terminals (the setup script already created the tables):
 
 ```bash
 cd backend
-npm run prisma:migrate
 npm run dev          # http://localhost:4000
 ```
 
@@ -176,13 +177,12 @@ npm run dev          # http://localhost:5173
 ```bash
 cd backend && npm install
 cd ../frontend && npm install
-mysql -u root -e "CREATE DATABASE IF NOT EXISTS 9drive;"
 ```
 
-Create `backend/.env` (or run `cd backend && npm run env:setup` to have it written for you, then edit `DATABASE_URL`):
+Create `backend/.env` (or run `cd backend && npm run env:setup` to have it written for you). The default is a local SQLite file; replace it with `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` for the hosted database:
 
 ```env
-DATABASE_URL="mysql://root@localhost:3306/9drive"
+DATABASE_URL="file:./prisma/dev.db"
 APP_PORT=4000
 FRONTEND_URL="http://localhost:5173"
 JWT_ACCESS_SECRET="change-this-jwt-secret-at-least-32-chars"
@@ -220,7 +220,7 @@ Note: `VITE_API_URL=http://localhost:4000` from older instructions still works (
 rewritten to `/api`), but it is no longer the recommended value — it makes the browser
 call a different origin, which needs CORS to line up.
 
-Then run `npm run prisma:migrate` in `backend/` and start both dev servers as shown above.
+Then run `npm run db:migrate:deploy` in `backend/` (creates/updates the schema) and start both dev servers as shown above.
 
 </details>
 
@@ -259,7 +259,7 @@ Google sign-in and Drive access need a free OAuth client from **Google Cloud Con
    - **In the app (easiest):** log in, open **Settings → Google Credentials**, paste the Client ID, Client Secret, and Redirect URI, then click **Save Configuration**.
    - **From the command line:** put `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` in `backend/.env` and run `cd backend && npm run seed:google-config`. With Docker, use `docker compose exec backend npm run seed:google-config`.
 
-Either way, the credentials are encrypted and stored in MySQL as one global config. Google sign-in uses it too.
+Either way, the credentials are encrypted and stored in the database as one global config. Google sign-in uses it too.
 
 </details>
 
@@ -270,8 +270,8 @@ Either way, the credentials are encrypted and stored in MySQL as one global conf
 
 | Variable | What it does |
 | --- | --- |
-| `DATABASE_URL` | MySQL connection string. For managed MySQL use `sslaccept` (not `ssl-mode`) as described above. |
-| `DATABASE_CA_CERT` | Optional. Provider CA certificate as PEM text, base64, or a file path. Materialized to `prisma/certs/db-ca.pem` and applied as `sslcert` + `sslaccept=strict`. |
+| `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | The Turso database (`libsql://<database>-<org>.turso.io`) and its token (`turso db tokens create <database>`). |
+| `DATABASE_URL` | Alternative to the pair above: one `libsql://…?authToken=…` URL, or `file:./prisma/dev.db` for local development. A leftover `mysql://` value stops startup with instructions. |
 | `APP_PORT` | Backend port (default `4000`). |
 | `FRONTEND_URL` | The frontend's URL. CORS only allows this origin. |
 | `JWT_ACCESS_SECRET` | Secret for signing access tokens. At least 32 characters, random. |
@@ -317,46 +317,58 @@ A variable that exists on the service but has an **empty value** is reported as 
 </details>
 
 <details>
-<summary><b>Hosted MySQL (Aiven, PlanetScale, RDS, Azure …)</b></summary>
+<summary><b>Turso (hosted libSQL) and moving an existing Aiven database</b></summary>
 
-Point `DATABASE_URL` in `backend/.env` at the service and keep everything else the same:
-
-```env
-DATABASE_URL="mysql://avnadmin:PASSWORD@mysql-xxxx.y.aivencloud.com:12299/defaultdb?sslaccept=accept_invalid_certs"
-```
-
-Three things trip people up:
-
-1. **TLS.** Prisma's MySQL connector has no `ssl-mode` / `sslmode` parameter, so Aiven's copy-paste string (`?ssl-mode=REQUIRED`) is *ignored* and the connection ends up **unencrypted**. Ask for TLS the Prisma way:
-   - `?sslaccept=accept_invalid_certs` — encrypted, certificate not verified. Fine to get started.
-   - `?sslcert=certs/aiven-ca.pem&sslaccept=strict` — encrypted **and** verified. Download the CA from the provider (Aiven: *Service page → CA certificate*) to `backend/prisma/certs/aiven-ca.pem`; `sslcert` paths resolve relative to `backend/prisma/`.
-
-   On a platform that only lets you set environment variables (Render, Railway, Fly, PM2, Docker), skip the file entirely and put the certificate in `DATABASE_CA_CERT` — PEM text, base64, or a path:
-
-   ```env
-   DATABASE_CA_CERT="-----BEGIN CERTIFICATE-----\nMIID...\n-----END CERTIFICATE-----"
-   ```
-
-   The backend writes it to `prisma/certs/db-ca.pem` and upgrades `DATABASE_URL` to `sslcert=certs/db-ca.pem&sslaccept=strict` on boot. `npm run db:check` prints `TLS  encrypted (…)` once the connection really is encrypted.
-2. **Migrations.** Managed databases usually cannot create the temporary *shadow database* that `prisma migrate dev` needs, so apply the committed migrations instead:
-   ```bash
-   cd backend
-   npm run db:check           # reachability + credentials + TLS sanity check
-   npm run db:migrate:deploy  # applies prisma/migrations (never resets data)
-   npm run db:status          # what is applied / pending
-   ```
-3. **Password quoting.** Keep the URL in double quotes; if the password contains `@`, `:`, `/` or `?`, URL-encode it (`@` → `%40`, `:` → `%3A`, `/` → `%2F`, `?` → `%3F`).
-
-With Docker, add the override file instead of editing the bundled MySQL service:
+Create the database once:
 
 ```bash
-# .env next to docker-compose.yml
-DATABASE_URL="mysql://avnadmin:PASSWORD@mysql-xxxx.y.aivencloud.com:12299/defaultdb?sslaccept=accept_invalid_certs"
-
-docker compose -f docker-compose.yml -f docker-compose.external-db.yml up -d --build
+turso auth login
+turso db create 9drive                  # choose a region near the API host
+turso db show 9drive --url              # libsql://9drive-<org>.turso.io
+turso db tokens create 9drive           # the token
 ```
 
-The backend runs `prisma migrate deploy` on boot, so the schema is created automatically. Hosted platforms (Render, Railway, Fly, …) only need the `DATABASE_URL` env var — the local `backend/.env` helper steps aside whenever the variable is already set.
+Put both values in `backend/.env` (or in the host's environment variables):
+
+```env
+TURSO_DATABASE_URL="libsql://9drive-<org>.turso.io"
+TURSO_AUTH_TOKEN="<token>"
+```
+
+Then:
+
+```bash
+cd backend
+npm run db:check           # URL, token, foreign keys, tables
+npm run db:migrate:deploy  # creates the schema (never resets data)
+npm run db:status          # what is applied / pending
+```
+
+The container runs `db:migrate:deploy` on boot, so a fresh Turso database gets its
+schema on the first deploy. With Docker, use the override file:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.turso.yml up -d --build
+```
+
+**Differences from the old MySQL deployment** (handled in code, listed so nothing
+surprises you):
+
+1. **JSON columns are `TEXT`.** SQLite has no `Json` type, so `scopes`,
+   `priority_account_ids`, `resource_metadata` and audit metadata are JSON strings
+   converted by `backend/src/utils/json-column.ts`. API responses are unchanged.
+2. **Foreign keys stay in the database.** The libSQL client and Turso run with
+   `PRAGMA foreign_keys = ON`, so `onDelete: Cascade` still fires; the backend checks
+   it once at boot and logs an error if a server reports it off.
+3. **One writer at a time.** SQLite serialises writes. Uploads stream through the
+   API (bytes go to Drive/S3, not the database), so metadata writes stay short.
+4. **Data migration.** Rows from Aiven do not move themselves: follow
+   [`backend/prisma/legacy-mysql/README.md`](backend/prisma/legacy-mysql/README.md)
+   for the export/import order and the value conversions (JSON → text, booleans,
+   UTC timestamps). Keep the same `TOKEN_ENCRYPTION_KEY`, or stored Google/S3
+   credentials become unreadable.
+
+A row count and `GET /ready` are the two checks that matter after an import.
 
 </details>
 
@@ -369,13 +381,13 @@ The root `Dockerfile` builds the API and the SPA into a single image. Express se
 Render: **New → Web Service → Docker**, *Dockerfile Path* `./Dockerfile`, health check `/health`, then set only:
 
 ```env
-DATABASE_URL      = mysql://avnadmin:PASSWORD@mysql-<id>.<region>.aivencloud.com:PORT/defaultdb
-DATABASE_CA_CERT  = <contents of ca.pem>        # Aiven / any managed MySQL
-JWT_ACCESS_SECRET = <32+ random chars>
+TURSO_DATABASE_URL   = libsql://<database>-<org>.turso.io
+TURSO_AUTH_TOKEN     = <token from `turso db tokens create <database>`>
+JWT_ACCESS_SECRET    = <32+ random chars>
 TOKEN_ENCRYPTION_KEY = <32+ random chars>
 ```
 
-`FRONTEND_URL` is optional here (it defaults to the service's own origin) and `PORT` is injected by the host. Verify with `/ready` → `{"status":"ok","database":"ok","migrations":"16"}`, then open `/register` on the same URL.
+`FRONTEND_URL` is optional here (it defaults to the service's own origin) and `PORT` is injected by the host. Verify with `/ready` → `{"status":"ok","database":"ok","migrations":"1"}`, then open `/register` on the same URL.
 
 Local equivalent:
 
@@ -391,7 +403,7 @@ The repo ships two images. They talk to each other through a **runtime** proxy, 
 
 | Service | Root | Port | Health check | Env vars that matter |
 | --- | --- | --- | --- | --- |
-| `backend` | `./backend` | `$PORT` (fallback `4000`) | `/health` (liveness), `/ready` (database) | `DATABASE_URL`, `DATABASE_CA_CERT`, `JWT_ACCESS_SECRET`, `TOKEN_ENCRYPTION_KEY`, `FRONTEND_URL` |
+| `backend` | `./backend` | `$PORT` (fallback `4000`) | `/health` (liveness), `/ready` (database) | `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `JWT_ACCESS_SECRET`, `TOKEN_ENCRYPTION_KEY`, `FRONTEND_URL` |
 | `frontend` | `./frontend` | `$PORT` (fallback `80`) | `/healthz` | `API_UPSTREAM` = the backend's public URL |
 
 Notes:
@@ -402,16 +414,16 @@ Notes:
 - The frontend calls `/api/*` on its own origin and nginx forwards it to `API_UPSTREAM`, stripping the `/api` prefix. If you prefer the browser to call the API directly, build with `--build-arg VITE_API_URL=https://api.example.com` instead and leave `API_UPSTREAM` unset.
 - A build-time `VITE_API_URL` that points at the frontend's own origin is ignored on purpose (it would make every request hit the SPA and return HTML); the app logs a warning and uses `/api` instead.
 - **`FRONTEND_URL` must match the frontend's public origin exactly** (scheme + host, no trailing slash), because CORS only allows that origin.
-- The backend applies pending migrations on boot (`prisma migrate deploy`), so the Aiven database is created/updated automatically on the first deploy.
-- `render.yaml` in the repo root declares both services and wires them together (`frontend.API_UPSTREAM <- backend.host`, `backend.FRONTEND_URL <- frontend.host`), so a self-reference is impossible. Only `DATABASE_URL` and `DATABASE_CA_CERT` need typing in.
+- The backend applies pending migrations on boot (`prisma migrate deploy`), so the Turso database is created/updated automatically on the first deploy.
+- `render.yaml` in the repo root declares both services and wires them together (`frontend.API_UPSTREAM <- backend.host`, `backend.FRONTEND_URL <- frontend.host`), so a self-reference is impossible. Only `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` need typing in.
 - **Both services are required.** With only the frontend deployed, the SPA loads but every API call fails — there is nothing to proxy to.
 
 ### If registration/login fails after deploying
 
 | Symptom | Cause / fix |
 | --- | --- |
-| Backend log: `No DATABASE_URL is present in this container's environment`, then the deploy exits | The backend service has no `DATABASE_URL`. Render → backend service → *Environment* → add it (`mysql://avnadmin:PASSWORD@HOST:PORT/defaultdb`) plus `DATABASE_CA_CERT` for Aiven, then redeploy. |
-| `GET /ready` returns `503 {"database":"unreachable"}` | Reachable process, broken database: wrong `DATABASE_URL`/`DATABASE_CA_CERT`, or the Aiven service is powered off. `npm run db:check` prints the exact failure. |
+| Backend log: `No Turso credentials are present in this container's environment`, then the deploy exits | The backend service has no database configured. Render → backend service → *Environment* → add `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`, then redeploy. |
+| `GET /ready` returns `503 {"database":"unreachable"}` | Reachable process, broken database: wrong `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN`, an expired token, or the database was deleted. `npm run db:check` prints the exact failure. |
 | Saving Google OAuth credentials fails in **Settings → Google OAuth Credentials** | The save validates before writing: the Client ID must end in `.apps.googleusercontent.com` (a project number, API key or console URL is rejected by name), http:// redirect URIs are refused unless it is localhost, and the redirect URI must end in `/connected-accounts/google/callback`. The error appears directly under the **Save Credentials** button. The previous config is only retired *after* the new one is stored, so a failed save never breaks working sign-in. |
 | Google says `redirect_uri_mismatch`, or sign-in stops working after moving hosts | The redirect URI is stored in the database and sent to Google verbatim. Open Settings → Google OAuth Credentials, clear the Redirect URI field and save again — the server fills in this deployment's own origin. `GET /api/auth/google/status` shows `redirectUri`, `expectedRedirectUri` and `redirectUriMatchesOrigin` so you can see the difference. |
 | "Continue with Google" fails with `Unexpected token '<'` or `GOOGLE_NOT_CONFIGURED` | Two separate things: (1) a stale frontend build sends the request to the SPA — deploy the single-service image (or delete `VITE_API_URL`); (2) the database has no Google OAuth client yet — add it in **Settings → Google Credentials**, or set `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`GOOGLE_REDIRECT_URI` and run `npm run seed:google-config`. `GET /auth/google/status` reports which it is. |
@@ -483,7 +495,7 @@ Notes:
 
 Production tips:
 - Put the frontend and backend behind an HTTPS reverse proxy.
-- Don't expose the MySQL port to the internet.
+- The database is reached through an auth token over HTTPS; never commit `TURSO_AUTH_TOKEN` or paste it into a browser-side build.
 - Rebuild the frontend whenever `VITE_API_URL` changes (it is baked in at build time).
 - Publish the OAuth consent screen when you're ready. Google may ask to verify public apps.
 
@@ -688,7 +700,7 @@ Vite bakes `VITE_API_URL` into the build. Rebuild the frontend, or with Docker r
 ## Security
 
 - Uploads stream through the backend straight to Google Drive or S3. **Nothing is stored on the server's disk.**
-- Google tokens and S3 credentials are encrypted in MySQL. App refresh tokens, API keys, preview tokens, and auth-handoff tokens are stored only as hashes.
+- Google tokens and S3 credentials are encrypted in the database. App refresh tokens, API keys, preview tokens, and auth-handoff tokens are stored only as hashes.
 - Dashboard/session routes allow only `FRONTEND_URL`. `/api/v1/*` and `/api/public/*` accept any origin by default because they require a bearer API key or an expiring signed URL; `API_CORS_ORIGINS` can restrict them to exact browser origins. Credentials are off.
 - API keys are header-only (`Authorization: Bearer …`), stored hashed, shown once, revocable and rotatable. `?api_key=…` is rejected. Signed URLs are bound to a live key/resource identity, so revocation or scope removal invalidates them.
 - Google Drive files are **not** made public: preview/download use authenticated streams or short-lived capability URLs. S3 buckets stay private. Provider errors are returned as safe codes, never raw bucket names, endpoints, emails or tokens.
@@ -698,7 +710,7 @@ Vite bakes `VITE_API_URL` into the build. Rebuild the frontend, or with Docker r
 ## Project structure
 
 ```txt
-backend/    Express 5 + TypeScript API, Prisma (MySQL), Google Drive and S3 integrations
+backend/    Express 5 + TypeScript API, Prisma (SQLite/Turso), Google Drive and S3 integrations
 frontend/   React 19 + Vite + Tailwind CSS 4 app (installable PWA)
 docs/       README screenshots and trailer
 ```

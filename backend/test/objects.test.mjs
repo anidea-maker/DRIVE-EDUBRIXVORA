@@ -1,12 +1,12 @@
 /**
- * Mocked website/object-API tests. No MySQL, Google Drive, S3 or HTTP server is
+ * Mocked website/object-API tests. No database server, Google Drive, S3 or HTTP server is
  * contacted; every helper below is pure or uses an in-memory fake store.
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 
-process.env.DATABASE_URL ||= 'mysql://test:test@127.0.0.1:3306/testdb'
+process.env.DATABASE_URL ||= 'file:./test/.tmp/test.db'
 process.env.JWT_ACCESS_SECRET ||= 'x'.repeat(40)
 process.env.TOKEN_ENCRYPTION_KEY ||= 'y'.repeat(40)
 process.env.NODE_ENV = 'test'
@@ -129,4 +129,98 @@ test('signed URLs require the signing identity and bind it into the HMAC', () =>
 test('new accounts are least-privileged by default', () => {
   assert.equal(roles.DEFAULT_USER_ROLE, 'visitor')
   assert.equal(roles.canManageResources(roles.DEFAULT_USER_ROLE), false)
+})
+
+/* -------------------------------------------------------------------------- */
+/*  Browser-ready URLs in listings                                            */
+/* -------------------------------------------------------------------------- */
+
+test('listing URLs are signed, verifiable and browser-usable', () => {
+  const urls = require('../dist/modules/public-api/object-urls.js')
+  const req = { protocol: 'https', get: () => 'drive.example.com' }
+  const set = urls.objectUrls({
+    req,
+    userId: 'user-1',
+    key: 'photos/holiday 2026/cat.png',
+    purpose: 'signed',
+    apiKeyId: 'key-1',
+    ttlSeconds: 600,
+  })
+
+  // A browser sends no Authorization header, so both links must be signature-only.
+  for (const link of [set.previewUrl, set.downloadUrl]) {
+    const parsed = new URL(link)
+    assert.equal(parsed.pathname, '/api/public/objects/photos/holiday%202026/cat.png')
+    assert.equal(parsed.searchParams.get('m'), 'GET')
+    // The signature covers the raw key, so the '%20' in the path cannot be
+    // replayed against a different object.
+    assert.equal(
+      signing.verifyObjectUrl({
+        method: 'GET',
+        userId: parsed.searchParams.get('u'),
+        keyId: parsed.searchParams.get('k'),
+        key: 'photos/holiday 2026/cat.png',
+        expiresAt: Number(parsed.searchParams.get('exp')),
+        signature: parsed.searchParams.get('sig'),
+      }),
+      null,
+    )
+  }
+  // Same bytes, different disposition: only the download link carries the flag.
+  assert.equal(new URL(set.previewUrl).searchParams.get('download'), null)
+  assert.equal(new URL(set.downloadUrl).searchParams.get('download'), '1')
+  // The api link is deliberately credential-free and never signed.
+  assert.equal(set.apiUrl, 'https://drive.example.com/api/v1/objects/photos/holiday%202026/cat.png')
+  assert.equal(new URL(set.apiUrl).searchParams.has('sig'), false)
+})
+
+test('a signature for one key cannot open another, and TTLs are clamped', () => {
+  const urls = require('../dist/modules/public-api/object-urls.js')
+  const req = { protocol: 'https', get: () => 'drive.example.com' }
+  const set = urls.objectUrls({ req, userId: 'u', key: 'a/1.png', purpose: 'signed', apiKeyId: 'k', ttlSeconds: 60 })
+  const parsed = new URL(set.previewUrl)
+  assert.equal(
+    signing.verifyObjectUrl({
+      method: 'GET',
+      userId: 'u',
+      keyId: 'k',
+      key: 'a/2.png',
+      expiresAt: Number(parsed.searchParams.get('exp')),
+      signature: parsed.searchParams.get('sig'),
+    }),
+    'invalid',
+  )
+
+  assert.equal(urls.clampUrlTtl(undefined), 3600)
+  assert.equal(urls.clampUrlTtl(1), 30)
+  assert.equal(urls.clampUrlTtl(999_999_999), 604_800)
+  assert.equal(urls.clampUrlTtl(Number.NaN), 3600)
+})
+
+test('api-mode URLs stay on the authenticated route', () => {
+  const urls = require('../dist/modules/public-api/object-urls.js')
+  const set = urls.objectUrls({
+    req: { protocol: 'https', get: () => 'drive.example.com' },
+    userId: 'u',
+    key: 'a/b.txt',
+    purpose: 'api',
+  })
+  assert.equal(set.previewUrl, 'https://drive.example.com/api/v1/objects/a/b.txt')
+  assert.equal(set.downloadUrl, 'https://drive.example.com/api/v1/objects/a/b.txt?download=1')
+  assert.equal(set.expiresAt, null)
+})
+
+test('the sign endpoint shape includes a download variant', () => {
+  const urls = require('../dist/modules/public-api/object-urls.js')
+  const signed = urls.signedUrl({
+    req: { protocol: 'https', get: () => 'drive.example.com' },
+    userId: 'u',
+    apiKeyId: 'k',
+    key: 'a/b.txt',
+    method: 'GET',
+    ttlSeconds: 120,
+  })
+  assert.match(signed.url, /\/api\/public\/objects\/a\/b\.txt\?/)
+  assert.equal(new URL(signed.url).searchParams.get('k'), 'api-key:k')
+  assert.ok(Date.parse(signed.expiresAt) > Date.now())
 })

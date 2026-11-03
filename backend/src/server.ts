@@ -1,6 +1,10 @@
 import { app } from './app.js'
 import { env } from './config/env.js'
-import { prisma } from './config/prisma.js'
+import { assertForeignKeysEnabled, prisma } from './config/prisma.js'
+
+// Fire-and-forget: a warning about referential integrity must never delay or block
+// listening. `assertForeignKeysEnabled` logs its own explanation.
+void assertForeignKeysEnabled()
 
 const server = app.listen(env.APP_PORT, () => {
   console.log(`Backend running on http://localhost:${env.APP_PORT} (${process.env.NODE_ENV ?? 'development'})`)

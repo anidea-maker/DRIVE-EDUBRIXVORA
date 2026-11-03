@@ -450,8 +450,7 @@ one.
 
 | Variable | Notes |
 | --- | --- |
-| `DATABASE_URL` | `mysql://user:password@host:port/db`. |
-| `DATABASE_CA_CERT` | Contents of `ca.pem` for a managed MySQL (Aiven). Written to `prisma/certs/db-ca.pem` and turned into `sslcert=…&sslaccept=strict` at runtime. |
+| `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | Hosted Turso database and its token. A single `DATABASE_URL=libsql://…?authToken=…` also works; `file:./prisma/dev.db` runs locally. |
 | `JWT_ACCESS_SECRET` | ≥ 32 chars. `generateValue: true`. |
 | `TOKEN_ENCRYPTION_KEY` | ≥ 32 chars. `generateValue: true`. **Rotating this makes every stored Google refresh token and S3 credential unreadable** — back it up and never change it casually. |
 
@@ -510,7 +509,7 @@ service named `9drive` serving the API and the SPA from the same origin, with
    `npm run db:migrate:deploy` before starting the server — migrations are
    applied on every boot, so no manual step is needed.
 2. **Fill the four required variables** in the service's Environment tab:
-   `DATABASE_URL`, `DATABASE_CA_CERT` (for Aiven/managed MySQL), and let Render
+   `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, and let Render
    generate `JWT_ACCESS_SECRET` and `TOKEN_ENCRYPTION_KEY` once.
 3. **Redeploy** (Manual Deploy → *Clear build cache & deploy* if you changed
    dependencies).
@@ -612,7 +611,7 @@ It covers, and all of it passes:
   local stand-in. The AWS SDK, request signing, key layout and verification
   logic are the real code paths, but a real bucket handshake was not performed
   from this session.
-- A real MySQL migration (no database server in this sandbox). `prisma validate`
+- A migration against a live Turso database (the SQLite migrations were applied to a local file). `prisma validate`
   plus the additive migration files were reviewed; `npm run db:migrate:deploy`
   runs on Render's boot.
 - Anything inside Edvanta's own repository, UI, auth or deployment.
@@ -639,8 +638,9 @@ deploying.
    falling back to the old behaviour if the delete fails
    (`backend/src/modules/public-api/objects.service.ts`).
 3. **Fix — accurate metadata-store label.** The public status payload advertised
-   `Turso` as the store for accounts and file metadata; this deployment uses
-   MySQL. Corrected in `backend/src/modules/storage/storage-status.ts`, with the
+   `Turso` as the store for accounts and file metadata while the deployment then
+   ran MySQL; this deployment now uses Turso (libSQL), so the label is accurate
+   again. Updated in `backend/src/modules/storage/storage-status.ts`, with the
    matching test and `docs/API.md` updated.
 4. **This document**, plus the updated verification numbers in
    [docs/EDVANTA-INTEGRATION.md §8](EDVANTA-INTEGRATION.md).

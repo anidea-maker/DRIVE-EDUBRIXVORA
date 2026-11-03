@@ -9,7 +9,7 @@ operations or an Edvanta deployment were executed here.
 
 - **In scope:** one external website, one website API key, the existing
   `/api/v1/objects` API, existing `selectAccount()` routing, connected
-  Google Drive / S3-compatible accounts, metadata in MySQL, secure
+  Google Drive / S3-compatible accounts, metadata in Turso (libSQL), secure
   file operations, and an integration example.
 - **Out of scope:** a new project, a platform-owned bucket, a new storage
   backend, provider credentials on the website, multi-website tenancy, and any
@@ -40,8 +40,11 @@ operations or an Edvanta deployment were executed here.
 | `GET /api/v1/objects/{key}` | Implemented. `files:read`, ownership, `Range`, ETag/`If-None-Match`, safe inline allowlist, forced attachment for risky types. | ✅ |
 | `HEAD /api/v1/objects/{key}` | Implemented. `files:read`, ownership, `Content-Type`/`Content-Length`/`ETag`/`Last-Modified`, `nosniff`. | ✅ |
 | `DELETE /api/v1/objects/{key}` | Implemented. `files:delete`, ownership, provider delete using the recorded account, idempotent `204`, safe failure instead of fake success. | ✅ |
-| `GET /api/v1/objects` | Implemented. Keyset pagination, `prefix`/`delimiter`, `q` name/metadata search, exact `checksum`, `mimeType`, richer metadata. | ✅ |
-| `POST /api/v1/objects/sign` | Implemented. Scope check, short expiry, HMAC bound to user + live key identity + key + method + expiry; revocation/scope removal invalidates outstanding links. | ✅ |
+| `GET /api/v1/objects` | Implemented. Keyset pagination, `prefix`/`delimiter`, `q` name/metadata search, exact `checksum`, `mimeType`, richer metadata. Each object now also carries `urls.previewUrl` / `urls.downloadUrl` (`?urls=signed\|api\|none`, `?expiresInSeconds=`), so a website can render its uploads without a second call and without shipping the key to the browser. | ✅ |
+| `POST /api/v1/objects/sign` | Implemented. Scope check, short expiry, HMAC bound to user + live key identity + key + method + expiry; revocation/scope removal invalidates outstanding links. Also returns `downloadUrl`, the same signature with `download=1`. | ✅ |
+| `GET /api/v1/files` | Implemented. Listings take `urls=signed\|api` and `expiresInSeconds`; object-backed files gain `urls.preview` / `urls.signedDownload` / `urls.expiresAt` next to the authenticated `urls.content` / `urls.download`, which keep their meaning. | ✅ |
+| `GET /api/v1/files/:id` | Implemented. Returns the same `urls` shape as the listing, so a caller that lists and then fetches one file needs one renderer, not two. | ✅ |
+| `POST /api/v1/files`, `/files/raw`, `/uploads`, `/upload` | Implemented. Each upload now stores an object key under `uploads/` and returns the browser-ready `urls` in the response, so a website can render an upload immediately. | ✅ |
 
 ## 3. Requirement-by-requirement changes
 
@@ -62,6 +65,7 @@ operations or an Edvanta deployment were executed here.
 | Search / pagination | Added `q`, exact `checksum`, `mimeType`; existing keyset `continuation-token` retained. |
 | Metadata | Listing returns `name`, `sizeBytes`, `mimeType`, `checksum`, `createdAt`, `lastModified`, `etag`, `metadata`. |
 | Safe preview | Added `safeInlineMimeType()` allowlist, `nosniff`, sandbox CSP for inline, forced attachment for SVG/HTML/JS/Office/archive/unknown. |
+| Demotion after key issuance | API-key writes now run `requireActiveKeyOwner()`: the key owner is re-read from the database on every write, so a demoted or deactivated account loses write access immediately instead of keeping it until someone revokes the key. Reads are unaffected (one query per download would cost more than it protects). |
 | Signed URLs | HMAC now includes `k` (`api-key:<id>` or `resource:<id>`). The public handler verifies the live key/resource row, status, expiry and scope. |
 | Large files | `MAX_UPLOAD_BYTES`, `REQUEST_TIMEOUT_MS`, streaming provider writes; no full-file buffering. |
 | No credential leakage | Safe error mapper replaces raw provider/bucket/endpoint/email/token text in responses and logs. `selectAccount` quota logs no longer include account email. |
@@ -120,7 +124,7 @@ Mocked/local only:
 
 - No live Google Drive or S3 upload/download/delete, quota refresh, OAuth or
   rate-limit behaviour.
-- No real MySQL migration apply or multi-instance rate-limit run.
+- No migration against a live Turso database or multi-instance rate-limit run.
 - No authenticated end-to-end upload from the external website or Edvanta UI.
 - No Render deployment from this workspace; the branch must be merged/deployed
   and the migration applied before live acceptance checks.

@@ -64,9 +64,26 @@ await storage.remove(key)
 // list/search with folder semantics
 const page = await storage.list({ prefix: 'products/', delimiter: '/', q: 'biology', mimeType: 'application/pdf', maxKeys: 100 })
 
-// a link the browser can use
-const { url } = await storage.sign(key, { expiresInSeconds: 3600 })
+// every listed object already carries a browser-ready URL - no second call
+for (const object of page.objects) {
+  console.log(object.key, object.previewUrl)   // <img src={previewUrl}>
+  console.log(object.downloadUrl)              // <a href download>
+}
+
+// ...or the same thing shaped for a gallery grid
+const tiles = await storage.gallery({ prefix: 'products/', pageSize: 24 })
+
+// a link the browser can use, for a key you already know
+const { url, downloadUrl } = await storage.sign(key, { expiresInSeconds: 3600 })
 ```
+
+`previewUrl` and `downloadUrl` are *signed*, so they go straight into HTML. They
+are the same object: `downloadUrl` is `previewUrl` with `download=1`, which makes
+the browser save instead of render. Both expire; store the **key**, never the URL.
+
+Uploads through the file API (`POST /api/v1/files`, `/files/raw`) get a key under
+`uploads/` automatically and return the same `urls` in the response, so one
+renderer covers everything a website stores - however it was uploaded.
 
 ## 3. Wiring it into a framework
 
@@ -160,11 +177,27 @@ res.json({ uploadUrl: url })
 await fetch(uploadUrl, { method: 'PUT', headers: { 'Content-Type': 'image/png' }, body: file })
 ```
 
-For reads, sign with the default `GET` and put it in `src`:
+For reads there is nothing extra to build: the listing already returns the
+links. Render them directly.
+
+```js
+// server: one call, after an upload or when the page loads
+const { objects } = await storage.list({ prefix: 'uploads/' })
+
+// template
+//   <img src={object.previewUrl} alt="" />
+//   <video src={object.previewUrl} controls />          <- Range works, seeking works
+//   <a href={object.downloadUrl}>Download</a>
+```
 
 ```html
 <img src="https://…/api/public/objects/shop/products/42.png?u=…&k=api-key%3A…&m=GET&exp=…&sig=…" />
 ```
+
+`GET /api/v1/objects` and `GET /api/v1/files` both accept `urls=signed|api|none`
+and `expiresInSeconds` (30 … 604800, default 3600). `urls=signed` is the default
+because it is the one a website needs; pass `urls=none` for a payload you will
+not render, or `urls=api` if you would rather proxy the bytes yourself.
 
 A `GET` link cannot be replayed as a `PUT`, cannot be pointed at another key,
 and stops working at `exp`. The `k` identity is checked against the live key
@@ -216,13 +249,27 @@ storage through `SUPER_ADMIN_EMAILS` or
 
 ## 7. Tests
 
-The client is covered by **15/15** mocked assertions against a stubbed `fetch` -
-wire format, error mapping, prefixing, unique keys, checksum search and signed
-URLs:
+The client is covered by **19/19** mocked assertions against a stubbed `fetch` -
+wire format, error mapping, prefixing, unique keys, checksum search, signed URLs,
+the gallery/URL flattening and the file-API upload path:
 
 ```bash
 node --test examples/other-website/drive-storage.test.mjs
 ```
+
+There is also an **end-to-end walkthrough** that does the whole thing against a
+real deployment - upload, list, preview (including a Range request) and download -
+and prints the URLs it used:
+
+```bash
+STORAGE_ENDPOINT=https://your-9drive.onrender.com/api/v1 \
+STORAGE_API_KEY=9d_live_… \
+node examples/other-website/demo.mjs
+```
+
+It exits non-zero on the first mismatch, so it doubles as a smoke test after a
+9Drive deploy. Nothing is left behind: the objects it writes are deleted at the
+end unless you pass `--keep`.
 
 Full API reference: [`docs/API.md`](../../docs/API.md). Requirement-by-requirement
 audit: [`docs/WEBSITE-API-AUDIT.md`](../../docs/WEBSITE-API-AUDIT.md).

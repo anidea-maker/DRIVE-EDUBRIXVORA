@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { prisma } from '../../config/prisma.js'
+import { jsonStringArray, toJsonArrayColumn } from '../../utils/json-column.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
 import { requireRole } from '../../middleware/role.middleware.js'
 import { hashToken, randomToken } from '../../utils/crypto.js'
@@ -25,7 +26,7 @@ function serializeApiKey(apiKey: { id: string; name: string; keyPrefix: string; 
     id: apiKey.id,
     name: apiKey.name,
     keyPrefix: apiKey.keyPrefix,
-    scopes: Array.isArray(apiKey.scopes) ? apiKey.scopes : [],
+    scopes: jsonStringArray(apiKey.scopes),
     status: apiKey.status,
     lastUsedAt: apiKey.lastUsedAt?.toISOString() ?? null,
     expiresAt: apiKey.expiresAt?.toISOString() ?? null,
@@ -69,7 +70,7 @@ apiKeyRouter.post('/', async (req: AuthRequest, res, next) => {
         name: body.name,
         keyPrefix: secret.slice(0, 16),
         keyHash: hashToken(secret),
-        scopes: chosenScopes,
+        scopes: toJsonArrayColumn(chosenScopes),
         expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
       },
     })
@@ -115,7 +116,7 @@ apiKeyRouter.post('/:id/regenerate', async (req: AuthRequest, res, next) => {
           name: existing.name,
           keyPrefix: secret.slice(0, 16),
           keyHash: hashToken(secret),
-          scopes,
+          scopes: toJsonArrayColumn(scopes),
           expiresAt,
         },
       })
