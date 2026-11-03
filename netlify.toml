@@ -1,0 +1,66 @@
+# Netlify hosts the 9Drive SPA. The Express API (MySQL + Prisma) keeps running
+# on Render; Netlify proxies the API paths to it so the browser stays
+# same-origin (no VITE_API_URL or CORS to configure).
+[build]
+  base = "frontend"
+  # Install explicitly (incl. devDependencies: tsc, vite) - the deploy build
+  # does not always run an install step before the command.
+  command = "npm ci --include=dev && npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# --- API proxy (order matters: these must come before the SPA fallback) ------
+[[redirects]]
+  from = "/api/*"
+  to = "https://drive-edubrixvora-1.onrender.com/api/:splat"
+  status = 200
+  force = true
+
+# Google OAuth callbacks: the backend builds redirect_uri from X-Forwarded-Host,
+# so Google sends the browser back to this domain on these paths.
+[[redirects]]
+  from = "/connected-accounts/google/*"
+  to = "https://drive-edubrixvora-1.onrender.com/connected-accounts/google/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/auth/google/callback"
+  to = "https://drive-edubrixvora-1.onrender.com/auth/google/callback"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/health"
+  to = "https://drive-edubrixvora-1.onrender.com/health"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/ready"
+  to = "https://drive-edubrixvora-1.onrender.com/ready"
+  status = 200
+  force = true
+
+# --- SPA fallback -------------------------------------------------------------
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
