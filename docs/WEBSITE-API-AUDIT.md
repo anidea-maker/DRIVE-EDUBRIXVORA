@@ -42,7 +42,9 @@ operations or an Edvanta deployment were executed here.
 | `DELETE /api/v1/objects/{key}` | Implemented. `files:delete`, ownership, provider delete using the recorded account, idempotent `204`, safe failure instead of fake success. | ✅ |
 | `GET /api/v1/objects` | Implemented. Keyset pagination, `prefix`/`delimiter`, `q` name/metadata search, exact `checksum`, `mimeType`, richer metadata. Each object now also carries `urls.previewUrl` / `urls.downloadUrl` (`?urls=signed\|api\|none`, `?expiresInSeconds=`), so a website can render its uploads without a second call and without shipping the key to the browser. | ✅ |
 | `POST /api/v1/objects/sign` | Implemented. Scope check, short expiry, HMAC bound to user + live key identity + key + method + expiry; revocation/scope removal invalidates outstanding links. Also returns `downloadUrl`, the same signature with `download=1`. | ✅ |
-| `GET /api/v1/files` | Implemented. Listings take `urls=signed\|api` and `expiresInSeconds`; object-backed files gain `urls.preview` / `urls.download` / `urls.expiresAt` next to the authenticated links. | ✅ |
+| `GET /api/v1/files` | Implemented. Listings take `urls=signed\|api` and `expiresInSeconds`; object-backed files gain `urls.preview` / `urls.signedDownload` / `urls.expiresAt` next to the authenticated `urls.content` / `urls.download`, which keep their meaning. | ✅ |
+| `GET /api/v1/files/:id` | Implemented. Returns the same `urls` shape as the listing, so a caller that lists and then fetches one file needs one renderer, not two. | ✅ |
+| `POST /api/v1/files`, `/files/raw`, `/uploads`, `/upload` | Implemented. Each upload now stores an object key under `uploads/` and returns the browser-ready `urls` in the response, so a website can render an upload immediately. | ✅ |
 
 ## 3. Requirement-by-requirement changes
 

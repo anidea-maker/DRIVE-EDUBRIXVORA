@@ -81,6 +81,10 @@ const { url, downloadUrl } = await storage.sign(key, { expiresInSeconds: 3600 })
 are the same object: `downloadUrl` is `previewUrl` with `download=1`, which makes
 the browser save instead of render. Both expire; store the **key**, never the URL.
 
+Uploads through the file API (`POST /api/v1/files`, `/files/raw`) get a key under
+`uploads/` automatically and return the same `urls` in the response, so one
+renderer covers everything a website stores - however it was uploaded.
+
 ## 3. Wiring it into a framework
 
 ### Express (or any Node server)
@@ -245,9 +249,9 @@ storage through `SUPER_ADMIN_EMAILS` or
 
 ## 7. Tests
 
-The client is covered by **16/16** mocked assertions against a stubbed `fetch` -
-wire format, error mapping, prefixing, unique keys, checksum search, signed URLs
-and the gallery/URL flattening:
+The client is covered by **19/19** mocked assertions against a stubbed `fetch` -
+wire format, error mapping, prefixing, unique keys, checksum search, signed URLs,
+the gallery/URL flattening and the file-API upload path:
 
 ```bash
 node --test examples/other-website/drive-storage.test.mjs

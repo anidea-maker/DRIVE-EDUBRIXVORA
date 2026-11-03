@@ -67,12 +67,19 @@ function joinPrefix(prefix, key) {
 /**
  * Flattens the API's `urls` object into the two fields a front end actually
  * uses, so a template can do `object.previewUrl` without optional chaining.
- * Leaves the raw object untouched when the caller asked for `urls: 'none'`.
+ *
+ * Two shapes exist and both are accepted here: object listings use
+ * `urls.previewUrl` / `urls.downloadUrl`, file rows use `urls.preview` /
+ * `urls.signedDownload`. Flattening in one place is what lets a site render
+ * objects and files with a single component. Leaves the object untouched when
+ * the caller asked for `urls: 'none'`.
  */
 function withUrls(object) {
   const urls = object?.urls
   if (!urls) return object
-  return { ...object, previewUrl: urls.previewUrl ?? null, downloadUrl: urls.downloadUrl ?? null, expiresAt: urls.expiresAt ?? null }
+  const previewUrl = urls.previewUrl ?? urls.preview ?? null
+  const downloadUrl = urls.downloadUrl ?? urls.signedDownload ?? null
+  return { ...object, previewUrl, downloadUrl, expiresAt: urls.expiresAt ?? null }
 }
 
 function bodyLength(body) {
@@ -244,6 +251,47 @@ export function createStorage(options = {}) {
         urls: data.urls ?? null,
         urlExpiresInSeconds: data.urlExpiresInSeconds ?? null,
       }
+    },
+
+    /**
+     * Uploads through the *file* API instead of the object API - the route the
+     * 9Drive dashboard itself uses. A website usually does not need this, but it
+     * is the right call when an upload should also appear in the dashboard's
+     * file list and folder tree. The response carries the same `urls` shape.
+     *
+     * Uses `POST /api/v1/files/raw`: the body is the file, no multipart needed.
+     *
+     * @param {string} name     display name, e.g. `hero.jpg`
+     * @param {Buffer|Uint8Array|string} body
+     * @param {{ contentType?: string, folderId?: string }} [options]
+     */
+    async uploadFile(name, body, options = {}) {
+      const params = new URLSearchParams({ name })
+      if (options.contentType) params.set('type', options.contentType)
+      if (options.folderId) params.set('folderId', options.folderId)
+      const response = await call(`${endpoint}/files/raw?${params.toString()}`, {
+        method: 'POST',
+        headers: { ...auth, 'Content-Type': options.contentType ?? 'application/octet-stream' },
+        body,
+      })
+      if (!response.ok) throw await fail(response)
+      const data = await response.json()
+      return withUrls(data.file)
+    },
+
+    /**
+     * Moves a file uploaded through the file API to the trash, or deletes it
+     * outright with `permanent`. Object keys use `remove()`; ids use this.
+     *
+     * @param {string} id
+     * @param {{ permanent?: boolean }} [options]
+     */
+    async deleteFile(id, options = {}) {
+      const suffix = options.permanent ? '?permanent=1' : ''
+      const response = await call(`${endpoint}/files/${encodeURIComponent(id)}${suffix}`, { method: 'DELETE', headers: auth })
+      if (response.status === 404) return false
+      if (!response.ok) throw await fail(response)
+      return true
     },
 
     /**

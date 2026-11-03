@@ -120,6 +120,20 @@ async function main() {
     check('a tampered signature is refused', tampered.status === 403, `status ${tampered.status}`)
   }
 
+  // ------------------------------------------------------- 5. the file API
+  console.log('\n5. the same thing through the file API')
+  const viaFiles = await storage.uploadFile('pixel-via-files.png', PNG_1X1, { contentType: 'image/png' })
+  check('the upload response already carries a preview URL', Boolean(viaFiles.previewUrl), 'no urls.preview in the upload response')
+  check('the file got an object key', /^uploads\//.test(viaFiles.key ?? ''), `key=${viaFiles.key}`)
+  const filesPreview = await fetch(viaFiles.previewUrl)
+  check('that URL renders without the key', filesPreview.status === 200, `status ${filesPreview.status}`)
+  check('and returns the same bytes', Buffer.from(await filesPreview.arrayBuffer()).equals(PNG_1X1))
+  if (!keep) {
+    // Uploaded through the file API, so it is removed through it too.
+    const removed = await storage.deleteFile(viaFiles.id)
+    check('the file was removed', removed === true)
+  }
+
   // ------------------------------------------------------------------ cleanup
   if (!keep) {
     console.log('\ncleanup')

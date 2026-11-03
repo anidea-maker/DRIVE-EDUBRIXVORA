@@ -288,10 +288,23 @@ into `<img src>` / `<video src>`, `urls.downloadUrl` into a download link.
 | `expiresInSeconds` | 30–604800, default 3600. Clamped, so a typo cannot mint a perpetual link |
 
 `GET /api/v1/files` takes the same two parameters (`urls=signed|api`, no `none`)
-and adds `urls.preview` / `urls.download` / `urls.expiresAt` alongside the
-existing authenticated `urls.content` / `urls.download`. Files without an object
-key (dashboard uploads) keep the authenticated links only; use
-`POST /api/v1/files/:id/share` for a keyless URL on those.
+and adds three fields **alongside** the existing authenticated links, which keep
+their meaning:
+
+| Field | What it is |
+| --- | --- |
+| `urls.content` | `GET /api/v1/files/:id/content` - bytes with the API key, `Range` supported |
+| `urls.download` | `GET /api/v1/files/:id/download` - attachment with the API key |
+| `urls.preview` | Signed, keyless. Put it in `<img src>` / `<video src>` |
+| `urls.signedDownload` | The same signature with `download=1`, for a "Save file" button |
+| `urls.expiresAt` | When the two signed links stop working |
+
+Every upload route (`POST /api/v1/files`, `/files/raw`, `/api/v1/uploads`,
+`/api/v1/upload`) now assigns the new file an object key under `uploads/`, and
+returns the same `urls` shape — so an upload response is already renderable and
+does not need a follow-up listing. Files created before keys existed are
+addressed by id only; use `POST /api/v1/files/:id/share` for a keyless URL on
+those.
 
 `delimiter=/` collapses everything below the prefix into `prefixes`, which is how
 a console renders folders. Paginate with `max-keys` (default 1000) and

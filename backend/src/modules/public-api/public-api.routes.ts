@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { Router, type NextFunction, type Request, type Response } from 'express'
 import { google } from 'googleapis'
 import { z } from 'zod'
@@ -5,6 +6,7 @@ import { env } from '../../config/env.js'
 import { prisma } from '../../config/prisma.js'
 import { requireActiveKeyOwner, requireApiKey, SCOPE_HEADER, type ApiKeyRequest } from '../../middleware/api-key.middleware.js'
 import { clampUrlTtl, objectUrls } from './object-urls.js'
+import { buildUniqueObjectKey } from './objects.shared.js'
 
 import { createAuditLog } from '../../utils/audit.js'
 import { hashToken, randomToken } from '../../utils/crypto.js'
@@ -31,6 +33,24 @@ function queryString(value: unknown) {
 }
 
 /**
+ * Adds the signed, keyless links to a serialized file.
+ *
+ * Shared by the listing, the single-file endpoint and the upload responses, so a
+ * caller sees one `urls` shape everywhere: list it, fetch it, or upload it and
+ * the same renderer works. Files with no object key (rows created before keys
+ * existed) keep the authenticated links only.
+ */
+function withBrowserUrls(req: ApiKeyRequest, base: ReturnType<typeof apiFile>, ttlSeconds: number) {
+  const key = base.key
+  if (!key) return base
+  const urls = objectUrls({ req, userId: req.user!.id, key, purpose: 'signed', apiKeyId: req.apiKey!.id, ttlSeconds })
+  return {
+    ...base,
+    urls: { ...base.urls, preview: urls.previewUrl, signedDownload: urls.downloadUrl, expiresAt: urls.expiresAt },
+  }
+}
+
+/**
  * Rewrites `{ file }` / `{ files }` response bodies into the documented API shape,
  * so the multipart upload (which is shared with the dashboard) answers with the
  * same fields - including download URLs - as every other endpoint here.
@@ -40,11 +60,14 @@ function withApiFileShape(req: Request, res: Response, next: NextFunction) {
   res.json = ((body: unknown) => {
     if (body && typeof body === 'object') {
       const payload = body as Record<string, unknown>
+      // `req` here is the API-key request; the shaper only runs on API routes.
+      const apiReq = req as ApiKeyRequest
+      const shape = (file: unknown) => withBrowserUrls(apiReq, apiFile(req, file as never), clampUrlTtl(undefined))
       if (Array.isArray(payload.files)) {
-        return json({ ...payload, files: payload.files.map((file) => apiFile(req, file as never)) })
+        return json({ ...payload, files: payload.files.map(shape) })
       }
       if (payload.file && typeof payload.file === 'object') {
-        return json({ ...payload, file: apiFile(req, payload.file as never) })
+        return json({ ...payload, file: shape(payload.file) })
       }
     }
     return json(body)
@@ -343,18 +366,15 @@ storageRouter.get('/files', requireApiKey('files:read'), async (req: ApiKeyReque
      * authenticated links only.
      */
     const ttlSeconds = clampUrlTtl(query.expiresInSeconds)
+    /**
+     * `urls.content`/`urls.download` keep their documented meaning - the
+     * authenticated routes, which is what a server-side worker calls with the
+     * key. The browser-ready links are added alongside rather than replacing
+     * them: overwriting `download` would silently break every existing caller.
+     */
     const files = page.map((file) => {
       const base = apiFile(req, file)
-      if (query.urls === 'api' || !file.objectKey) return base
-      const urls = objectUrls({
-        req,
-        userId: req.user!.id,
-        key: file.objectKey,
-        purpose: 'signed',
-        apiKeyId: req.apiKey!.id,
-        ttlSeconds,
-      })
-      return { ...base, urls: { ...base.urls, preview: urls.previewUrl, download: urls.downloadUrl, expiresAt: urls.expiresAt } }
+      return query.urls === 'api' ? base : withBrowserUrls(req, base, ttlSeconds)
     })
 
     return res.json({
@@ -426,8 +446,25 @@ storageRouter.post('/files/raw', requireApiKey('files:write'), requireActiveKeyO
 
     if (account.provider === 's3') {
       const config = await getS3ConfigForAccount(account.id, req.user!.id)
+      const provisionalId = randomUUID()
       const provisional = await prisma.file.create({
-        data: { userId: req.user!.id, connectedAccountId: account.id, folderId: folderId ?? null, provider: 's3', providerFileId: '', name, mimeType, sizeBytes, status: 'uploading' },
+        data: {
+          userId: req.user!.id,
+          connectedAccountId: account.id,
+          folderId: folderId ?? null,
+          provider: 's3',
+          providerFileId: '',
+          name,
+          mimeType,
+          sizeBytes,
+          status: 'uploading',
+          // Set at creation, not after: a row without a key can never be given a
+          // browser preview URL by the listing, and this is the upload route most
+          // websites use. The key is derived from the row's own id, so it is
+          // stable and cannot collide with another upload of the same name.
+          objectKey: buildUniqueObjectKey('uploads', name, provisionalId),
+          id: provisionalId,
+        },
       })
       try {
         const key = buildS3ObjectKey(config, req.user!.id, provisional.id, name)
@@ -435,7 +472,7 @@ storageRouter.post('/files/raw', requireApiKey('files:write'), requireActiveKeyO
         const file = await prisma.file.update({ where: { id: provisional.id }, data: { providerFileId: key, status: 'active' }, include: FILE_INCLUDE })
         await prisma.uploadSession.update({ where: { id: session.id }, data: { status: 'completed', completedAt: new Date() } }).catch(() => undefined)
         await createAuditLog(req.user!.id, 'UPLOAD_FILE', 'file', file.id, { name: file.name, size: sizeBytes.toString(), source: 'api' })
-        res.status(201).json({ file: apiFile(req, file) })
+        res.status(201).json({ file: withBrowserUrls(req, apiFile(req, file), clampUrlTtl(undefined)) })
         syncS3Quota(account.id).catch(() => undefined)
         return
       } catch (error) {
@@ -462,6 +499,7 @@ storageRouter.post('/files/raw', requireApiKey('files:write'), requireActiveKeyO
         media: { mimeType, body: req as unknown as NodeJS.ReadableStream },
         fields: 'id,name,mimeType,size',
       })
+      const driveFileId = randomUUID()
       const file = await prisma.file.create({
         data: {
           userId: req.user!.id,
@@ -472,12 +510,15 @@ storageRouter.post('/files/raw', requireApiKey('files:write'), requireActiveKeyO
           name: uploaded.data.name ?? name,
           mimeType: uploaded.data.mimeType ?? mimeType,
           sizeBytes,
+          // Same reason as the bucket branch: a key is what a preview needs.
+          objectKey: buildUniqueObjectKey('uploads', uploaded.data.name ?? name, driveFileId),
+          id: driveFileId,
         },
         include: FILE_INCLUDE,
       })
       await prisma.uploadSession.update({ where: { id: session.id }, data: { status: 'completed', completedAt: new Date() } }).catch(() => undefined)
       await createAuditLog(req.user!.id, 'UPLOAD_FILE', 'file', file.id, { name: file.name, size: sizeBytes.toString(), source: 'api' })
-      res.status(201).json({ file: apiFile(req, file) })
+      res.status(201).json({ file: withBrowserUrls(req, apiFile(req, file), clampUrlTtl(undefined)) })
       syncQuotaInBackground(account.id, session.id)
       return
     } catch (error) {
@@ -507,7 +548,8 @@ storageRouter.get('/files/:id', requireApiKey('files:read'), async (req: ApiKeyR
       orderBy: { createdAt: 'desc' },
     })
     return res.json({
-      file: apiFile(req, file),
+      // Same shape the listing returns, so one renderer handles both.
+      file: withBrowserUrls(req, apiFile(req, file), clampUrlTtl(undefined)),
       share: share?.token ? { url: absoluteUrl(req, `/api/public/files/${share.token}/preview`), expiresAt: share.expiresAt?.toISOString() ?? null } : null,
     })
   } catch (error) {

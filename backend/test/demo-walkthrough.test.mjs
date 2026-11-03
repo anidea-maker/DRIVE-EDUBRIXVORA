@@ -163,13 +163,21 @@ test('the published walkthrough passes end to end, including cleanup', async () 
   })
 
   // Every step the guide documents must have been exercised, not skipped.
-  for (const step of ['1. upload', '2. list / show contents', '3. preview (no Authorization header)', '4. download', 'cleanup']) {
+  for (const step of [
+    '1. upload',
+    '2. list / show contents',
+    '3. preview (no Authorization header)',
+    '4. download',
+    '5. the same thing through the file API',
+    'cleanup',
+  ]) {
     assert.ok(stdout.includes(step), `the walkthrough never reached "${step}"`)
   }
   const summary = stdout.match(/(\d+)\/(\d+) checks passed/)
   assert.ok(summary, `no summary line in the walkthrough output:\n${stdout}`)
   assert.equal(summary[1], summary[2], `the walkthrough reported failures:\n${stdout}`)
-  assert.ok(Number(summary[1]) >= 18, `only ${summary[1]} checks ran`)
+  // Guards against a step being silently skipped by a future edit.
+  assert.ok(Number(summary[1]) >= 26, `only ${summary[1]} checks ran`)
 
   // Nothing was left behind in storage.
   assert.equal(prisma._store.file.filter((row) => row.objectKey?.startsWith('demo-website/') && row.status === 'active').length, 0)
