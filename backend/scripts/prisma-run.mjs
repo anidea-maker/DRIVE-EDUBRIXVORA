@@ -62,11 +62,11 @@ for (const key of ['DATABASE_URL', 'TURSO_DATABASE_URL', 'TURSO_AUTH_TOKEN']) {
   }
 }
 
-const target = process.env.TURSO_DATABASE_URL || process.env.DATABASE_URL
-if (target && !/^(mysql|mysqls|mariadb):\/\//i.test(target.trim())) {
+const target = process.env.TURSO_DATABASE_URL || process.env.DATABASE_URL || 'file:./prisma/dev.db'
+if (!/^(mysql|mysqls|mariadb):\/\//i.test(target.trim())) {
   const masked = target.replace(/(authToken=)[^&]+/i, '$1********')
   console.log(`[prisma] Target ${masked}`)
-} else if (target) {
+} else {
   console.error(
     '[prisma] Refusing to run: DATABASE_URL/TURSO_DATABASE_URL still points at MySQL.\n' +
       '         Set TURSO_DATABASE_URL + TURSO_AUTH_TOKEN (see backend/prisma/legacy-mysql/README.md).',

@@ -27,18 +27,19 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
-      # `prisma.config.ts` imports the compiled URL helper from dist/, so build first.
-      # Nothing reaches the network: the client uses the WASM query compiler.
+      # `tsc` needs the generated client, and the client is no longer produced by a
+      # postinstall hook, so generate first. Nothing reaches the network: the client
+      # uses the WASM query compiler, not a downloaded engine.
+      - name: Generate the Prisma client
+        run: npx prisma generate
+        env:
+          DATABASE_URL: file:./prisma/ci.db
       - name: Build
         run: npm run build
         env:
           DATABASE_URL: file:./prisma/ci.db
           JWT_ACCESS_SECRET: ci-only-secret-at-least-32-characters-long
           TOKEN_ENCRYPTION_KEY: ci-only-key-at-least-32-characters-long
-      - name: Generate the Prisma client
-        run: npx prisma generate
-        env:
-          DATABASE_URL: file:./prisma/ci.db
       - name: Typecheck against the generated client
         run: npx tsc --noEmit
         env:
