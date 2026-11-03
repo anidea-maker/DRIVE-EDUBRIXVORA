@@ -85,7 +85,8 @@ async function readJson(response: Response, url: string): Promise<unknown> {
         : `"${url}" returned an HTML error page (status ${response.status}). The request never reached the API - check API_UPSTREAM on the frontend service.`
       throw new Error(hint)
     }
-    throw new Error(`"${url}" returned a non-JSON response (status ${response.status}).`)
+    const snippet = text.trim().replace(/\s+/g, ' ').slice(0, 120)
+    throw new Error(`"${url}" returned a non-JSON response (status ${response.status})${snippet ? `: ${snippet}` : ' with an empty body'}.`)
   }
 }
 
@@ -118,6 +119,74 @@ async function refreshAccessToken() {
   return true
 }
 
+/**
+ * The error a failed request throws.
+ *
+ * A bare `Request failed (404)` is the one message this file must never produce.
+ * It happens when the response is 404/500 **and** its body is not JSON - a static
+ * host answering `/api/*` itself, an nginx `try_files` miss, a truncated proxy
+ * response - and it reports the symptom while hiding the cause. The caller then
+ * sees "Request failed (404)" with no path, no base URL and no next step.
+ *
+ * So the body is read once and every outcome keeps its detail:
+ *   - a JSON error body  -> its `message`, plus `code` (the API's stable contract)
+ *   - an HTML page       -> `readJson`'s diagnosis of which URL answered with HTML
+ *   - an empty body      -> the method, the full URL and what to check
+ *
+ * `skipAuth` callers (login, register) rely on the 401 branch above, so the
+ * session is ended before this runs, never here.
+ */
+async function requestFailed(response: Response, url: string, options: ApiOptions): Promise<Error> {
+  const status = response.status
+  const statusText = response.statusText ? ` ${response.statusText}` : ''
+  const method = (options.method ?? 'GET').toUpperCase()
+  const isApiBase = /\/api\/?$/.test(url)
+
+  let body: unknown = null
+  let bodyProblem: string | null = null
+  try {
+    body = await readJson(response, url)
+  } catch (error) {
+    // A non-JSON body is the interesting case: keep the diagnosis, not a status.
+    bodyProblem = error instanceof Error ? error.message : String(error)
+  }
+
+  const payload = (body ?? {}) as { message?: string; code?: string; hint?: string }
+  const detail = typeof payload.message === 'string' && payload.message.trim() ? payload.message.trim() : null
+  const code = typeof payload.code === 'string' ? payload.code : null
+
+  if (status === 404 && isApiBase) {
+    // Reaching the API's base with a 404 is a routing problem, not a missing
+    // record: say where the request went so the wrong base URL is obvious.
+    return new Error(
+      `${url} answered 404 - the API base URL is wrong. It must end in /api (so ${method} /files becomes /api/files), and the host must be this deployment's backend, not a static site. ` +
+        `Check the base URL shown in Storage API, and API_UPSTREAM if this runs behind a proxy.` +
+        (payload.hint ? ` ${payload.hint}` : ''),
+    )
+  }
+
+  if (status === 404 && !detail && !bodyProblem) {
+    // No JSON body and no HTML: something in front of the API answered. The URL
+    // is the only clue worth showing, so it is included verbatim.
+    return new Error(
+      `${method} ${url} returned 404 with an empty response. The request did not reach the API - ` +
+        `that host serves static files or a different app. Point the base URL at the backend, then retry.`,
+    )
+  }
+
+  // Prefer the API's own sentence, then the HTML diagnosis, then a plain status.
+  const message =
+    detail ??
+    bodyProblem ??
+    `${method} ${url} failed with ${status}${statusText} and an empty response body. Check that the backend is running and that API_UPSTREAM points at it.`
+
+  const error = new Error(message)
+  // `code` is what an integration branches on (API_KEY_SCOPE_MISSING, ...), so it
+  // is preserved on the Error object instead of being flattened into the text.
+  if (code) (error as Error & { code?: string }).code = code
+  return error
+}
+
 export async function apiFetch<T>(path: string, options: ApiOptions = {}): Promise<T> {
   const headers = new Headers(options.headers)
   const token = getAccessToken()
@@ -148,11 +217,10 @@ export async function apiFetch<T>(path: string, options: ApiOptions = {}): Promi
   }
 
   if (!response.ok) {
-    const error = (await readJson(response, url).catch(() => null)) as { message?: string; code?: string } | null
     // `skipAuth` means the caller was not relying on a session (login, register),
     // so a 401 there is a wrong password, not an expired session.
     if (response.status === 401 && !options.skipAuth) endSession()
-    throw new Error(error?.message ?? `Request failed (${response.status})`)
+    throw await requestFailed(response, url, options)
   }
 
   return (await readJson(response, url)) as T

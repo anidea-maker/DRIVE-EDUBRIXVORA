@@ -443,15 +443,23 @@ if (spaEnabled) {
  */
 app.use((req, res) => {
   const knownEndpoint = req.path === '/ready' || req.path === '/health'
+  /**
+   * An `/api/...` miss is usually a client pointed one segment off: the storage
+   * API lives under `/api/v1`, so `/api/files` (no `v1`) and `/api/v1/api/...`
+   * (a base URL that already ended in `/api`) both land here. Naming the
+   * correction turns a dead end into a one-character fix.
+   */
+  const apiMiss = req.path === '/api' || req.path.startsWith('/api/')
+  const hint = knownEndpoint
+    ? `This path exists in newer builds. The backend is running commit ${BUILD_COMMIT}, which predates it - redeploy the backend from main.`
+    : apiMiss
+      ? `The storage API is under /api/v1 and this server's own routes are under /api/<route>. Check the caller's base URL: it should be <this host>/api/v1, and an endpoint from the docs must not be appended twice.`
+      : undefined
   return res.status(404).json({
     code: 'NOT_FOUND',
     message: `No route for ${req.method} ${req.path}`,
     commit: BUILD_COMMIT,
-    ...(knownEndpoint
-      ? {
-          hint: `This path exists in newer builds. The backend is running commit ${BUILD_COMMIT}, which predates it - redeploy the backend from main.`,
-        }
-      : {}),
+    ...(hint ? { hint } : {}),
   })
 })
 

@@ -74,3 +74,7 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm run build
+      # Error-path tests: the messages a failed request produces. They bundle
+      # `src/lib/api.ts` with the app's own alias, so they must run after `npm ci`.
+      - name: Frontend tests
+        run: node --test test/*.test.mjs

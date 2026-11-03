@@ -114,6 +114,37 @@ export function ApiManagementPage() {
   const [secret, setSecret] = useState('')
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(false)
+  /**
+   * Whether the Base URL shown above actually reaches this deployment's API.
+   *
+   * The page tells a website where to send its requests, so a wrong value is
+   * copied out of the UI and fails on the other project - the worst place to
+   * discover it. `GET <base>` answers JSON with a `service` field when the base
+   * is right, and a 404 when a static host or SPA is answering instead.
+   */
+  const [baseCheck, setBaseCheck] = useState<'checking' | 'ok' | 'failed'>('checking')
+
+  useEffect(() => {
+    let cancelled = false
+    const controller = new AbortController()
+    fetch(base.absolute, { signal: controller.signal, headers: { Accept: 'application/json' } })
+      .then(async (response) => {
+        if (cancelled) return
+        if (!response.ok) {
+          setBaseCheck('failed')
+          return
+        }
+        const data = (await response.json().catch(() => null)) as { service?: string } | null
+        setBaseCheck(data?.service ? 'ok' : 'failed')
+      })
+      .catch(() => {
+        if (!cancelled) setBaseCheck('failed')
+      })
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [base.absolute])
 
   async function load() {
     const data = await apiFetch<{ apiKeys: ApiKey[] }>('/api-keys')
@@ -297,6 +328,8 @@ const { url } = await fetch('${base.absolute}/objects/sign', {
     { method: 'DELETE', path: '/files/:id/share', scope: 'files:write', text: 'Revoke every public URL for the file.' },
     { method: 'GET', path: '/folders', scope: 'files:read', text: 'Folders. Query: parentId, or all=1 for a flat list.' },
     { method: 'POST', path: '/folders', scope: 'files:write', text: 'Create a folder: name, parentId.' },
+    // `GET /api/v1/usage` is the real path; `/usage` alone 404s, and a docs table
+    // that lists a 404 costs more trust than it saves vertical space.
     { method: 'GET', path: '/usage', scope: 'files:read', text: 'Used and available bytes across all accounts.' },
     { method: 'GET', path: '/me', scope: 'files:read', text: 'Which user and key this is, plus per-account storage.' },
   ] as const
@@ -351,7 +384,21 @@ const { url } = await fetch('${base.absolute}/objects/sign', {
         <Card className="p-4">
           <Server className="h-5 w-5 text-[var(--accent)]" />
           <p className="mt-3 truncate text-[15px] font-extrabold">{base.absolute.replace(/^https?:\/\//, '')}</p>
-          <p className="text-[13px] text-slate-500">Base URL</p>
+          <p className="text-[13px] text-slate-500">
+            Base URL{' '}
+            {baseCheck === 'ok' ? (
+              <span className="font-semibold text-emerald-600">- reachable</span>
+            ) : baseCheck === 'failed' ? (
+              <span className="font-semibold text-red-600">- not answering as an API</span>
+            ) : null}
+          </p>
+          {baseCheck === 'failed' ? (
+            <p className="mt-2 text-[12px] leading-relaxed text-red-600">
+              This URL did not answer with the storage API. Copying it into another website would produce 404s there.
+              Check <code className="rounded bg-[var(--surface-inset)] px-1">VITE_API_URL</code> at build time and{' '}
+              <code className="rounded bg-[var(--surface-inset)] px-1">API_UPSTREAM</code> on this service, then reload.
+            </p>
+          ) : null}
         </Card>
         <Card className="p-4">
           <Globe className="h-5 w-5 text-[var(--accent)]" />
