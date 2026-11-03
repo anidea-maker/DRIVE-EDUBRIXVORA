@@ -91,7 +91,8 @@ Try the live preview at **[9drive.zenhosta.com](https://9drive.zenhosta.com)**.
 **For developers**
 - A storage API at `/api/v1` so another website can use 9Drive as its file store: upload, list, download, rename, delete, and mint public URLs.
 - S3-style objects - `PUT/GET/HEAD/DELETE /api/v1/objects/<any/key.png>`, list by `prefix` + `delimiter`, quoted `ETag`s, and expiring signed URLs for browsers.
-- A copy-paste client for the consuming site in [`examples/other-website`](examples/other-website): two environment variables, no SDK. Keys are scoped (`files:read`, `files:write`, `files:delete`), shown once, stored hashed, and revocable.
+- Listings return ready-to-use `previewUrl` / `downloadUrl` per object, so a third-party site renders images and video straight from `<img src>` with no API key in the browser.
+- A copy-paste client for the consuming site in [`examples/other-website`](examples/other-website): two environment variables, no SDK, and `demo.mjs` to prove upload → list → preview → download against your deployment. Keys are scoped (`files:read`, `files:write`, `files:delete`), shown once, stored hashed, and revocable.
 - Any origin may call it with a key. Full reference in [docs/API.md](docs/API.md), plus copy-paste examples in **API Management**.
 
 **Accounts and admin**

@@ -201,8 +201,8 @@ client, SigV4, or XML.
 | `GET` | `/api/v1/objects/:key` | Bytes, `Range`, `If-None-Match` → `304` |
 | `HEAD` | `/api/v1/objects/:key` | `Content-Type`, `Content-Length`, `ETag`, `Last-Modified`, no body |
 | `DELETE` | `/api/v1/objects/:key` | Deletes for good. Always `204` |
-| `GET` | `/api/v1/objects` | List/search: `prefix`, `delimiter`, `q`, `checksum`, `mimeType`, `max-keys`, `continuation-token` |
-| `POST` | `/api/v1/objects/sign` | Expiring URL for `GET`/`HEAD`/`PUT` |
+| `GET` | `/api/v1/objects` | List/search: `prefix`, `delimiter`, `q`, `checksum`, `mimeType`, `max-keys`, `continuation-token`, `urls`, `expiresInSeconds` |
+| `POST` | `/api/v1/objects/sign` | Expiring URL for `GET`/`HEAD`/`PUT`, plus its download variant |
 
 ```bash
 curl -X PUT "$BASE/objects/branding/logo.png" \
@@ -257,13 +257,41 @@ forced to `Content-Disposition: attachment`; `?download=1` always does the same.
     "createdAt": "…",
     "lastModified": "…",
     "etag": "\"9b2c…\"",
-    "metadata": null
+    "metadata": null,
+    "urls": {
+      "key": "branding/logo.png",
+      "previewUrl": "https://host/api/public/objects/branding/logo.png?u=…&k=api-key%3A…&m=GET&exp=…&sig=…",
+      "downloadUrl": "https://host/api/public/objects/branding/logo.png?u=…&k=…&m=GET&exp=…&sig=…&download=1",
+      "apiUrl": "https://host/api/v1/objects/branding/logo.png",
+      "expiresAt": "2026-05-01T10:12:00.000Z"
+    }
   }],
   "prefixes": ["branding/icons/"],
   "isTruncated": false,
-  "nextContinuationToken": null
+  "nextContinuationToken": null,
+  "urls": "signed",
+  "urlExpiresInSeconds": 3600
 }
 ```
+
+**Browser-ready URLs.** By default every listed object carries `urls`, so a
+website that lists its uploads can render them without a second round trip and
+without ever putting the API key in the browser: `urls.previewUrl` goes straight
+into `<img src>` / `<video src>`, `urls.downloadUrl` into a download link.
+`urls.apiUrl` is the authenticated route, deliberately credential-free.
+
+| Query | Effect |
+| --- | --- |
+| `urls=signed` (default) | Signed `previewUrl`/`downloadUrl`, valid for `expiresInSeconds` |
+| `urls=api` | Only the authenticated `/api/v1/objects/:key` links (`expiresAt: null`) |
+| `urls=none` | No `urls` field at all, for payloads that will not be rendered |
+| `expiresInSeconds` | 30–604800, default 3600. Clamped, so a typo cannot mint a perpetual link |
+
+`GET /api/v1/files` takes the same two parameters (`urls=signed|api`, no `none`)
+and adds `urls.preview` / `urls.download` / `urls.expiresAt` alongside the
+existing authenticated `urls.content` / `urls.download`. Files without an object
+key (dashboard uploads) keep the authenticated links only; use
+`POST /api/v1/files/:id/share` for a keyless URL on those.
 
 `delimiter=/` collapses everything below the prefix into `prefixes`, which is how
 a console renders folders. Paginate with `max-keys` (default 1000) and
@@ -286,15 +314,20 @@ POST /api/v1/objects/sign
   "key": "branding/logo.png",
   "method": "GET",
   "url": "https://host/api/public/objects/branding/logo.png?u=…&k=api-key%3A…&m=GET&exp=…&sig=…",
+  "downloadUrl": "https://host/api/public/objects/branding/logo.png?u=…&k=api-key%3A…&m=GET&exp=…&sig=…&download=1",
   "expiresAt": "2026-05-01T10:12:00.000Z"
 }
 ```
+
+`downloadUrl` is the same signature with `download=1`, which forces
+`Content-Disposition: attachment` - use it for "Save file" buttons.
 
 - `GET`/`HEAD` links read; `PUT` links write. A `GET` link cannot be replayed as a `PUT`, and a link for one key cannot be pointed at another.
 - The signature covers user, signing identity (`k`), object key, method and expiry, and is verified with a constant-time comparison.
 - `k` is checked against the live API-key row on every use. Revoking/expiring the key, removing its scope, or changing the owner invalidates outstanding links; resource capability URLs use a `resource:<id>` identity and are checked against that row instead.
 - Signing requires the scope the method needs (`files:read` for `GET`, `files:write` for `PUT`), so it can never widen a key's access.
 - Links are signed with `OBJECT_URL_SIGNING_SECRET` when set, otherwise a key derived from `TOKEN_ENCRYPTION_KEY` - no configuration needed, and rotating that secret invalidates every outstanding link.
+- A listing signs with the same scheme and the same live checks, so a URL copied out of a listing behaves exactly like one from `/objects/sign`.
 
 ```html
 <img src="https://host/api/public/objects/branding/logo.png?u=…&k=api-key%3A…&m=GET&exp=…&sig=…" />

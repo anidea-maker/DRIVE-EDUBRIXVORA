@@ -10,7 +10,7 @@ import { env } from '../../config/env.js'
  *
  * The signature covers the user, the signing identity (`api-key:<id>` or
  * `resource:<id>`), the object key, the method and the expiry. The identity is
- * verified against MySQL when the link is used, so revoking/expiring the API key
+ * verified against the database when the link is used, so revoking/expiring the API key
  * or removing its scope invalidates outstanding links. A capability URL minted
  * for a resource row is checked against that row instead.
  */

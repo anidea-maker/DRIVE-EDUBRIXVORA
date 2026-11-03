@@ -40,8 +40,9 @@ operations or an Edvanta deployment were executed here.
 | `GET /api/v1/objects/{key}` | Implemented. `files:read`, ownership, `Range`, ETag/`If-None-Match`, safe inline allowlist, forced attachment for risky types. | ✅ |
 | `HEAD /api/v1/objects/{key}` | Implemented. `files:read`, ownership, `Content-Type`/`Content-Length`/`ETag`/`Last-Modified`, `nosniff`. | ✅ |
 | `DELETE /api/v1/objects/{key}` | Implemented. `files:delete`, ownership, provider delete using the recorded account, idempotent `204`, safe failure instead of fake success. | ✅ |
-| `GET /api/v1/objects` | Implemented. Keyset pagination, `prefix`/`delimiter`, `q` name/metadata search, exact `checksum`, `mimeType`, richer metadata. | ✅ |
-| `POST /api/v1/objects/sign` | Implemented. Scope check, short expiry, HMAC bound to user + live key identity + key + method + expiry; revocation/scope removal invalidates outstanding links. | ✅ |
+| `GET /api/v1/objects` | Implemented. Keyset pagination, `prefix`/`delimiter`, `q` name/metadata search, exact `checksum`, `mimeType`, richer metadata. Each object now also carries `urls.previewUrl` / `urls.downloadUrl` (`?urls=signed\|api\|none`, `?expiresInSeconds=`), so a website can render its uploads without a second call and without shipping the key to the browser. | ✅ |
+| `POST /api/v1/objects/sign` | Implemented. Scope check, short expiry, HMAC bound to user + live key identity + key + method + expiry; revocation/scope removal invalidates outstanding links. Also returns `downloadUrl`, the same signature with `download=1`. | ✅ |
+| `GET /api/v1/files` | Implemented. Listings take `urls=signed\|api` and `expiresInSeconds`; object-backed files gain `urls.preview` / `urls.download` / `urls.expiresAt` next to the authenticated links. | ✅ |
 
 ## 3. Requirement-by-requirement changes
 
@@ -62,6 +63,7 @@ operations or an Edvanta deployment were executed here.
 | Search / pagination | Added `q`, exact `checksum`, `mimeType`; existing keyset `continuation-token` retained. |
 | Metadata | Listing returns `name`, `sizeBytes`, `mimeType`, `checksum`, `createdAt`, `lastModified`, `etag`, `metadata`. |
 | Safe preview | Added `safeInlineMimeType()` allowlist, `nosniff`, sandbox CSP for inline, forced attachment for SVG/HTML/JS/Office/archive/unknown. |
+| Demotion after key issuance | API-key writes now run `requireActiveKeyOwner()`: the key owner is re-read from the database on every write, so a demoted or deactivated account loses write access immediately instead of keeping it until someone revokes the key. Reads are unaffected (one query per download would cost more than it protects). |
 | Signed URLs | HMAC now includes `k` (`api-key:<id>` or `resource:<id>`). The public handler verifies the live key/resource row, status, expiry and scope. |
 | Large files | `MAX_UPLOAD_BYTES`, `REQUEST_TIMEOUT_MS`, streaming provider writes; no full-file buffering. |
 | No credential leakage | Safe error mapper replaces raw provider/bucket/endpoint/email/token text in responses and logs. `selectAccount` quota logs no longer include account email. |

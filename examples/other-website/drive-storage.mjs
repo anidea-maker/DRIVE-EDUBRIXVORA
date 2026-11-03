@@ -64,6 +64,17 @@ function joinPrefix(prefix, key) {
   return clean ? `${clean}/${key.replace(/^\/+/, '')}` : key.replace(/^\/+/, '')
 }
 
+/**
+ * Flattens the API's `urls` object into the two fields a front end actually
+ * uses, so a template can do `object.previewUrl` without optional chaining.
+ * Leaves the raw object untouched when the caller asked for `urls: 'none'`.
+ */
+function withUrls(object) {
+  const urls = object?.urls
+  if (!urls) return object
+  return { ...object, previewUrl: urls.previewUrl ?? null, downloadUrl: urls.downloadUrl ?? null, expiresAt: urls.expiresAt ?? null }
+}
+
 function bodyLength(body) {
   if (typeof body === 'string') return Buffer.byteLength(body)
   if (body && typeof body.byteLength === 'number') return body.byteLength
@@ -120,7 +131,7 @@ export function createStorage(options = {}) {
      * @param {string} key
      * @param {Buffer|Uint8Array|string|Blob} body
      * @param {{ contentType?: string }} [meta]
-     * @returns {Promise<{ key: string, sizeBytes: string, etag: string | null, created: boolean }>}
+     * @returns {Promise<{ key: string, sizeBytes: string, checksum: string | null, etag: string | null, mimeType: string | null, created: boolean }>}
      */
     async put(key, body, meta = {}) {
       const length = bodyLength(body)
@@ -138,7 +149,17 @@ export function createStorage(options = {}) {
       })
       if (!response.ok) throw await fail(response)
       const data = await response.json()
-      return { key: data.key, sizeBytes: data.sizeBytes, etag: data.etag, created: data.created }
+      // `key` comes back namespaced and is what later calls and URLs must use.
+      // `checksum` is an md5 of the bytes as stored, which is what makes
+      // findDuplicates() a content match rather than a filename guess.
+      return {
+        key: data.key,
+        sizeBytes: data.sizeBytes,
+        checksum: data.checksum ?? null,
+        etag: data.etag ?? (data.checksum ? `"${data.checksum}"` : null),
+        mimeType: data.mimeType ?? null,
+        created: data.created,
+      }
     },
 
     /**
@@ -193,7 +214,11 @@ export function createStorage(options = {}) {
      * which is how you render folders. `q` searches name/key/indexed metadata;
      * `checksum` is an exact content hash for duplicate detection.
      *
-     * @param {{ prefix?: string, delimiter?: string, q?: string, checksum?: string, mimeType?: string, maxKeys?: number, token?: string }} [query]
+     * Every object carries `urls.previewUrl` / `urls.downloadUrl` unless
+     * `urls: 'none'` is passed: those are signed, so they work in an
+     * `<img src>` / `<video src>` / download link with no key in the browser.
+     *
+     * @param {{ prefix?: string, delimiter?: string, q?: string, checksum?: string, mimeType?: string, maxKeys?: number, token?: string, urls?: 'signed' | 'api' | 'none', expiresInSeconds?: number }} [query]
      */
     async list(query = {}) {
       const params = new URLSearchParams()
@@ -205,16 +230,40 @@ export function createStorage(options = {}) {
       if (query.mimeType) params.set('mimeType', query.mimeType)
       if (query.maxKeys) params.set('max-keys', String(query.maxKeys))
       if (query.token) params.set('continuation-token', query.token)
+      if (query.urls) params.set('urls', query.urls)
+      if (query.expiresInSeconds) params.set('expiresInSeconds', String(query.expiresInSeconds))
 
       const response = await call(`${endpoint}/objects?${params.toString()}`, { headers: auth })
       if (!response.ok) throw await fail(response)
       const data = await response.json()
       return {
-        objects: data.objects,
+        objects: (data.objects ?? []).map((object) => withUrls(object)),
         prefixes: data.prefixes,
         isTruncated: data.isTruncated,
         nextContinuationToken: data.nextContinuationToken,
+        urls: data.urls ?? null,
+        urlExpiresInSeconds: data.urlExpiresInSeconds ?? null,
       }
+    },
+
+    /**
+     * The whole "show my uploads" screen in one call: a page of objects, each
+     * already carrying a preview URL. Nothing else is needed to render it.
+     *
+     * @param {{ prefix?: string, pageSize?: number, expiresInSeconds?: number }} [options]
+     */
+    async gallery(options = {}) {
+      const page = await this.list({ prefix: options.prefix, maxKeys: options.pageSize ?? 50, expiresInSeconds: options.expiresInSeconds ?? 3600 })
+      return page.objects.map((object) => ({
+        key: object.key,
+        name: object.name,
+        mimeType: object.mimeType,
+        sizeBytes: object.sizeBytes,
+        // Ready for `<img src>` / `<video src>`; expires at `expiresAt`.
+        previewUrl: object.urls?.previewUrl ?? null,
+        downloadUrl: object.urls?.downloadUrl ?? null,
+        expiresAt: object.urls?.expiresAt ?? null,
+      }))
     },
 
     /** Content-based duplicate lookup: same bytes, any object key. */
@@ -228,7 +277,7 @@ export function createStorage(options = {}) {
      *
      * @param {string} key
      * @param {{ method?: 'GET' | 'HEAD' | 'PUT', expiresInSeconds?: number }} [options]
-     * @returns {Promise<{ url: string, method: string, expiresAt: string }>}
+     * @returns {Promise<{ url: string, downloadUrl: string, method: string, expiresAt: string }>}
      */
     async sign(key, options = {}) {
       const response = await call(`${endpoint}/objects/sign`, {
@@ -242,7 +291,7 @@ export function createStorage(options = {}) {
       })
       if (!response.ok) throw await fail(response)
       const data = await response.json()
-      return { url: data.url, method: data.method, expiresAt: data.expiresAt }
+      return { url: data.url, downloadUrl: data.downloadUrl ?? data.url, method: data.method, expiresAt: data.expiresAt }
     },
   }
 }

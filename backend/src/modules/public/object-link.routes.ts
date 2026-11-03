@@ -13,7 +13,7 @@ import { safeStorageProblem } from '../public-api/safe-errors.js'
  *
  * No API key is involved: the signature in the query string *is* the credential,
  * and it is bound to one user, one signing identity, one key, one method and one
- * expiry. The signing identity is verified live against MySQL, so a revoked or
+ * expiry. The signing identity is verified live against the database, so a revoked or
  * down-scoped API key cannot keep using an old link.
  */
 export const objectLinkRouter = Router()

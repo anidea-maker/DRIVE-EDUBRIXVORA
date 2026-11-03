@@ -527,7 +527,7 @@ export function emptyResourceCounts(): ResourceCounts {
 
 /**
  * The live-counts endpoint must never call a cloud provider. It only reads the
- * registry, so a Render cold start costs one cheap MySQL query group instead of
+ * registry, so a Render cold start costs one cheap database query group instead of
  * waiting for Drive/S3 HEAD requests or a full resource listing.
  */
 export function resourceCountsWhere(audience: 'student' | 'admin', includeUnavailable: boolean) {

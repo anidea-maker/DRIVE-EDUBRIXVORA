@@ -379,7 +379,7 @@ resourceRouter.get(
 /**
  * The public "live counts" widget should never wait for a Render cold start or
  * a provider HEAD request. This is a 30-second in-process cache over a few
- * cheap MySQL counts/groups; Edvanta's server also keeps a stale fallback.
+ * cheap database counts/groups; Edvanta's server also keeps a stale fallback.
  */
 const COUNTS_TTL_MS = 30_000
 const COUNTS_TTL_SECONDS = COUNTS_TTL_MS / 1000

@@ -118,7 +118,7 @@ export type ObjectListFilters = {
 /**
  * Search by name/key or indexed metadata, plus exact checksum lookup for
  * content-based duplicate detection. Kept pure so the wire contract is testable
- * without MySQL.
+ * without a database.
  */
 export function buildObjectListWhere(input: ObjectListFilters): Record<string, unknown> {
   const filters: Record<string, unknown>[] = []

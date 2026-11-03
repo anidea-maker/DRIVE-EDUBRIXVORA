@@ -1,11 +1,12 @@
 import { Router, type Response } from 'express'
 import { z } from 'zod'
 import { env } from '../../config/env.js'
-import { requireApiKey, type ApiKeyRequest } from '../../middleware/api-key.middleware.js'
+import { requireActiveKeyOwner, requireApiKey, type ApiKeyRequest } from '../../middleware/api-key.middleware.js'
 import { grantsScope } from './scopes.js'
 import { parseJsonColumn } from '../../utils/json-column.js'
 import { absoluteUrl } from './serialize.js'
 import { signObjectUrl, signedObjectPath, type SignedMethod } from './object-signing.js'
+import { clampUrlTtl, objectUrls, signedUrl } from './object-urls.js'
 import {
   MAX_OBJECT_KEY_LENGTH,
   decodeContinuation,
@@ -77,6 +78,14 @@ objectsRouter.get('/', requireApiKey('files:read'), async (req: ApiKeyRequest, r
         maxKeys: z.coerce.number().int().min(1).max(1000).optional(),
         'continuation-token': z.string().max(2048).optional(),
         continuationToken: z.string().max(2048).optional(),
+        /**
+         * How each object should be addressed in the response. `signed` (default)
+         * is what a website needs: the URLs can go straight into <img src>,
+         * <video src> or a download link, with no API key in the browser.
+         */
+        urls: z.enum(['signed', 'api', 'none']).optional(),
+        /** Lifetime of the signed URLs, in seconds. */
+        expiresInSeconds: z.coerce.number().int().min(30).max(604_800).optional(),
       })
       .parse(req.query)
 
@@ -109,6 +118,23 @@ objectsRouter.get('/', requireApiKey('files:read'), async (req: ApiKeyRequest, r
       }),
     })
 
+    const urlMode = query.urls ?? 'signed'
+    const ttlSeconds = clampUrlTtl(query.expiresInSeconds)
+    const objects =
+      urlMode === 'none'
+        ? result.objects
+        : result.objects.map((object) => ({
+            ...object,
+            urls: objectUrls({
+              req,
+              userId: req.user!.id,
+              key: object.key,
+              purpose: urlMode,
+              apiKeyId: req.apiKey!.id,
+              ttlSeconds,
+            }),
+          }))
+
     res.setHeader('X-Object-Count', String(result.objects.length))
     if (result.prefixes.length) res.setHeader('X-Common-Prefixes', String(result.prefixes.length))
     return res.json({
@@ -117,7 +143,9 @@ objectsRouter.get('/', requireApiKey('files:read'), async (req: ApiKeyRequest, r
       q: query.q ?? null,
       checksum: query.checksum ?? null,
       mimeType: query.mimeType ?? null,
-      objects: result.objects,
+      urls: urlMode,
+      urlExpiresInSeconds: urlMode === 'signed' ? ttlSeconds : null,
+      objects,
       prefixes: result.prefixes,
       isTruncated: result.isTruncated,
       nextContinuationToken: result.nextContinuationToken,
@@ -158,24 +186,25 @@ objectsRouter.post('/sign', requireApiKey(['files:read', 'files:write']), async 
       })
     }
 
-    const expiresAt = Math.floor(Date.now() / 1000) + body.expiresInSeconds
     // HEAD is a GET without a body, so it is signed as a GET and works with the
     // same link - otherwise two links would be needed for one resource.
     const method: SignedMethod = body.method === 'HEAD' ? 'GET' : body.method
-    const keyId = `api-key:${req.apiKey!.id}`
-    const query = new URLSearchParams({
-      u: req.user!.id,
-      k: keyId,
-      m: method,
-      exp: String(expiresAt),
-      sig: signObjectUrl(method, req.user!.id, keyId, body.key, expiresAt),
+    const signed = signedUrl({
+      req,
+      userId: req.user!.id,
+      apiKeyId: req.apiKey!.id,
+      key: body.key,
+      method,
+      ttlSeconds: body.expiresInSeconds,
     })
 
     return res.status(201).json({
       key: body.key,
-      method,
-      url: absoluteUrl(req, signedObjectPath(body.key, query)),
-      expiresAt: new Date(expiresAt * 1000).toISOString(),
+      method: signed.method,
+      url: signed.url,
+      // The download variant of the same link, for a "Save file" button.
+      downloadUrl: `${signed.url}${signed.url.includes('?') ? '&' : '?'}download=1`,
+      expiresAt: signed.expiresAt,
       note: 'The link is the credential. It is bound to this key row, object and method; revoking the key or removing its scope invalidates it, and it stops working at expiresAt.',
     })
   } catch (error) {
@@ -185,7 +214,7 @@ objectsRouter.post('/sign', requireApiKey(['files:read', 'files:write']), async 
 
 /* --------------------------------- verbs --------------------------------- */
 
-objectsRouter.put('/*key', requireApiKey('files:write'), async (req: ApiKeyRequest, res, next) => {
+objectsRouter.put('/*key', requireApiKey('files:write'), requireActiveKeyOwner(), async (req: ApiKeyRequest, res, next) => {
   try {
     const key = keyFromParams(req.params)
     if (invalidKey(res, key)) return
@@ -263,7 +292,7 @@ objectsRouter.head('/*key', requireApiKey('files:read'), async (req: ApiKeyReque
   }
 })
 
-objectsRouter.delete('/*key', requireApiKey('files:delete'), async (req: ApiKeyRequest, res, next) => {
+objectsRouter.delete('/*key', requireApiKey('files:delete'), requireActiveKeyOwner(), async (req: ApiKeyRequest, res, next) => {
   try {
     const key = keyFromParams(req.params)
     if (invalidKey(res, key)) return

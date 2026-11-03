@@ -487,6 +487,117 @@ describe('object API: upload, verify, read, list, delete', () => {
     assert.equal((await tampered.json()).code, 'SIGNED_URL_INVALID')
   })
 
+  test('a website can upload, list, preview and download with no key in the browser', async () => {
+    // The exact sequence another site performs: write bytes, list what it wrote,
+    // then hand the resulting URLs straight to the browser.
+    const body = 'the quick brown fox'
+    const upload = await getJson('/api/v1/objects/site/blog/2026/fox.txt', {
+      method: 'PUT',
+      headers: { ...auth(KEYS.full), 'Content-Type': 'text/plain' },
+      body,
+    })
+    assert.equal(upload.status, 201)
+
+    const listed = await getJson('/api/v1/objects?prefix=site/blog/', { headers: auth(KEYS.full) })
+    assert.equal(listed.status, 200)
+    assert.equal(listed.body.urls, 'signed', 'listings default to browser-usable URLs')
+    const entry = listed.body.objects.find((object) => object.key === 'site/blog/2026/fox.txt')
+    assert.ok(entry, 'the object just written appears in the listing')
+    assert.ok(entry.urls?.previewUrl?.includes('sig='), 'the preview URL carries its own signature')
+    assert.ok(entry.urls?.downloadUrl?.includes('download=1'), 'the download URL forces a Save dialog')
+    assert.equal(entry.urls?.expiresAt, new Date(entry.urls.expiresAt).toISOString())
+
+    // --- Preview: no Authorization header, exactly like an <img>/<video> tag ---
+    const preview = await fetch(entry.urls.previewUrl)
+    assert.equal(preview.status, 200)
+    assert.equal(await preview.text(), body)
+    assert.equal(preview.headers.get('content-type'), 'text/plain')
+    assert.equal(preview.headers.get('x-preview-mode'), 'inline')
+    assert.equal(preview.headers.get('accept-ranges'), 'bytes')
+
+    // --- Video seeking: a Range request on the same URL returns a 206 slice ----
+    const range = await fetch(entry.urls.previewUrl, { headers: { Range: 'bytes=4-8' } })
+    assert.equal(range.status, 206)
+    assert.equal(await range.text(), 'quick')
+
+    // --- Download: same link plus the attachment flag --------------------------
+    const download = await fetch(entry.urls.downloadUrl)
+    assert.equal(download.status, 200)
+    assert.equal(await download.text(), body)
+    assert.match(download.headers.get('content-disposition') ?? '', /^attachment/)
+    assert.equal(download.headers.get('x-preview-mode'), 'download')
+
+    // --- The signed URLs expire, and a short TTL is honoured -------------------
+    const shortLived = await getJson('/api/v1/objects?prefix=site/blog/&expiresInSeconds=40', { headers: auth(KEYS.full) })
+    assert.equal(shortLived.body.urlExpiresInSeconds, 40)
+    const expiresAt = new Date(shortLived.body.objects[0].urls.expiresAt).getTime()
+    assert.ok(expiresAt - Date.now() <= 40_000, 'the link must not outlive the requested TTL')
+
+    // --- A caller that wants only authenticated links can ask for them ---------
+    const apiOnly = await getJson('/api/v1/objects?prefix=site/blog/&urls=api', { headers: auth(KEYS.full) })
+    assert.equal(apiOnly.body.objects[0].urls.expiresAt, null)
+    assert.equal(new URL(apiOnly.body.objects[0].urls.previewUrl).pathname, '/api/v1/objects/site/blog/2026/fox.txt')
+
+    // --- urlUrls=none leaves the payload untouched -----------------------------
+    const bare = await getJson('/api/v1/objects?prefix=site/blog/&urls=none', { headers: auth(KEYS.full) })
+    assert.equal(bare.body.objects[0].urls, undefined)
+  })
+
+  test('a preview URL cannot be replayed against a different object', async () => {
+    await getJson('/api/v1/objects/site/b/other.txt', {
+      method: 'PUT',
+      headers: { ...auth(KEYS.full), 'Content-Type': 'text/plain' },
+      body: 'other bytes',
+    })
+    const listed = await getJson('/api/v1/objects?prefix=site/b/', { headers: auth(KEYS.full) })
+    const previewUrl = listed.body.objects.find((object) => object.key === 'site/b/other.txt').urls.previewUrl
+
+    // Swap the key in the path, keep the signature: the HMAC covers the key.
+    const forged = previewUrl.replace('/site/b/other.txt', '/site/blog/2026/fox.txt')
+    const response = await fetch(forged)
+    assert.equal(response.status, 403)
+    assert.equal((await response.json()).code, 'SIGNED_URL_INVALID')
+  })
+
+  test('the file listing also returns browser URLs for object-backed files', async () => {
+    const listed = await getJson('/api/v1/files?q=fox&urls=signed', { headers: auth(KEYS.full) })
+    assert.equal(listed.status, 200)
+    assert.equal(listed.body.urls, 'signed')
+    const file = listed.body.files.find((candidate) => candidate.key === 'site/blog/2026/fox.txt')
+    assert.ok(file, 'the object is visible through the file API too')
+    assert.ok(file.urls.preview?.includes('sig='))
+    assert.ok(file.urls.download?.includes('download=1'))
+
+    // Authenticated links are still there for server-side callers.
+    assert.match(file.urls.content, /\/api\/v1\/files\/[^/]+\/content$/)
+
+    const preview = await fetch(file.urls.preview)
+    assert.equal(preview.status, 200)
+    assert.equal(await preview.text(), 'the quick brown fox')
+  })
+
+  test('a demoted account cannot keep writing with an old key', async () => {
+    const owner = prisma._store.user.find((user) => user.id === 'user-1')
+    const originalRole = owner.role
+    owner.role = 'student'
+    try {
+      const upload = await getJson('/api/v1/objects/site/c/demoted.txt', {
+        method: 'PUT',
+        headers: { ...auth(KEYS.full), 'Content-Type': 'text/plain' },
+        body: 'nope',
+      })
+      assert.equal(upload.status, 403)
+      assert.equal(upload.body.code, 'ROLE_FORBIDDEN')
+
+      // Reading is unaffected: a read-only key cannot damage anything, and one
+      // extra query per download would cost more than it protects.
+      const read = await getJson('/api/v1/objects?prefix=site/blog/', { headers: auth(KEYS.full) })
+      assert.equal(read.status, 200)
+    } finally {
+      owner.role = originalRole
+    }
+  })
+
   test('a read-only key cannot sign a PUT link', async () => {
     const { status, body } = await getJson('/api/v1/objects/sign', {
       method: 'POST',

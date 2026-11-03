@@ -49,11 +49,30 @@ test('a prefix namespaces every call, replacing the need for a bucket', async ()
   assert.equal(calls[0].init.headers['Content-Length'], '3')
 })
 
-test('put reports the etag and whether it created or overwrote', async () => {
-  const { fetchImpl } = recorder(() => json({ key: 'a.txt', sizeBytes: '5', etag: '"9b2cf5"', created: false }, { status: 200 }))
+test('put reports the checksum, etag and whether it created or overwrote', async () => {
+  const { fetchImpl } = recorder(() =>
+    json({ key: 'a.txt', sizeBytes: '5', checksum: '9b2cf5ee1f', etag: '"9b2cf5ee1f"', mimeType: 'text/plain', created: false }, { status: 200 }),
+  )
   const storage = createStorage({ endpoint: ENDPOINT, apiKey: 'k', fetchImpl })
   const result = await storage.put('a.txt', 'hello', { contentType: 'text/plain' })
-  assert.deepEqual(result, { key: 'a.txt', sizeBytes: '5', etag: '"9b2cf5"', created: false })
+  assert.deepEqual(result, {
+    key: 'a.txt',
+    sizeBytes: '5',
+    checksum: '9b2cf5ee1f',
+    etag: '"9b2cf5ee1f"',
+    mimeType: 'text/plain',
+    created: false,
+  })
+})
+
+test('put returns the namespaced key that later calls must use', async () => {
+  const { fetchImpl } = recorder(() => json({ key: 'shop/a.txt', sizeBytes: '5', checksum: 'abc123', created: true }, { status: 201 }))
+  const storage = createStorage({ endpoint: ENDPOINT, apiKey: 'k', prefix: 'shop', fetchImpl })
+  const result = await storage.put('a.txt', 'hello')
+  assert.equal(result.key, 'shop/a.txt')
+  // A server that reports only a checksum still yields a quoted ETag.
+  assert.equal(result.etag, '"abc123"')
+  assert.equal(result.mimeType, null)
 })
 
 test('put refuses a body whose length it cannot know', async () => {
