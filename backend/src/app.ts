@@ -15,6 +15,8 @@ import { folderRouter } from './modules/folders/folder.routes.js'
 import { publicRouter } from './modules/public/public.routes.js'
 import { inviteRouter } from './modules/invites/invite.routes.js'
 import { apiKeyRouter } from './modules/api-keys/api-key.routes.js'
+import { comingSoonAdminRouter, comingSoonRouter } from './modules/growth/coming-soon.routes.js'
+import { pointsAdminRouter, pointsRouter } from './modules/growth/points.routes.js'
 import { publicApiRouter } from './modules/public-api/public-api.routes.js'
 import { auditLogRouter } from './modules/audit-logs/audit-log.routes.js'
 import { systemRouter } from './modules/system/system.routes.js'
@@ -398,6 +400,17 @@ const API_ROUTERS: Array<[string, import('express').Router]> = [
   ['/audit-logs', auditLogRouter],
   ['/system', systemRouter],
   ['/admin', adminRouter],
+  /**
+   * "Coming soon" announcements. Readable without a session so the page can be
+   * linked from outside the app; voting and the admin editor check auth inside
+   * their own routers.
+   */
+  ['/coming-soon', comingSoonRouter],
+  /** HXP points: a learner's own balance and awards. */
+  ['/points', pointsRouter],
+  /** Admin-only: the points rules (super admin) and catalogue editors. */
+  ['/admin/coming-soon', comingSoonAdminRouter],
+  ['/admin/points', pointsAdminRouter],
 ]
 
 for (const [prefix, router] of API_ROUTERS) {

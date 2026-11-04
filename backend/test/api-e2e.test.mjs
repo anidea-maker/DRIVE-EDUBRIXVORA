@@ -65,6 +65,16 @@ const KEYS = {
   readOnly: '9d_live_e2e_read_only_key',
   revoked: '9d_live_e2e_revoked_key',
   otherUser: '9d_live_e2e_other_user_key',
+  /**
+   * Dashboard sessions, not API keys.
+   *
+   * The growth routes act on the *caller* (`/points/me`, votes) or on deployment
+   * policy (`/admin/points/rules`), so they are session-authenticated. A real
+   * access token is minted below from the same helper the login route uses, so
+   * the session lookup and role check are the production ones.
+   */
+  superAdmin: '',
+  admin: '',
 }
 
 const SMALL_BODY = 'hello edvanta'
@@ -209,6 +219,41 @@ before(async () => {
       ...extra,
     })
   }
+
+  /**
+   * A super-admin account and two live sessions.
+   *
+   * `user-1` is already an admin; `user-3` is a super admin so the rule editor's
+   * role gate can be tested against a caller who should pass it.
+   */
+  prisma._store.user.push({
+    id: 'user-3',
+    name: 'Super Admin',
+    email: 'super@example.com',
+    passwordHash: 'not-a-real-hash',
+    status: 'active',
+    role: 'super_admin',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  })
+
+  const { signAccessToken } = require('../dist/utils/jwt.js')
+  const addSession = (id, userId) => {
+    prisma._store.userSession.push({
+      id,
+      userId,
+      refreshTokenHash: `hash-${id}`,
+      userAgent: 'e2e',
+      ipAddress: '127.0.0.1',
+      expiresAt: new Date(Date.now() + 3_600_000),
+      revokedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    return signAccessToken({ sub: userId, sid: id })
+  }
+  KEYS.admin = addSession('session-admin', 'user-1')
+  KEYS.superAdmin = addSession('session-super', 'user-3')
 
   addKey('key-full', KEYS.full, 'user-1', ['files:read', 'files:write', 'files:delete'])
   addKey('key-read', KEYS.readOnly, 'user-1', ['files:read'])
@@ -697,6 +742,264 @@ describe('request validation', () => {
     assert.equal(status, 413)
     assert.equal(body.code, 'OBJECT_TOO_LARGE')
     assert.equal(prisma._store.file.some((row) => row.objectKey === 'big.bin' && row.status === 'active'), false)
+  })
+})
+
+
+/* -------------------------------------------------------------------------- */
+/*  Coming Soon + HXP points                                                  */
+/* -------------------------------------------------------------------------- */
+
+describe('coming soon and HXP points', () => {
+  test('the roadmap is readable without a session and seeds itself', async () => {
+    const { status, body } = await getJson('/coming-soon/features')
+    assert.equal(status, 200)
+    assert.ok(body.features.length >= 3, 'the catalogue seeds on first read')
+    assert.ok(body.categories.length >= 1)
+    const songs = body.features.find((feature) => feature.key === 'songs-library')
+    assert.ok(songs, 'the songs listing is announced')
+    // Anonymous callers get a count but no personal vote state.
+    assert.equal(songs.voted, null)
+    assert.equal(typeof songs.voteCount, 'number')
+  })
+
+  test('the songs catalogue lists tracks but never claims they are playable', async () => {
+    const { status, body } = await getJson('/coming-soon/songs')
+    assert.equal(status, 200)
+    assert.ok(body.songs.length >= 1)
+    assert.ok(body.collections.length >= 1)
+    for (const song of body.songs) {
+      assert.equal(song.playable, false, 'playback is the unreleased part')
+      assert.match(song.durationLabel, /^\d+:\d{2}$|^--:--$/)
+    }
+  })
+
+  test('a vote is idempotent: a double tap is still one vote', async () => {
+    const first = await getJson('/coming-soon/features/hxp-points/vote', { method: 'POST', headers: auth(KEYS.admin) })
+    assert.equal(first.status, 201)
+    assert.equal(first.body.voted, true)
+    const count = first.body.voteCount
+
+    const again = await getJson('/coming-soon/features/hxp-points/vote', { method: 'POST', headers: auth(KEYS.admin) })
+    assert.equal(again.status, 200)
+    assert.equal(again.body.created, false)
+    assert.equal(again.body.voteCount, count, 'a retry must not stack a second vote')
+
+    // …and the listing now reports the vote for that account.
+    const listed = await getJson('/coming-soon/features', { headers: auth(KEYS.admin) })
+    assert.equal(listed.body.features.find((feature) => feature.key === 'hxp-points').voted, true)
+
+    const removed = await getJson('/coming-soon/features/hxp-points/vote', { method: 'DELETE', headers: auth(KEYS.admin) })
+    assert.equal(removed.status, 200)
+    assert.equal(removed.body.voted, false)
+  })
+
+  test('voting needs a session, so the count measures accounts not curiosity', async () => {
+    const { status } = await getJson('/coming-soon/features/hxp-points/vote', { method: 'POST' })
+    assert.equal(status, 401)
+  })
+
+  test('a reading award pays the rule value and a retry pays nothing', async () => {
+    const first = await getJson('/points/award', {
+      method: 'POST',
+      headers: { ...auth(KEYS.admin), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activity: 'reading', reference: 'e2e:read:1' }),
+    })
+    assert.equal(first.status, 201)
+    assert.equal(first.body.awarded, true)
+    assert.equal(first.body.points, first.body.rulePoints)
+    const balance = first.body.balance
+    assert.ok(balance > 0)
+
+    const retry = await getJson('/points/award', {
+      method: 'POST',
+      headers: { ...auth(KEYS.admin), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activity: 'reading', reference: 'e2e:read:1' }),
+    })
+    assert.equal(retry.status, 200, 'a retry answers with the balance, not an error')
+    assert.equal(retry.body.awarded, false)
+    assert.equal(retry.body.points, 0)
+    assert.equal(retry.body.balance, balance, 'the balance is unchanged by the retry')
+  })
+
+  test('a test score above the threshold pays the bonus', async () => {
+    const { status, body } = await getJson('/points/award', {
+      method: 'POST',
+      headers: { ...auth(KEYS.admin), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activity: 'test', score: 100, reference: 'e2e:test:1' }),
+    })
+    assert.equal(status, 201)
+    assert.ok(body.bonusPoints > 0, 'a perfect score earns the bonus')
+    assert.equal(body.points, body.rulePoints + body.bonusPoints)
+  })
+
+  test('a video accepts `watchPercent` as well as `score`, and pays the bonus', async () => {
+    // The Coming Soon card advertises a bonus at a watch percentage, so the
+    // obvious field name has to work. Zod drops unknown keys silently, so a
+    // missing alias meant a "successful" award that quietly omitted the bonus.
+    const { status, body } = await getJson('/points/award', {
+      method: 'POST',
+      headers: { ...auth(KEYS.admin), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activity: 'video', watchPercent: 100, reference: 'e2e:video:watch-percent' }),
+    })
+    assert.equal(status, 201)
+    assert.ok(body.bonusPoints > 0, 'a fully watched video earns the bonus')
+    assert.equal(body.points, body.rulePoints + body.bonusPoints)
+  })
+
+  test('a bonus that could never pay is refused in both directions', async () => {
+    const enabled = await getJson('/admin/points/rules/reading', {
+      method: 'PATCH',
+      headers: { ...auth(KEYS.superAdmin), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bonusPoints: 20, bonusThreshold: 0 }),
+    })
+    assert.equal(enabled.status, 400)
+    assert.equal(enabled.body.code, 'HXP_BONUS_NEEDS_THRESHOLD')
+
+    // Give reading a live bonus, then try to drop the threshold out from under it.
+    await getJson('/admin/points/rules/reading', {
+      method: 'PATCH',
+      headers: { ...auth(KEYS.superAdmin), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bonusPoints: 20, bonusThreshold: 50 }),
+    })
+    const broken = await getJson('/admin/points/rules/reading', {
+      method: 'PATCH',
+      headers: { ...auth(KEYS.superAdmin), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bonusThreshold: 0 }),
+    })
+    assert.equal(broken.status, 400, 'a standing bonus cannot lose its threshold')
+    assert.equal(broken.body.code, 'HXP_BONUS_NEEDS_THRESHOLD')
+
+    // Put it back so the rest of the suite sees the documented defaults.
+    await getJson('/admin/points/rules/reading', {
+      method: 'PATCH',
+      headers: { ...auth(KEYS.superAdmin), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bonusPoints: 0, bonusThreshold: 0 }),
+    })
+  })
+
+  test('a test without a reference is refused, so it cannot pay twice', async () => {
+    const { status, body } = await getJson('/points/award', {
+      method: 'POST',
+      headers: { ...auth(KEYS.admin), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activity: 'test', score: 50 }),
+    })
+    assert.equal(status, 400)
+    assert.equal(body.code, 'HXP_REFERENCE_REQUIRED')
+  })
+
+  test('an unknown activity is refused with the list of real ones', async () => {
+    const { status, body } = await getJson('/points/award', {
+      method: 'POST',
+      headers: { ...auth(KEYS.admin), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activity: 'sleeping' }),
+    })
+    assert.equal(status, 400)
+    assert.equal(body.code, 'HXP_ACTIVITY_UNKNOWN')
+    assert.match(body.message, /reading/)
+  })
+
+  test('awards cannot be attached to another account’s file', async () => {
+    const { status, body } = await getJson('/points/award', {
+      method: 'POST',
+      headers: { ...auth(KEYS.admin), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activity: 'reading', fileId: 'file-that-does-not-exist' }),
+    })
+    assert.equal(status, 404)
+    assert.equal(body.code, 'FILE_NOT_FOUND')
+  })
+
+  test('GET /points/me explains the balance rather than only stating it', async () => {
+    const { status, body } = await getJson('/points/me', { headers: auth(KEYS.admin) })
+    assert.equal(status, 200)
+    assert.ok(body.balance > 0)
+    assert.equal(body.currency, 'HXP')
+    for (const activity of body.activities) {
+      assert.ok(activity.points >= 0)
+      assert.equal(typeof activity.label, 'string')
+    }
+    assert.ok(Array.isArray(body.recent))
+  })
+
+  test('only a super admin can change what an activity is worth', async () => {
+    // `KEYS.admin` is an ordinary administrator, not a super admin.
+    const denied = await getJson('/admin/points/rules/reading', {
+      method: 'PATCH',
+      headers: { ...auth(KEYS.admin), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ points: 500 }),
+    })
+    assert.equal(denied.status, 403)
+    assert.equal(denied.body.code, 'ROLE_FORBIDDEN')
+  })
+
+  test('the rule list is visible to a super admin and edits keep past awards intact', async () => {
+    const before = await getJson('/admin/points/rules', { headers: auth(KEYS.superAdmin) })
+    assert.equal(before.status, 200)
+    const reading = before.body.rules.find((rule) => rule.activity === 'reading')
+    assert.ok(reading)
+
+    const changed = await getJson('/admin/points/rules/reading', {
+      method: 'PATCH',
+      headers: { ...auth(KEYS.superAdmin), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ points: 42 }),
+    })
+    assert.equal(changed.status, 200)
+    assert.equal(changed.body.rule.points, 42)
+    assert.ok(changed.body.pastAwardsUnaffected >= 1, 'the response says how many past awards are unaffected')
+
+    // A new award uses the new value; the old rows still sum to the old total.
+    const awarded = await getJson('/points/award', {
+      method: 'POST',
+      headers: { ...auth(KEYS.admin), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activity: 'reading', reference: 'e2e:read:after-rule-change' }),
+    })
+    assert.equal(awarded.status, 201)
+    assert.equal(awarded.body.rulePoints, 42)
+  })
+
+  test('an admin can add and remove a roadmap entry', async () => {
+    const created = await getJson('/admin/coming-soon/features', {
+      method: 'POST',
+      headers: { ...auth(KEYS.superAdmin), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: 'e2e-feature', title: 'E2E feature', summary: 'Created by the test suite.' }),
+    })
+    assert.equal(created.status, 201)
+    assert.equal(created.body.feature.key, 'e2e-feature')
+
+    const duplicate = await getJson('/admin/coming-soon/features', {
+      method: 'POST',
+      headers: { ...auth(KEYS.superAdmin), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: 'e2e-feature', title: 'Again', summary: 'Should clash.' }),
+    })
+    assert.equal(duplicate.status, 409)
+    assert.equal(duplicate.body.code, 'FEATURE_KEY_TAKEN')
+
+    const patched = await getJson('/admin/coming-soon/features/e2e-feature', {
+      method: 'PATCH',
+      headers: { ...auth(KEYS.superAdmin), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'beta' }),
+    })
+    assert.equal(patched.status, 200)
+    assert.equal(patched.body.feature.status, 'beta')
+
+    const removed = await getJson('/admin/coming-soon/features/e2e-feature', { method: 'DELETE', headers: auth(KEYS.superAdmin) })
+    assert.equal(removed.status, 200)
+    assert.equal(removed.body.deleted, 'e2e-feature')
+  })
+
+  test('a paused feature disappears from the public list but stays editable', async () => {
+    await getJson('/admin/coming-soon/features', {
+      method: 'POST',
+      headers: { ...auth(KEYS.superAdmin), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: 'e2e-paused', title: 'Hidden', summary: 'Not announced.', status: 'paused' }),
+    })
+    const publicList = await getJson('/coming-soon/features')
+    assert.equal(publicList.body.features.some((feature) => feature.key === 'e2e-paused'), false)
+
+    const adminList = await getJson('/admin/coming-soon/features', { headers: auth(KEYS.superAdmin) })
+    assert.equal(adminList.body.features.some((feature) => feature.key === 'e2e-paused'), true, 'an admin must be able to find it again')
+
+    await getJson('/admin/coming-soon/features/e2e-paused', { method: 'DELETE', headers: auth(KEYS.superAdmin) })
   })
 })
 

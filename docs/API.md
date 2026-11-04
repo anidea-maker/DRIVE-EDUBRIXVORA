@@ -601,6 +601,77 @@ copy-paste server client in [`examples/edvanta/`](../examples/edvanta/).
 | 502 | `RESOURCE_INACCESSIBLE` / `BULK_ALL_FILES_UNAVAILABLE` | Provider denied access or every selected file failed |
 | 507 | `NO_ACCOUNT_WITH_ENOUGH_SPACE` | No connected provider can hold the upload |
 
+## Coming Soon and HXP points
+
+Two related surfaces: a roadmap that announces what is not released yet, and the
+points system that will reward studying. Both are *announced* on
+`/coming-soon`, and the songs catalogue is deliberately **listing only** - there
+is no stream endpoint, and every song is serialised with `playable: false`, so
+turning playback on later is a server change rather than a frontend release.
+
+### Roadmap (public)
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/coming-soon/features` | optional | The catalogue. `?q=` searches title/summary/description, `?category=` filters. `voted` is your own state, or `null` when anonymous |
+| `GET` | `/api/v1/coming-soon/features/:key` | optional | One card, by its stable `key` |
+| `POST` | `/api/v1/coming-soon/features/:key/vote` | session | Register your interest. **Idempotent**: a second call answers `200` with `created: false` and the same count |
+| `DELETE` | `/api/v1/coming-soon/features/:key/vote` | session | Withdraw it. Also idempotent |
+| `GET` | `/api/v1/coming-soon/songs` | none | The catalogue listing: `?q=`, `?collection=`, `?genre=`, `?limit=`. Every entry carries `playable: false` |
+
+Seeding is **additive and lazy**: the default catalogue and the default songs are
+inserted only while their table is empty, so a card an administrator deleted is
+never resurrected and an upgrade needs no manual step.
+
+### HXP points (signed in)
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/v1/points/me` | Balance, per-activity breakdown, and your last twenty awards |
+| `POST` | `/api/v1/points/award` | Record a completed activity and pay it |
+| `GET` | `/api/v1/points/today` | Points earned since midnight UTC, and what is left of each cap |
+
+`POST /points/award` takes `activity` (`reading`, `notes`, `test`, `video`),
+optional `score` (0-100: a test score, or a video's watch percentage - the alias
+`watchPercent` is accepted), optional `fileId` (`reading`/`notes`/`video`, and it
+must belong to the caller), optional `note`, and `reference` - a client-chosen
+idempotency key. `reference` is **required for `test`**, because a test is a
+discrete event a flaky network can replay.
+
+| Status | Code | Meaning |
+| --- | --- | --- |
+| 200 | — | `awarded: false` - this `reference` was already paid. The balance is unchanged and returned |
+| 201 | — | Paid. The body carries `points`, `rulePoints`, `bonusPoints`, `balance`, `todayPoints`, `cappedBy` |
+| 400 | `HXP_ACTIVITY_UNKNOWN` / `HXP_REFERENCE_REQUIRED` | Not a trackable activity (the message lists the valid ones), or a test without a reference |
+| 404 | `FILE_NOT_FOUND` | `fileId` is not yours |
+| 409 | `HXP_ACTIVITY_DISABLED` | An administrator turned this activity off |
+| 429 | `HXP_DAILY_CAP_REACHED` | The daily cap for this activity is spent |
+
+### Editing the values (super admin)
+
+`requireRole('manage_administrators')` - narrower than the rest of the admin
+surface on purpose: one administrator setting one activity to an extreme value
+would distort every account.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/v1/admin/points/rules` | All four rules |
+| `PATCH` | `/api/v1/admin/points/rules/:activity` | `points`, `bonusPoints`, `bonusThreshold` (1-100), `dailyCap` (**0 = uncapped**), `enabled` |
+| `GET` | `/api/v1/admin/points/users/:id/ledger` | One account's append-only history |
+
+Editing a rule **never rewrites history**. Each ledger row snapshots the
+`rulePoints` and `bonusPoints` it was paid under, so a term's total cannot shrink
+because a value changed afterwards; the `PATCH` response reports
+`pastAwardsUnaffected`. A bonus with a `bonusThreshold` of `0` can never pay, so
+that combination is refused (`HXP_BONUS_NEEDS_THRESHOLD`) in both directions -
+turning a bonus on without a threshold, and lowering a live threshold to zero.
+
+The roadmap itself is editable by any administrator
+(`requireRole('manage_resources')`): `GET`/`POST /api/v1/admin/coming-soon/features`,
+`PATCH`/`DELETE /api/v1/admin/coming-soon/features/:id`, and the same shape under
+`/api/v1/admin/coming-soon/songs`. A feature with status `paused` is hidden from
+the public list but stays visible here.
+
 ## Deployment notes
 
 - `PUBLIC_BASE_URL` pins the origin used in share and download URLs. Set it only

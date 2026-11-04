@@ -95,6 +95,12 @@ Try the live preview at **[9drive.zenhosta.com](https://9drive.zenhosta.com)**.
 - A copy-paste client for the consuming site in [`examples/other-website`](examples/other-website): two environment variables, no SDK, and `demo.mjs` to prove upload → list → preview → download against your deployment. Keys are scoped (`files:read`, `files:write`, `files:delete`), shown once, stored hashed, and revocable.
 - Any origin may call it with a key. Full reference in [docs/API.md](docs/API.md), plus copy-paste examples in **API Management**.
 
+**Coming soon**
+- A **Coming Soon** page that announces what is being built: the songs library, HXP points, leaderboards, smart recall, study rooms, offline packs, and the mobile app. Each card can be voted for, and the vote count is what decides the order.
+- **Songs listing** - browse and search the catalogue (title, artist, album, duration, genre, collection). Listing only for now; playback ships with the library, and the server reports `playable: false` so the UI never promises a stream it cannot open.
+- **HXP points** for reading a file, taking notes, completing a test, or watching a video. Scored activities pay a bonus at or above a threshold, and each activity has a daily cap. Super admins set every value - points, bonus, threshold, cap, on/off - in **HXP settings**; changing a value never rewrites points already earned.
+- Nothing in this section is live yet: the roadmap and the catalogue are real, awarding and playback are announced.
+
 **Accounts and admin**
 - Email/password sign-up or **Continue with Google**, which connects your first Drive automatically.
 - Google OAuth credentials can be set in **Settings**. No `.env` editing needed.
@@ -629,6 +635,11 @@ Uploads       POST /uploads
 Invites       GET /invites · POST /invites · DELETE /invites/:id
 API keys      GET /api-keys · GET /api-keys/scopes · POST /api-keys · DELETE /api-keys/:id
 Activity      GET /audit-logs
+Coming soon   GET /coming-soon/features · GET /coming-soon/features/:key
+              POST|DELETE /coming-soon/features/:key/vote · GET /coming-soon/songs
+HXP points    GET /points/me · POST /points/award · GET /points/today
+              GET /admin/points/rules · PATCH /admin/points/rules/:activity   (super admin)
+              GET|POST|PATCH|DELETE /admin/coming-soon/features[/:id] · …/songs[/:id]
 Public files  GET /public/files/:token · GET /public/files/:token/download · GET /public/files/:token/preview
 Storage API   GET  /api/v1 · GET /api/v1/me · GET /api/v1/usage      (API key, any origin)
               GET  /api/v1/files · POST /api/v1/files · POST /api/v1/files/raw
