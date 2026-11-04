@@ -55,6 +55,10 @@ model User {
   workspaceInvitesSent WorkspaceInvite[] @relation("WorkspaceInvitesSent")
   uploadRoutingPolicy UploadRoutingPolicy?
   apiKeys       ApiKey[]
+  /** "Notify me" votes on unreleased features. */
+  featureVotes  FeatureVote[]
+  /** Every point this account has earned or had reversed. */
+  pointsLedger  PointsLedgerEntry[]
 
   @@map("users")
 }
@@ -440,4 +444,146 @@ model WorkspaceInvite {
   @@index([targetType, targetId])
   @@index([inviterId])
   @@map("workspace_invites")
+}
+
+/**
+ * A not-yet-released capability shown on the Coming Soon page.
+ *
+ * The catalogue lives in the database rather than in a hard-coded array so an
+ * administrator can add, reorder, retitle or ship a feature without a deploy -
+ * which is the whole point of having the page in the first place.
+ */
+model ComingSoonFeature {
+  id        String   @id @default(uuid())
+  /** Stable identifier used in URLs and votes. Never reused after a rename. */
+  key       String   @unique
+  title     String
+  summary   String
+  /** Longer "what it will do" copy, shown when the card is expanded. */
+  description String?
+  /** Grouping label, e.g. "Learning" or "Library". */
+  category  String   @default("General")
+  /** lucide-react icon name, so the UI needs no per-feature code. */
+  icon      String   @default("Sparkles")
+  /** `coming_soon` | `beta` | `live` | `paused`. */
+  status    String   @default("coming_soon")
+  /** Lower sorts first. Ties break on title, so ordering is always stable. */
+  sortOrder Int      @default(100) @map("sort_order")
+  /** Shown as a "targeting <quarter>" note when set. */
+  targetRelease String? @map("target_release")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  votes     FeatureVote[]
+
+  @@index([status, sortOrder])
+  @@map("coming_soon_features")
+}
+
+/** One account's "notify me" on one feature. Unique per pair. */
+model FeatureVote {
+  id        String   @id @default(uuid())
+  featureId String   @map("feature_id")
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  feature   ComingSoonFeature @relation(fields: [featureId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([featureId, userId])
+  @@index([userId])
+  @@map("feature_votes")
+}
+
+/**
+ * How many HXP points one kind of learning activity is worth.
+ *
+ * Admin-editable on purpose: the value of reading a chapter, writing notes,
+ * passing a test and finishing a video are policy decisions that change per
+ * course and per term. One row per activity type keeps the rule table small
+ * and makes "what is reading worth?" a single lookup rather than a code change.
+ */
+model PointsRule {
+  id       String   @id @default(uuid())
+  /** `reading` | `notes` | `test` | `video` - fixed by the app, see HXP_ACTIVITIES. */
+  activity String   @unique
+  label    String
+  description String?
+  /** Points awarded once the activity is verified. */
+  points   Int      @default(10)
+  /**
+   * Extra points for a strong result (a test score, a long note). Added to
+   * `points` when the submission reports a value at or above `bonusThreshold`.
+   */
+  bonusPoints    Int @default(0) @map("bonus_points")
+  /** 0-100. A test score, or a completion percentage. 0 disables the bonus. */
+  bonusThreshold Int @default(0) @map("bonus_threshold")
+  /** 0 means "no cap". Enforced per user per calendar day (UTC). */
+  dailyCap Int      @default(0) @map("daily_cap")
+  enabled  Boolean  @default(true)
+  updatedById String? @map("updated_by_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("points_rules")
+}
+
+/**
+ * The HXP ledger: one row per award, never an overwritten running total.
+ *
+ * A running total can only be corrected by editing it, which loses the reason.
+ * Append-only rows mean a learner can see "why am I on 340?", an administrator
+ * can reverse a bad award without guesswork, and the balance is a sum that can
+ * always be recomputed from the same data the UI shows.
+ */
+model PointsLedgerEntry {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  /** Activity type that earned it, matching PointsRule.activity. */
+  activity   String
+  /** Points actually added: rule points, bonus, or a negative reversal. */
+  points     Int
+  /** Rule values snapshotted at award time, so later rule edits are not silent history rewrites. */
+  rulePoints Int      @default(0) @map("rule_points")
+  bonusPoints Int     @default(0) @map("bonus_points")
+  /** Which file or video the activity was about, when the client sends one. */
+  fileId     String?  @map("file_id")
+  /** Free-text note or the client's own reference id. */
+  note       String?
+  /** Idempotency key: a retried submission must not pay twice. */
+  reference  String?  @unique
+  createdAt  DateTime @default(now()) @map("created_at")
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([userId, activity, createdAt])
+  @@map("points_ledger")
+}
+
+/**
+ * A track in the upcoming Songs library.
+ *
+ * "Listing songs" is announced on the Coming Soon page, but the catalogue is
+ * real: it is what the page renders as a preview and what the library will open
+ * with. Nothing here streams audio yet - that is the unreleased part.
+ */
+model Song {
+  id        String   @id @default(uuid())
+  title     String
+  artist    String
+  album     String?
+  /** Seconds; 0 when unknown. */
+  durationSeconds Int @default(0) @map("duration_seconds")
+  /** `focus` | `study` | `ambient` | ... Free-form, but lower-case. */
+  genre     String   @default("study")
+  /** Cover art URL, or null for a generated tile. */
+  artworkUrl String? @map("artwork_url")
+  /** Sort/section hint, e.g. "Featured". */
+  collection String  @default("Featured")
+  enabled   Boolean  @default(true)
+  sortOrder Int      @default(100) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([enabled, sortOrder])
+  @@map("songs")
 }

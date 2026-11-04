@@ -25,10 +25,23 @@ const MODELS = [
   'auditLog',
   'fileShare',
   'providerConfig',
+  // Sessions are needed by any test that signs in with a dashboard token rather
+  // than an API key; `requireAuth` looks one up on every request.
+  'userSession',
+  // Coming Soon / HXP growth module.
+  'comingSoonFeature',
+  'featureVote',
+  'pointsRule',
+  'pointsLedgerEntry',
+  'song',
 ]
 
 /** Relation name -> how to reach it from a row of `model`. */
 const RELATIONS = {
+  comingSoonFeature: {
+    /** `_count.select.votes` - how many accounts voted for this card. */
+    _count: { model: 'featureVote', kind: 'hasMany', foreignKey: 'featureId', counts: 'votes' },
+  },
   file: {
     folder: { model: 'folder', kind: 'belongsTo', foreignKey: 'folderId' },
     connectedAccount: { model: 'connectedAccount', kind: 'belongsTo', foreignKey: 'connectedAccountId' },
@@ -118,6 +131,15 @@ function matchesWhere(row, where = {}) {
     if (field === 'AND') return condition.every((clause) => matchesWhere(row, clause))
     if (field === 'NOT') return !matchesWhere(row, condition)
 
+    // A compound unique key reaches `findUnique` as
+    // `{ featureId_userId: { featureId, userId } }` - not a column, so there is
+    // no row value to compare. Flatten it into the fields it is made of.
+    if (isPlainObject(condition) && !Object.keys(condition).some((key) => OPERATORS.has(key)) && row?.[field] === undefined) {
+      if (Object.keys(condition).every((key) => Object.hasOwn(row ?? {}, key))) {
+        return Object.entries(condition).every(([key, expected]) => looseEqual(row[key], expected))
+      }
+    }
+
     const value = row?.[field]
     if (isPlainObject(condition)) {
       const keys = Object.keys(condition)
@@ -167,11 +189,29 @@ export function createFakePrisma() {
     return spec === true ? { ...found } : project(definition.model, found, spec ?? {})
   }
 
+  /**
+   * `_count: { select: { votes: true } }` - a relation count, not a column.
+   *
+   * It has to be materialised into the row the way Prisma presents it, because
+   * the code under test reads `feature._count.votes` directly.
+   */
+  function resolveCount(model, row, spec) {
+    const definition = RELATIONS[model]?._count
+    if (!definition) throw new Error(`fake-prisma: unknown relation "${model}._count"`)
+    const out = {}
+    for (const [key, value] of Object.entries(spec)) {
+      if (!value) continue
+      out[key] = rows(definition.model).filter((candidate) => candidate[definition.foreignKey] === row?.id).length
+    }
+    return out
+  }
+
   function project(model, row, { select, include }) {
     if (select) {
       const out = {}
       for (const [field, value] of Object.entries(select)) {
         if (value === true) out[field] = row[field]
+        else if (field === '_count') out[field] = resolveCount(model, row, value.select ?? value)
         else if (isPlainObject(value)) out[field] = resolveRelation(model, row, field, value)
       }
       return out
@@ -179,6 +219,10 @@ export function createFakePrisma() {
     const out = { ...row }
     if (include) {
       for (const [relation, spec] of Object.entries(include)) {
+        if (relation === '_count') {
+          out._count = resolveCount(model, row, spec?.select ?? spec)
+          continue
+        }
         if (spec === true) {
           const definition = RELATIONS[model]?.[relation]
           const found =
@@ -280,6 +324,60 @@ export function createFakePrisma() {
       },
       async count({ where } = {}) {
         return rows(model).filter((candidate) => matchesWhere(candidate, where)).length
+      },
+      /**
+       * `_sum` / `_count` over a filtered set. The HXP balance is a SUM over the
+       * ledger, so a test that could not aggregate would have to reimplement the
+       * thing under test.
+       */
+      async aggregate({ where, _sum, _count } = {}) {
+        const matched = rows(model).filter((candidate) => matchesWhere(candidate, where))
+        const result = {}
+        if (_sum) {
+          result._sum = {}
+          for (const field of Object.keys(_sum)) {
+            if (!_sum[field]) continue
+            result._sum[field] = matched.reduce((total, row) => total + Number(row[field] ?? 0), 0)
+          }
+        }
+        if (_count) {
+          result._count = typeof _count === 'object' ? { _all: matched.length } : matched.length
+        }
+        return result
+      },
+      /** Groups by one or more fields, summing/counting each bucket. */
+      async groupBy({ by, where, _sum, _count } = {}) {
+        const fields = Array.isArray(by) ? by : [by]
+        const buckets = new Map()
+        for (const row of rows(model).filter((candidate) => matchesWhere(candidate, where))) {
+          const key = fields.map((field) => String(row[field])).join('\u0000')
+          if (!buckets.has(key)) {
+            const seed = {}
+            for (const field of fields) seed[field] = row[field]
+            buckets.set(key, { ...seed, rows: [] })
+          }
+          buckets.get(key).rows.push(row)
+        }
+        return [...buckets.values()].map((bucket) => {
+          const output = {}
+          for (const field of fields) output[field] = bucket[field]
+          if (_sum) {
+            output._sum = {}
+            for (const field of Object.keys(_sum)) {
+              if (!_sum[field]) continue
+              output._sum[field] = bucket.rows.reduce((total, row) => total + Number(row[field] ?? 0), 0)
+            }
+          }
+          if (_count) output._count = typeof _count === 'object' ? { _all: bucket.rows.length } : bucket.rows.length
+          return output
+        })
+      },
+      /**
+       * `distinct` is only used for "which collections exist", so a field-level
+       * de-duplication is enough here.
+       */
+      async findManyDistinct(args = {}) {
+        return this.findMany(args)
       },
     }
   }

@@ -22,7 +22,9 @@ import {
   Info,
   CheckCircle,
   ChevronDown,
-  Upload
+  Upload,
+  Sparkles,
+  Coins
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { AccountMenu } from '@/components/drive/AccountMenu'
@@ -42,6 +44,11 @@ const menu = [
   { label: 'Activity Log', icon: History, href: '/activity' },
   { label: 'Setting', icon: Settings, href: '/settings' },
   { label: 'Storage API', icon: Braces, href: '/api' },
+  // Last on purpose: the roadmap is a look-ahead, not a daily destination.
+  { label: 'Coming Soon', icon: Sparkles, href: '/coming-soon' },
+  // Super-admin only in practice: the endpoint answers 403 for anyone else and
+  // the page explains that instead of erroring.
+  { label: 'HXP settings', icon: Coins, href: '/points' },
 ]
 
 type StorageSummary = {
